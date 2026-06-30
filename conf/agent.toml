@@ -1,0 +1,79 @@
+# TrustRuntime Agent Configuration
+# 默认配置文件路径: /etc/trustruntime/agent.toml
+# 文件权限要求: 640 (root:root)
+
+# =============================================================================
+# vsock 通信配置
+# =============================================================================
+[vsock]
+# vsock 端口号（必填）
+port = 12345
+
+# 最大并发连接数（可选，默认 16）
+# 通过 tokio Semaphore 限流，超过此数量的新连接将等待
+# max_connections = 16
+
+# =============================================================================
+# 日志配置
+# =============================================================================
+[log]
+# 日志文件路径（必填）
+path = "/var/log/trustruntime/trustring.log"
+
+# 日志级别（可选，默认 "info"）
+# 可选值: "trace", "debug", "info", "warn", "error"
+# RUST_LOG 环境变量可覆盖此配置
+# level = "info"
+
+# 单个日志文件最大大小，单位 MB（必填）
+max_file_size = 10
+
+# 日志回滚文件个数（必填）
+# 超过此数量的旧日志文件将被自动删除
+max_roll_count = 10
+
+# =============================================================================
+# 证书路径配置
+# =============================================================================
+[certificate]
+
+# --- 签名验签证书（CMS） ---
+# 签名证书路径，支持 PEM/DER 格式（必填）
+signer_cert = "/etc/cert/cms/signer.crt"
+
+# 签名私钥路径，无密码保护（必填）
+signer_key = "/etc/cert/cms/signer.key"
+
+# CA 根证书路径，用于验签时构建证书链（必填）
+ca_root_cert = "/etc/cert/cms/ca_root.crt"
+
+# CMS 证书吊销列表路径（可选）
+# 不配置时跳过 CRL 校验
+# cms_crl = "/etc/cert/cms/cms.crl"
+
+# --- 通信证书（TLS） ---
+# 通信证书路径，用于 TLS 服务端认证，支持 PEM/DER 格式（必填）
+comm_cert = "/etc/cert/cms/communication/certificate.crt"
+
+# 通信私钥路径（必填）
+comm_key = "/etc/cert/cms/communication/private.key"
+
+# 通信私钥密码文件路径（可选）
+# 私钥未加密时不需要配置
+# comm_key_pwd = "/etc/cert/cms/communication/key_pwd.txt"
+
+# 通信 CA 根证书路径，用于 TLS 客户端证书验证（必填）
+comm_ca_root = "/etc/cert/cms/communication/ca_root.crt"
+
+# 通信证书吊销列表路径（可选）
+# 不配置时跳过 CRL 校验
+# comm_crl = "/etc/cert/cms/communication/cert.crl"
+
+# =============================================================================
+# 证书过期巡检配置
+# =============================================================================
+# [cert_check]
+
+# 巡检间隔，单位小时（可选，默认 24）
+# 检测到证书过期时仅打印 warn 日志，不触发任何关闭或退出动作
+# interval_hours = 24

@@ -1,0 +1,17 @@
+[vsock]
+port = 12345
+
+[log]
+path = "/tmp/test-server.log"
+max_file_size = 10
+max_roll_count = 10
+
+[certificate]
+signer_cert = "/home/hisec/test-certs/cms/node-a/signer.crt"
+signer_key = "/home/hisec/test-certs/cms/node-a/signer.key"
+ca_root_cert = "/home/hisec/test-certs/cms/ca.crt"
+cms_crl = "/home/hisec/test-certs/cms/cms.crl"
+
+comm_cert = "/home/hisec/test-certs/tls/server/node-a/node.crt"
+comm_key = "/home/hisec/test-certs/tls/server/node-a/node.key"
+comm_ca_root = "/home/hisec/test-certs/tls/ca.crt"
