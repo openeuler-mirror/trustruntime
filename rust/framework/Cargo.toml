@@ -1,0 +1,20 @@
+[package]
+name = "trustruntime-framework"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+openssl.workspace = true
+tokio.workspace = true
+serde.workspace = true
+toml.workspace = true
+log.workspace = true
+log4rs.workspace = true
+anyhow.workspace = true
+sd-notify.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+vsock.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
