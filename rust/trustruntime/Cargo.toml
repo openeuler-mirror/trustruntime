@@ -1,0 +1,27 @@
+[package]
+name = "trustruntime"
+version.workspace = true
+edition.workspace = true
+license = "Proprietary"
+description = "TrustRuntime Agent - CMS Signer/Verifier Service"
+
+[dependencies]
+trustruntime-framework = { path = "../framework" }
+trustring = { path = "../plugins/trustring" }
+log.workspace = true
+tokio.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+vsock.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/trustruntime", dest = "/usr/bin/trustruntime", mode = "550" },
+    { source = "../../conf/agent.toml", dest = "/etc/trustruntime/agent.toml", mode = "640", config = true },
+    { source = "../../packaging/trustruntime.service", dest = "/usr/lib/systemd/system/trustruntime.service", mode = "644" },
+]
+post_install_script = "mkdir -p /var/log/trustruntime && chmod 750 /var/log/trustruntime"
+post_uninstall_script = "systemctl stop trustruntime.service 2>/dev/null || true; systemctl disable trustruntime.service 2>/dev/null || true"
