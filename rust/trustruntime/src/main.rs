@@ -163,7 +163,9 @@ async fn graceful_shutdown(
     daemon: &mut Daemon,
     cert_checker_handle: tokio::task::JoinHandle<()>,
 ) {
-    transport.stop().await;
+    if let Err(e) = transport.stop().await {
+        log::error!("Transport stop error: {}", e);
+    }
 
     if let Err(e) = plugin_manager.shutdown_all() {
         log::error!("Plugin shutdown error: {}", e);

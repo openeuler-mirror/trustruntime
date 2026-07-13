@@ -30,7 +30,9 @@
 //! ```
 
 pub mod proc_manager;
-pub mod test_utils;
+pub mod test_cert_gen;
+pub mod test_crl_gen;
+pub mod test_helpers;
 pub mod vsock_client;
 
 /// CMS CA证书相对路径
