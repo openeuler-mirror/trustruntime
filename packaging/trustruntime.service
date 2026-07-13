@@ -1,0 +1,22 @@
+[Unit]
+Description=TrustRuntime Agent
+After=network.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/trustruntime --config /etc/trustruntime/agent.toml
+Restart=on-failure
+RestartPreventExitStatus=1
+RestartSec=5
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+StandardOutput=journal
+StandardError=journal
+CPUQuota=10%
+MemoryMax=30M
+ProtectSystem=strict
+ReadWritePaths=/var/log/trustruntime
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

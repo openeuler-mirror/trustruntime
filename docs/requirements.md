@@ -35,7 +35,7 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
 |---------|---------|---------|
 | FR-01 | 签名接口 | 输入 data，计算 sign(data + 本地签名证书id)，输出签名值和本地签名证书id（证书id用于表示发起者身份） |
 | FR-02 | 验签+签名接口 | 先验签（验证签名有效性：证书链+CRL+签名匹配，不执行身份判定），验签成功后计算 sign(data + 输入身份id)，输出签名值和身份id；验签失败直接返回错误码 |
-| FR-03 | 验签接口 | 验证验签+签名接口输出的签名，验签通过后判断：身份id==本地证书id→result=0；身份id!=本地证书id→result=1；签名方证书==本地证书→result=2 |
+| FR-03 | 验签接口 | 验证验签+签名接口输出的签名，验签通过后判断：公钥相同→result=2（安全告警）；公钥不同且ID相同→result=0；公钥不同且ID不同→result=1 |
 | FR-04 | vsock 通信 | 框架层实现 vsock listener，TLS 双向认证握手后分发消息至插件回调；框架层直接处理通用错误响应 |
 | FR-05 | 进程管理 | 框架层实现 daemon 进程初始化、信号处理、优雅退出 |
 | FR-06 | 插件管理 | 框架层定义 Plugin trait，管理插件生命周期 |
@@ -48,7 +48,7 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
 
 | 需求类型 | 需求描述 | 设计方案 |
 |---------|---------|---------|
-| 性能 | vsock 支持 16 并发连接 | tokio 异步 runtime，vsock listener 多连接并发处理 |
+| 性能 | vsock 支持 16 并发连接 | tokio 异步 runtime (4 worker threads)，vsock listener 多连接并发处理 |
 | 性能 | 单条消息最大 10KB | 框架层 vsock 读取缓冲区上限 10KB，超限返回错误响应 |
 | 安全 | TLS 双向认证，禁用不安全协议/算法/重协商 | OpenSSL 配置：仅允许 TLS 1.2/1.3，白名单算法套件，禁 renegotiation |
 | 安全 | 通信证书支持 PEM/DER 双格式 | 证书加载模块自动识别格式 |
@@ -119,10 +119,10 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
   |                               | 构建证书链: ca_root.crt，校验 CRL: cms.crl
   |                               | 执行 CMS 验签，验证 sign(data+C_id)
   |                               | 验签时忽略对端证书过期/尚未生效的 OpenSSL 错误，视为验签通过（证书过期由 cert_checker 巡检 warn）
-  |                               | 验签通过后判断：
-  |                               |   C_id == 本地证书id → result=0
-  |                               |   C_id != 本地证书id → result=1
-  |                               |   签名方证书 == 本地证书 → result=2
+|                               | 验签通过后判断：
+|                               |   公钥相同 → result=2（优先级最高）
+|                               |   公钥不同 且 C_id == 本地证书id → result=0
+|                               |   公钥不同 且 C_id != 本地证书id → result=1
   |<-- type=0x15 -----------------|
   |   {"result":0/1/2}            |
 ```
@@ -304,8 +304,8 @@ RestartPreventExitStatus=1
 RestartSec=5
 TimeoutStartSec=30s
 TimeoutStopSec=10s
-StandardOutput=null
-StandardError=null
+StandardOutput=journal
+StandardError=journal
 CPUQuota=10%
 MemoryMax=30M
 ProtectSystem=strict
