@@ -1,0 +1,14 @@
+[package]
+name = "trt-builder"
+version.workspace = true
+edition.workspace = true
+license = "Proprietary"
+description = "TrustRuntime VM Image Builder (packaging only)"
+
+[package.metadata.generate-rpm]
+name = "trustruntime-builder"
+assets = [
+    { source = "build.sh", dest = "/opt/trt_builder/build.sh", mode = "750" },
+    { source = "bootstrapd", dest = "/opt/trt_builder/bootstrapd", mode = "640" },
+    { source = "initrd.list", dest = "/opt/trt_builder/initrd.list", mode = "640" },
+]

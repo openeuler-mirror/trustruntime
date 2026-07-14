@@ -1,0 +1,28 @@
+[Unit]
+Description=TrustRuntime Launcher - Confidential VM Starter
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/bin
+ExecStart=/bin/trt_launcher run --app-conf /etc/trt_launcher/trt_launcher.conf --volume /var/log/ubm/:/var/log/ubm/ --volume /sys/firmware/dmi/tables/:/sys/firmware/dmi/tables/ --volume /var/log/trustruntime/:/var/log/trustruntime/  --qemu-args "-bios /usr/share/QEMU_EFI_CCA.fd -device vfio-hisi-mmcd,sysfsdev=/sys/bus/platform/devices/HISI05A1:00" --port-forward 127.0.0.1:34256:34255 --port-forward 127.0.0.1:10022:22
+Restart=always
+RestartSec=10
+StartLimitInterval=0
+StartLimitBurst=5
+
+#资源限制
+LimitNOFILE=65536
+LimitNPROC=65536
+MemoryMax=30M
+
+#日志设置
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trt_launcher
+
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+[package]
+name = "trt-launcher"
+version.workspace = true
+edition = "2024"
+license = "Proprietary"
+description = "TrustRuntime VM Launcher for CCA confidential computing"
+
+[[bin]]
+name = "trt_launcher"
+path = "src/main.rs"
+
+[package.metadata.generate-rpm]
+name = "trustruntime-launcher"
+assets = [
+    { source = "../target/release/trt_launcher", dest = "/bin/trt_launcher", mode = "550" },
+    { source = "conf/trt_launcher.service", dest = "/usr/lib/systemd/system/trt_launcher.service", mode = "550" },
+    { source = "conf/trt_launcher.conf", dest = "/etc/trt_launcher/trt_launcher.conf", mode = "640", config = true },
+]
+post_install_script = "mkdir -p /var/log/trustruntime && chmod 750 /var/log/trustruntime"
+post_uninstall_script = "systemctl stop trt_launcher.service 2>/dev/null || true; systemctl disable trt_launcher.service 2>/dev/null || true"
+
+[dependencies]
+tokio.workspace = true
+log.workspace = true
+log4rs.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
