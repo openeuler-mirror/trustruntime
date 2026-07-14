@@ -50,7 +50,7 @@ accepted
 
 ### 日志配置
 
-`StandardOutput=null`, `StandardError=null`：log4rs 已处理日志，避免 journal 冗余。
+`StandardOutput=journal`, `StandardError=journal`：捕获早期启动错误（log4rs 初始化前的 eprintln），运行时日志仍由 log4rs 写入文件。
 
 ### 状态通知
 
