@@ -296,6 +296,7 @@ impl VerifySignHandler {
     /// - 使用 verify_signature_only 方法
     /// - 不返回 VerifyOutcome（SameNode/OtherNode/IdentityConflict）
     /// - 验签通过即返回 Ok(())，由调用方决定是否签名
+    #[allow(clippy::type_complexity)]
     fn handle_verify_part(
         &self,
         to_verify: &ToVerify,
@@ -321,6 +322,7 @@ impl VerifySignHandler {
     /// 返回：
     /// - Ok(signed_data): 签名成功
     /// - Err(error_response): 签名失败或解码失败
+    #[allow(clippy::type_complexity)]
     fn handle_sign_part(
         &self,
         to_sign: &ToSignWithId,
@@ -594,7 +596,9 @@ mod tests {
             Ok(())
         }
 
-        async fn stop(&self) {}
+        async fn stop(&self) -> Result<(), TransportError> {
+            Ok(())
+        }
     }
 
     /// 创建测试用的CA证书和签名证书
@@ -679,7 +683,7 @@ mod tests {
     ///
     /// 封装测试所需的证书、签名器、验签器
     struct TestEnv {
-        temp_dir: tempfile::TempDir,
+        _temp_dir: tempfile::TempDir,
         signer: Arc<Signer>,
         verifier: Arc<Verifier>,
         cert_id: Vec<u8>,
@@ -712,7 +716,7 @@ mod tests {
             let verifier = Arc::new(Verifier::new(ca_cert, None, cms_cert));
 
             Self {
-                temp_dir,
+                _temp_dir: temp_dir,
                 signer,
                 verifier,
                 cert_id,

@@ -38,9 +38,6 @@ pub enum CertLoadError {
 
 /// 加载X.509证书
 ///
-/// 架构决策：PEM/DER双格式支持
-/// 详见 ADR-0004: Unified OpenSSL for TLS and CMS
-///
 /// 加载策略：先尝试PEM格式，失败后尝试DER格式，均失败则返回InvalidFormat错误
 ///
 /// # Arguments
@@ -65,9 +62,6 @@ pub fn load_x509(path: &str) -> Result<X509, CertLoadError> {
 }
 
 /// 加载私钥
-///
-/// 架构决策：PEM/DER双格式支持 + 加密私钥密码支持
-/// 详见 ADR-0004: Unified OpenSSL for TLS and CMS
 ///
 /// 加载策略：
 /// - 有密码：尝试PEM加密格式，失败后尝试PKCS8加密格式
@@ -112,9 +106,6 @@ pub fn load_private_key(
 }
 
 /// 加载CRL吊销列表
-///
-/// 架构决策：PEM/DER双格式支持
-/// 详见 ADR-0004: Unified OpenSSL for TLS and CMS
 ///
 /// 加载策略：先尝试PEM格式，失败后尝试DER格式，均失败则返回InvalidFormat错误
 ///
@@ -189,6 +180,31 @@ pub fn extract_subject_key_id(cert: &X509) -> Result<Vec<u8>, CertLoadError> {
 pub fn is_expired(cert: &X509) -> bool {
     // 过期检测：not_after < 当前时间
     cert.not_after() < openssl::asn1::Asn1Time::days_from_now(0).unwrap()
+}
+
+/// 检测证书是否尚未生效
+///
+/// 算法说明：
+/// - 比较证书的not_before时间戳与当前时间
+/// - not_before > 当前时间 → 证书尚未生效
+///
+/// # Arguments
+/// * `cert` - OpenSSL X509证书对象
+///
+/// # Returns
+/// * `true` - 证书尚未生效（not_before > 当前时间）
+/// * `false` - 证书已生效
+///
+/// # Example
+/// ```text
+/// let cert = load_x509("/path/to/cert.pem")?;
+/// if is_not_yet_valid(&cert) {
+///     println!("证书尚未生效");
+/// }
+/// ```
+pub fn is_not_yet_valid(cert: &X509) -> bool {
+    // 未生效检测：not_before > 当前时间
+    cert.not_before() > openssl::asn1::Asn1Time::days_from_now(0).unwrap()
 }
 
 #[cfg(test)]
@@ -267,6 +283,39 @@ mod tests {
         builder.set_not_after(&not_after).unwrap();
 
         let serial = BigNum::from_u32(2).unwrap();
+        builder
+            .set_serial_number(&serial.to_asn1_integer().unwrap())
+            .unwrap();
+
+        builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+        (builder.build(), pkey)
+    }
+
+    /// 生成测试用的尚未生效证书（ECC-256，365天后生效）
+    fn generate_not_yet_valid_cert() -> (X509, PKey<Private>) {
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let ec_key = EcKey::generate(&group).unwrap();
+        let pkey = PKey::from_ec_key(ec_key.clone()).unwrap();
+
+        let mut name_builder = X509NameBuilder::new().unwrap();
+        name_builder
+            .append_entry_by_text("CN", "Not Yet Valid Cert")
+            .unwrap();
+        let name = name_builder.build();
+
+        let mut builder = X509Builder::new().unwrap();
+        builder.set_version(2).unwrap();
+        builder.set_subject_name(&name).unwrap();
+        builder.set_issuer_name(&name).unwrap();
+        builder.set_pubkey(&pkey).unwrap();
+
+        // 设置尚未生效的时间范围（365天后生效，3650天后过期）
+        let not_before = Asn1Time::days_from_now(365).unwrap();
+        let not_after = Asn1Time::days_from_now(3650).unwrap();
+        builder.set_not_before(&not_before).unwrap();
+        builder.set_not_after(&not_after).unwrap();
+
+        let serial = BigNum::from_u32(3).unwrap();
         builder
             .set_serial_number(&serial.to_asn1_integer().unwrap())
             .unwrap();
@@ -510,6 +559,24 @@ mod tests {
 
         let (cert, _) = generate_test_cert();
         assert!(!is_expired(&cert));
+    }
+
+    #[test]
+    fn is_not_yet_valid_returns_true_for_future_cert() {
+        // 场景：检测尚未生效证书（not_before在未来）
+        // 预期：返回true
+
+        let (cert, _) = generate_not_yet_valid_cert();
+        assert!(is_not_yet_valid(&cert));
+    }
+
+    #[test]
+    fn is_not_yet_valid_returns_false_for_valid_cert() {
+        // 场景：检测已生效证书（not_before在过去）
+        // 预期：返回false
+
+        let (cert, _) = generate_test_cert();
+        assert!(!is_not_yet_valid(&cert));
     }
 
     #[test]

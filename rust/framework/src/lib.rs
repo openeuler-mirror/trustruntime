@@ -9,7 +9,8 @@
 //! - `core`：核心功能，包括守护进程、证书检查和信号处理
 //! - `logger`：日志系统，提供结构化日志输出
 //! - `message`：消息定义，纯数据层，包含协议消息类型
-//! - `plugin_manager`：插件管理器，负责插件加载、注册和消息分发
+//! - `plugin_manager`：插件管理器，负责插件加载和生命周期管理
+//! - `transport`：传输层抽象，定义 TransportLayer 和 DataHandler trait
 
 pub mod cert;
 pub mod communication;
@@ -18,3 +19,4 @@ pub mod core;
 pub mod logger;
 pub mod message;
 pub mod plugin_manager;
+pub mod transport;

@@ -269,7 +269,9 @@ mod tests {
             Ok(())
         }
 
-        async fn stop(&self) {}
+        async fn stop(&self) -> Result<(), TransportError> {
+            Ok(())
+        }
     }
 
     /// Mock数据处理器实现，用于测试

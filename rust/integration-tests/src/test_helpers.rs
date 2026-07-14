@@ -350,7 +350,9 @@ impl TransportLayer for MockTransport {
     }
 
     /// 停止传输层（Mock实现为空操作）
-    async fn stop(&self) {}
+    async fn stop(&self) -> Result<(), TransportError> {
+        Ok(())
+    }
 }
 
 /// 插件测试上下文
