@@ -212,6 +212,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "toml",
 ]
 
 [[package]]
@@ -1085,6 +1086,7 @@ name = "trustruntime"
 version = "0.1.0"
 dependencies = [
  "log",
+ "tempfile",
  "tokio",
  "trustring",
  "trustruntime-framework",

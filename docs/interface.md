@@ -128,8 +128,10 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
 **重要说明**：
 - result=1/2 为验签接口（0x15）通过的合法结果，不表示失败
 - result=2 优先级高于 result=1：公钥比较相同时，无论输入 id 值如何，均返回 result=2
-- 0x13 中验签步骤仅 result=0 视为通过，result≥3 均不执行签名步骤（signed_data=""、id=""）
-- 0x13 中验签通过（result=0）后签名失败，返回签名失败码（7/8/9/≥10）
+- 0x13 中验签步骤仅验证签名有效性（证书链+CRL+签名匹配），不执行身份判定
+- 0x13 中验签通过后执行签名，验签失败（result≥3）不执行签名步骤（signed_data=""、id=""）
+- 0x13 中验签通过后签名失败，返回签名失败码（7/8/9/≥10）
+- result=1/2 不适用于验签+签名接口（0x13）
 - result=10/11 由 handler 层在解析请求时返回，框架层不处理
 
 ---
@@ -317,6 +319,8 @@ pub struct PluginContext {
 
 ### 10.5 TransportLayer trait
 
+定义于 `framework::transport` 模块。
+
 ```rust
 #[async_trait]
 pub trait TransportLayer: Send + Sync {
@@ -327,6 +331,8 @@ pub trait TransportLayer: Send + Sync {
 ```
 
 ### 10.6 DataHandler trait
+
+定义于 `framework::transport` 模块。
 
 ```rust
 pub trait DataHandler: Send + Sync {

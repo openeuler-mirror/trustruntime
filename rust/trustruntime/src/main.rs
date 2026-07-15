@@ -33,9 +33,7 @@ use trustring::TrustringPlugin;
 use trustruntime_framework::communication::{TlsConfig, VsockTransport};
 use trustruntime_framework::config::AppConfig;
 use trustruntime_framework::core::{
-    cert_checker::CertificateChecker,
-    daemon::Daemon,
-    signal::SignalHandler,
+    cert_checker::CertificateChecker, daemon::Daemon, signal::SignalHandler,
 };
 use trustruntime_framework::logger;
 use trustruntime_framework::plugin_manager::{PluginContext, PluginManager};
@@ -80,7 +78,10 @@ fn init_logger(config: &AppConfig) -> Result<(), i32> {
     }
 }
 
-async fn check_certificates(config: &AppConfig, daemon: &mut Daemon) -> Result<CertificateChecker, ()> {
+async fn check_certificates(
+    config: &AppConfig,
+    daemon: &mut Daemon,
+) -> Result<CertificateChecker, ()> {
     let cert_checker = CertificateChecker::new(vec![
         config.certificate.comm_cert.clone(),
         config.certificate.signer_cert.clone(),
@@ -113,10 +114,21 @@ async fn check_certificates(config: &AppConfig, daemon: &mut Daemon) -> Result<C
 }
 
 fn create_transport(config: &AppConfig) -> Result<Arc<VsockTransport>, String> {
+    let key_password = config
+        .certificate
+        .comm_key_pwd
+        .as_ref()
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .map(|content| content.trim().to_string())
+                .map_err(|e| format!("读取私钥密码文件失败 '{}': {}", path, e))
+        })
+        .transpose()?;
+
     let tls_config = TlsConfig {
         cert_path: config.certificate.comm_cert.clone(),
         key_path: config.certificate.comm_key.clone(),
-        key_password: config.certificate.comm_key_pwd.clone(),
+        key_password,
         ca_cert_path: config.certificate.comm_ca_root.clone(),
         crl_path: config.certificate.comm_crl.clone(),
     };
@@ -140,7 +152,9 @@ fn setup_plugins(
     )
     .map_err(|e| format!("Failed to create trustring plugin: {}", e))?;
 
-    plugin_manager.add_plugin(Box::new(trustring_plugin) as Box<dyn trustruntime_framework::plugin_manager::Plugin>);
+    plugin_manager.add_plugin(
+        Box::new(trustring_plugin) as Box<dyn trustruntime_framework::plugin_manager::Plugin>
+    );
 
     let ctx = PluginContext::new(config, transport.clone());
     plugin_manager

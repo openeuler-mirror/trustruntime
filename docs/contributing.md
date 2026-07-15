@@ -247,9 +247,10 @@ let seq_bytes = seq.to_le_bytes();  // 小端序
 
 ### 3.6 异步架构
 
-- `TransportLayer` trait 使用 `async-trait`
-- `main.rs` 使用 `#[tokio::main]`
+- `TransportLayer` trait（定义于 `transport` 模块）使用 `async-trait`
+- `main.rs` 使用 `#[tokio::main(worker_threads = 4)]`
 - 并发连接使用 `tokio::sync::Semaphore`（16 permits）
+- 线程数限制为 4，足够处理最大 16 个并发连接
 
 ---
 

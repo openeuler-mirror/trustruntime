@@ -4,15 +4,15 @@
 
 ### 负责
 
-- **framework::cert**（新增模块）：通用证书加载能力——X509 证书、私钥、CRL 的 PEM/DER 双格式解析
+- **framework::cert**（新增模块）：通用证书加载能力——X509 证书、私钥、CRL 的 PEM/DER 双格式解析，证书时间有效性判断（过期、未生效）
 - **trustring::cert_loader**：业务层证书组合加载——将签名证书+私钥+CA+CRL 组合为业务上下文，提取 Subject Key ID
-- **framework::core::cert_checker**：证书过期定时巡检——每 24h 检查所有证书有效期，过期时 warn 日志
+- **framework::core::cert_checker**：证书状态定时巡检——每 24h 检查所有证书有效期（过期、未生效），异常时 warn 日志
 
 ### 不负责
 
-- **framework::cert 不负责**：证书过期判断的业务策略（由 cert_checker 和 vsock_server 各自决定）、证书路径管理（由 config 提供）
+- **framework::cert 不负责**：证书过期/未生效判断的业务策略（由 cert_checker 和 vsock_server 各自决定）、证书路径管理（由 config 提供）
 - **cert_loader 不负责**：CMS 签名/验签操作（由 sign/verify 模块负责）、通信证书加载（由 vsock_server 通过 framework::cert 加载）
-- **cert_checker 不负责**：任何通知/关闭/退出动作。检测到过期仅打印 warn 日志，不触发 vsock 关闭或进程退出
+- **cert_checker 不负责**：任何通知/关闭/退出动作。检测到过期或未生效仅打印 warn 日志，不触发 vsock 关闭或进程退出
 
 ---
 
@@ -35,6 +35,9 @@ pub fn extract_subject_key_id(cert: &X509) -> Result<Vec<u8>, CertLoadError>;
 
 /// 检查证书是否过期
 pub fn is_expired(cert: &X509) -> bool;
+
+/// 检查证书是否尚未生效
+pub fn is_not_yet_valid(cert: &X509) -> bool;
 
 pub enum CertLoadError {
     IoError(std::io::Error),
@@ -68,7 +71,9 @@ impl CertificateChecker {
 pub struct CertificateStatus {
     pub path: String,
     pub expired: bool,
-    pub not_after: Option<String>,  // 过期时间，解析失败时为 None
+    pub not_yet_valid: bool,
+    pub not_after: Option<String>,   // 过期时间，解析失败时为 None
+    pub not_before: Option<String>,  // 生效时间，解析失败时为 None
 }
 ```
 
@@ -147,20 +152,23 @@ impl CertificateRevocationList {
   |<-- Result<X509> ---------|
 ```
 
-### 证书过期巡检
+### 证书状态巡检
 
 ```
 cert_checker (后台 task)
-  |
-  |  [每 24h 触发]
-  |
-  |-- 遍历 cert_paths
-  |   |-- load_x509(path)
-  |   |-- is_expired(cert)
-  |   |   |-- true  → log::warn!("证书已过期: {path}, not_after: {time}")
-  |   |   |-- false → 跳过
-  |
-  |  [巡检结束，等待下一个 24h]
+   |
+   |  [每 24h 触发]
+   |
+   |-- 遍历 cert_paths
+   |   |-- load_x509(path)
+   |   |-- is_expired(cert)
+   |   |   |-- true  → log::warn!("证书已过期: {path}, not_after: {time}")
+   |   |   |-- false → 跳过
+   |   |-- is_not_yet_valid(cert)
+   |   |   |-- true  → log::warn!("证书尚未生效: {path}, not_before: {time}")
+   |   |   |-- false → 跳过
+   |
+   |  [巡检结束，等待下一个 24h]
 ```
 
 ### 异常场景
@@ -172,7 +180,9 @@ cert_checker (后台 task)
 | 私钥密码错误 | framework::cert | 返回 OpenSslError |
 | 巡检时证书文件被删除 | cert_checker | warn 日志（IO 错误），继续检查其他证书 |
 | 签名证书过期 | cert_checker | warn 日志，不影响签名业务 |
+| 签名证书未生效 | cert_checker | warn 日志，不影响签名业务 |
 | 通信证书运行中过期 | cert_checker | warn 日志，不关闭 vsock，不触发进程退出 |
+| 通信证书运行中变为未生效 | cert_checker | warn 日志（理论上不存在此场景）|
 
 ---
 
@@ -214,6 +224,8 @@ cert_checker (后台 task)
 | Subject Key ID 提取 | 返回正确的 20 字节哈希 |
 | 过期证书 is_expired() | 返回 true |
 | 有效证书 is_expired() | 返回 false |
+| 未生效证书 is_not_yet_valid() | 返回 true |
+| 已生效证书 is_not_yet_valid() | 返回 false |
 
 ### cert_loader 必须覆盖的场景
 
@@ -226,12 +238,13 @@ cert_checker (后台 task)
 
 | 场景 | 验证点 |
 |------|--------|
-| 全部证书有效 | check_all() 返回全部 expired=false |
+| 全部证书有效 | check_all() 返回全部 expired=false, not_yet_valid=false |
 | 部分证书过期 | 对应项 expired=true，not_after 有值 |
-| 证书文件缺失 | 对应项 expired=false，not_after=None |
+| 部分证书未生效 | 对应项 not_yet_valid=true，not_before 有值 |
+| 证书文件缺失 | 对应项 expired=false, not_yet_valid=false, not_after=None, not_before=None |
 | 定时巡检触发 | 可配置间隔（测试时设为秒级），验证周期性执行 |
 
 ### mock 策略
 
 - framework::cert: 测试用 OpenSSL 编程生成临时证书（ECC-256 自签），无需文件系统 mock
-- cert_checker: 验证 `CertificateStatus` 返回值（expired/not_after）；可配置巡检间隔加速测试
+- cert_checker: 验证 `CertificateStatus` 返回值（expired/not_yet_valid/not_after/not_before）；可配置巡检间隔加速测试

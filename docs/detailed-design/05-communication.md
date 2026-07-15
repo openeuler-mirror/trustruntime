@@ -24,7 +24,7 @@
 
 ## 2. 公开 API
 
-### TransportLayer trait（定义在 plugin_manager 模块）
+### TransportLayer trait（定义在 transport 模块）
 
 ```rust
 /// 通用通信抽象 trait
@@ -159,19 +159,67 @@ VsockTransport::new()
 ```
 start()
   |
-  |-- 创建 vsock listener，绑定端口
+  |-- 创建 vsock listener，绑定端口（backlog=128，由 vsock crate 内部设置）
   |   ↓ 失败 → TransportError::StartFailed
   |
-  |-- 循环:
-  |   |-- semaphore.acquire()          // 等待可用连接槽位
-  |   |-- listener.accept()            // 接受新连接
-  |   |   ↓ 失败 → warn 日志，继续循环
+  |-- 设置 accept 超时（SO_RCVTIMEO = 1s）
+  |   ↓ 失败 → TransportError::StartFailed
+  |
+  |-- tokio::spawn(listener_loop_async)
   |   |
-  |   |-- SslAcceptor.accept(stream)   // TLS 握手
-  |   |   ↓ 失败 → warn 日志，关闭连接，继续循环
+  |   |-- 循环 while !shutdown_signal:
+  |   |   |-- spawn_blocking(listener.accept())  // 阻塞 accept（1s 超时）
+  |   |   |   ↓ 成功 → tokio::spawn(connection_task)
+  |   |   |   ↓ 超时(EAGAIN/EWOULDBLOCK) → 继续循环（检查 shutdown_signal）
+  |   |   |   ↓ 其他失败 → warn 日志，继续循环
+  |   |   |
+  |   |   |-- connection_task:
+  |   |   |   |-- semaphore.acquire().await      // 异步等待许可
+  |   |   |   |-- spawn_blocking(TLS握手)        // 阻塞 TLS
+  |   |   |   |-- spawn_blocking(handle_conn)    // 阻塞消息处理
+  |   |   |   |-- semaphore permit 自动释放（task 结束）
   |   |
-  |   |-- tokio::spawn(handle_connection(stream, handlers, semaphore))
-  |       |-- semaphore 在 task 结束时自动 release
+  |   |-- shutdown_signal=true → 退出循环
+```
+
+### 异步任务架构图
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Tokio Runtime (4 workers)                │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  start()                                                     │
+│    └── tokio::spawn(listener_loop_async)  ← 异步任务         │
+│          │                                                   │
+│          ├── while !shutdown_signal                          │
+│          │     │                                             │
+│          │     ├── spawn_blocking(accept)  ← 阻塞操作       │
+│          │     │     └── listener.accept()                  │
+│          │     │                                             │
+│          │     └── tokio::spawn(connection_task)  ← 异步    │
+│          │           │                                       │
+│          │           ├── semaphore.acquire().await  ← 异步  │
+│          │           │                                       │
+│          │           ├── spawn_blocking(TLS握手)  ← 阻塞    │
+│          │           │     └── ssl_acceptor.accept()        │
+│          │           │                                       │
+│          │           └── spawn_blocking(handle_conn) ← 阻塞│
+│          │                 └── handle_connection_blocking() │
+│          │                                                   │
+│  stop()                                                      │
+│    └── shutdown_signal = true                                │
+│    └── await listener_handle (5s timeout)                    │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+
+关键设计点：
+- listener_loop_async: 异步监听循环，spawn_blocking 包装阻塞的 accept()
+- accept 超时: 设置 SO_RCVTIMEO=1s，确保能定期检查 shutdown_signal，实现优雅关闭
+- connection_task: 异步连接处理，semaphore.acquire().await 异步等待
+- spawn_blocking: 包装 OpenSSL TLS握手和消息处理循环（阻塞操作）
+- Semaphore: 限制16并发，异步等待不阻塞 OS 线程
+- backlog=128: 由 vsock crate v0.4.0 内部设置，内核层面缓存连接请求
 ```
 
 ### 消息处理流水线（handle_connection 内部）
@@ -240,8 +288,8 @@ handle_connection(stream, handlers, semaphore)
 | `openssl::ssl::SslAcceptor` | TLS 服务端配置 |
 | `framework::cert` | 加载通信证书（PEM/DER） |
 | `message::VsockMessage` | 报文解析/构造 |
-| `plugin_manager::TransportLayer` | 实现此 trait，提供通信抽象 |
-| `plugin_manager::DataHandler` | 接收插件注册的业务处理器 |
+| `transport::TransportLayer` | 实现此 trait，提供通信抽象 |
+| `transport::DataHandler` | 接收插件注册的业务处理器 |
 | `log` crate | 通过 `log::warn!`/`log::error!` 输出日志 |
 | `tokio` | 异步运行时、Semaphore |
 
@@ -297,6 +345,13 @@ handle_connection(stream, handlers, semaphore)
 | 16 并发连接 | 全部正常处理 |
 | 第 17 个连接 | 等待 Semaphore，不拒绝 |
 | 连接断开后释放 | Semaphore permit 释放，新连接可进入 |
+
+### 优雅关闭必须覆盖的场景
+
+| 场景 | 验证点 |
+|------|--------|
+| accept 超时后检查 shutdown_signal | stop() 调用后 1 秒内监听任务退出 |
+| socket 超时设置失败 | start() 返回错误 |
 
 ### mock 策略
 

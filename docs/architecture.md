@@ -20,6 +20,7 @@ graph TB
                 CONFIG[config<br/>配置解析]
                 LOG[logger<br/>日志系统]
                 PM[plugin_manager<br/>插件管理]
+                TR[transport<br/>传输层抽象]
                 COMM[communication<br/>通信层]
                 MSG[message<br/>报文处理]
                 CERT[cert<br/>证书工具]
@@ -109,7 +110,8 @@ graph LR
 | `config` | TOML 配置解析 | `AppConfig` |
 | `logger` | 日志初始化与管理 | `init_logger()` |
 | `plugin_manager` | 插件生命周期管理 | `Plugin`, `PluginContext`, `PluginManager` |
-| `communication` | vsock 通信 + TLS | `TransportLayer`, `DataHandler`, `VsockTransport` |
+| `transport` | 传输层抽象接口 | `TransportLayer`, `DataHandler`, `TransportError` |
+| `communication` | vsock 通信 + TLS | `VsockTransport`（实现 TransportLayer） |
 | `message` | 报文解析/构造 | `VsockHeader`, `VsockMessage` |
 | `cert` | 证书加载工具 | PEM/DER 双格式支持 |
 
@@ -140,6 +142,7 @@ graph TB
         CONFIG[config]
         LOG[logger]
         PM[plugin_manager]
+        TR[transport]
         COMM[communication]
         MSG[message]
         CERT[cert]
@@ -155,7 +158,8 @@ graph TB
 
     COMM --> MSG
     COMM --> CERT
-    PM --> COMM
+    COMM --> TR
+    PM --> TR
     CORE --> PM
     CORE --> LOG
     CORE --> CONFIG
@@ -278,12 +282,12 @@ sequenceDiagram
     CL-->>VF: LocalSKID
     VF->>VF: 判断证书身份
 
-    alt id匹配
-        VF-->>HD: result=0 (本节点签名)
-    else id不匹配
-        VF-->>HD: result=1 (其他节点签名)
-    else 公钥相同
+    alt 公钥相同
         VF-->>HD: result=2 (证书身份冲突)
+    else 公钥不同 且 id匹配
+        VF-->>HD: result=0 (本节点签名)
+    else 公钥不同 且 id不匹配
+        VF-->>HD: result=1 (其他节点签名)
     end
 
     HD-->>VS: JSON响应
