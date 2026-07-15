@@ -37,7 +37,9 @@ pub fn generate_crl_for_cert(ca_pem: &[u8], ca_key_pem: &[u8], serial_to_revoke:
     crl_builder.append_extension(crl_num_ext).unwrap();
 
     let mut temp_builder = X509Builder::new().unwrap();
-    temp_builder.set_subject_name(ca_cert.subject_name()).unwrap();
+    temp_builder
+        .set_subject_name(ca_cert.subject_name())
+        .unwrap();
     let context = temp_builder.x509v3_context(Some(&ca_cert), None);
     let aki = AuthorityKeyIdentifier::new()
         .keyid(true)

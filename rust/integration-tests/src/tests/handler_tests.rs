@@ -9,10 +9,10 @@
 //!
 //! 重点验证：DataHandler trait实现、注册机制、消息格式
 
-use trustruntime_framework::transport::{DataHandler, TransportError, TransportLayer};
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::RwLock;
-use async_trait::async_trait;
+use trustruntime_framework::transport::{DataHandler, TransportError, TransportLayer};
 
 /// 测试用Handler：返回None
 ///

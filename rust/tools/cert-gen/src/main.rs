@@ -21,11 +21,12 @@
 //! ### TLS 证书（用于 mTLS 测试）
 //! - `tls/ca.crt`: TLS CA 证书
 //! - `tls/other-ca.crt`: 另一个 CA 证书（用于测试错误的 CA）
-//! - `tls/server/node-{a,b,c}/node.{crt,key}`: 服务器证书
-//! - `tls/client/client.{crt,key}`: 客户端证书
-//! - `tls/client/revoked.{crt,key}`: 已吊销客户端证书
-//! - `tls/client/wrong-ca.{crt,key}`: 由错误 CA 签发的客户端证书
+//! - `tls/server/node-{a,b,c}/node.{crt,key}`: 服务器证书（私钥已加密）
+//! - `tls/client/client.{crt,key}`: 客户端证书（私钥已加密）
+//! - `tls/client/revoked.{crt,key}`: 已吊销客户端证书（私钥已加密）
+//! - `tls/client/wrong-ca.{crt,key}`: 由错误 CA 签发的客户端证书（私钥已加密）
 //! - `tls/client-crl.crt`: TLS 客户端 CRL
+//! - `tls/key_pwd.txt`: TLS 私钥加密密码
 //!
 //! ## 技术规格
 //!
@@ -34,6 +35,7 @@
 //! - 有效期：3650 天（约 10 年）
 //! - Subject Key Identifier（SKI）：公钥 DER 编码的 SHA-1 哈希（20 字节）
 //! - 过期证书有效期：2000-01-01 至 2010-01-01
+//! - TLS 私钥加密：AES-256-CBC，密码存储于 `tls/key_pwd.txt`
 
 mod certificate;
 mod generator;

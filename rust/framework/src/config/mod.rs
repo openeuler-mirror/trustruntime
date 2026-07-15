@@ -103,13 +103,14 @@ impl VsockConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.port == 0 {
             return Err(ConfigError::ValidationError(
-                "vsock.port must not be 0".into()
+                "vsock.port must not be 0".into(),
             ));
         }
         if self.max_connections == 0 || self.max_connections > 1024 {
-            return Err(ConfigError::ValidationError(
-                format!("vsock.max_connections must be 1-1024, got {}", self.max_connections)
-            ));
+            return Err(ConfigError::ValidationError(format!(
+                "vsock.max_connections must be 1-1024, got {}",
+                self.max_connections
+            )));
         }
         Ok(())
     }
@@ -183,14 +184,16 @@ impl LogConfig {
     /// - `Err(ConfigError::ValidationError)` - 参数超出有效范围
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.max_file_size == 0 || self.max_file_size > 100 {
-            return Err(ConfigError::ValidationError(
-                format!("log.max_file_size must be 1-100 MB, got {}", self.max_file_size)
-            ));
+            return Err(ConfigError::ValidationError(format!(
+                "log.max_file_size must be 1-100 MB, got {}",
+                self.max_file_size
+            )));
         }
         if self.max_roll_count == 0 || self.max_roll_count > 100 {
-            return Err(ConfigError::ValidationError(
-                format!("log.max_roll_count must be 1-100, got {}", self.max_roll_count)
-            ));
+            return Err(ConfigError::ValidationError(format!(
+                "log.max_roll_count must be 1-100, got {}",
+                self.max_roll_count
+            )));
         }
         Ok(())
     }
@@ -282,9 +285,10 @@ impl CertCheckConfig {
     /// - `Err(ConfigError::ValidationError)` - 参数超出有效范围
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.interval_hours == 0 || self.interval_hours > 720 {
-            return Err(ConfigError::ValidationError(
-                format!("cert_check.interval_hours must be 1-720 hours, got {}", self.interval_hours)
-            ));
+            return Err(ConfigError::ValidationError(format!(
+                "cert_check.interval_hours must be 1-720 hours, got {}",
+                self.interval_hours
+            )));
         }
         Ok(())
     }
@@ -369,8 +373,16 @@ comm_key = "/etc/cert/cms/communication/private.key"
 comm_ca_root = "/etc/cert/cms/communication/ca_root.crt"
 "#;
 
-    fn make_test_config(port: u32, max_conn: u32, level: &str, max_file: u64, max_roll: u32, interval: u64) -> String {
-        format!(r#"
+    fn make_test_config(
+        port: u32,
+        max_conn: u32,
+        level: &str,
+        max_file: u64,
+        max_roll: u32,
+        interval: u64,
+    ) -> String {
+        format!(
+            r#"
 [vsock]
 port = {}
 max_connections = {}
@@ -383,7 +395,9 @@ max_roll_count = {}
 {}
 [cert_check]
 interval_hours = {}
-"#, port, max_conn, level, max_file, max_roll, CERT_CONFIG, interval)
+"#,
+            port, max_conn, level, max_file, max_roll, CERT_CONFIG, interval
+        )
     }
 
     #[test]
@@ -400,7 +414,8 @@ interval_hours = {}
 
     #[test]
     fn parsing_minimal_toml_uses_default_values() {
-        let toml = format!(r#"
+        let toml = format!(
+            r#"
 [vsock]
 port = 12345
 
@@ -409,7 +424,9 @@ path = "/var/log/test.log"
 max_file_size = 10
 max_roll_count = 10
 {}
-"#, CERT_CONFIG);
+"#,
+            CERT_CONFIG
+        );
         let config = AppConfig::from_toml(&toml).unwrap();
         assert_eq!(config.vsock.max_connections, 16);
         assert_eq!(config.log.level, LogLevel::Info);
@@ -460,21 +477,41 @@ max_roll_count = 10
         ];
         for (name, toml) in cases {
             let config = AppConfig::from_toml(&toml).unwrap();
-            assert!(config.validate().is_err(), "{} should fail validation", name);
+            assert!(
+                config.validate().is_err(),
+                "{} should fail validation",
+                name
+            );
         }
     }
 
     #[test]
     fn validation_rejects_exceeded_limits() {
         let cases = [
-            ("max_conn>1024", make_test_config(12345, 1025, "info", 10, 10, 24)),
-            ("max_file>100", make_test_config(12345, 16, "info", 101, 10, 24)),
-            ("max_roll>100", make_test_config(12345, 16, "info", 10, 101, 24)),
-            ("interval>720", make_test_config(12345, 16, "info", 10, 10, 721)),
+            (
+                "max_conn>1024",
+                make_test_config(12345, 1025, "info", 10, 10, 24),
+            ),
+            (
+                "max_file>100",
+                make_test_config(12345, 16, "info", 101, 10, 24),
+            ),
+            (
+                "max_roll>100",
+                make_test_config(12345, 16, "info", 10, 101, 24),
+            ),
+            (
+                "interval>720",
+                make_test_config(12345, 16, "info", 10, 10, 721),
+            ),
         ];
         for (name, toml) in cases {
             let config = AppConfig::from_toml(&toml).unwrap();
-            assert!(config.validate().is_err(), "{} should fail validation", name);
+            assert!(
+                config.validate().is_err(),
+                "{} should fail validation",
+                name
+            );
         }
     }
 
@@ -482,7 +519,10 @@ max_roll_count = 10
     fn validation_accepts_boundary_values() {
         let cases = [
             ("min values", make_test_config(1, 1, "info", 1, 1, 1)),
-            ("max values", make_test_config(12345, 1024, "info", 100, 100, 720)),
+            (
+                "max values",
+                make_test_config(12345, 1024, "info", 100, 100, 720),
+            ),
         ];
         for (name, toml) in cases {
             let config = AppConfig::from_toml(&toml).unwrap();

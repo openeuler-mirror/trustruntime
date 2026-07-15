@@ -111,7 +111,6 @@ fn cc05_certificate_checker_detects_expired() {
 /// 说明：检查器正确识别有效状态
 #[test]
 fn cc06_certificate_checker_detects_valid() {
-    use trustruntime_framework::core::cert_checker::CertificateChecker;
     use openssl::asn1::Asn1Time;
     use openssl::bn::BigNum;
     use openssl::ec::{EcGroup, EcKey};
@@ -120,6 +119,7 @@ fn cc06_certificate_checker_detects_valid() {
     use openssl::pkey::PKey;
     use openssl::x509::extension::SubjectKeyIdentifier;
     use openssl::x509::{X509Builder, X509NameBuilder};
+    use trustruntime_framework::core::cert_checker::CertificateChecker;
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
@@ -128,19 +128,28 @@ fn cc06_certificate_checker_detects_valid() {
     let pkey = PKey::from_ec_key(key).expect("Failed to create PKey");
 
     let mut name = X509NameBuilder::new().expect("Failed to create name builder");
-    name.append_entry_by_text("CN", "Valid Test Cert").expect("Failed to append CN");
+    name.append_entry_by_text("CN", "Valid Test Cert")
+        .expect("Failed to append CN");
     let name = name.build();
 
     let mut builder = X509Builder::new().expect("Failed to create builder");
     builder.set_version(2).expect("Failed to set version");
-    builder.set_subject_name(&name).expect("Failed to set subject");
-    builder.set_issuer_name(&name).expect("Failed to set issuer");
+    builder
+        .set_subject_name(&name)
+        .expect("Failed to set subject");
+    builder
+        .set_issuer_name(&name)
+        .expect("Failed to set issuer");
     builder.set_pubkey(&pkey).expect("Failed to set pubkey");
 
     let not_before = Asn1Time::days_from_now(0).expect("Failed to create not_before");
     let not_after = Asn1Time::days_from_now(365).expect("Failed to create not_after");
-    builder.set_not_before(&not_before).expect("Failed to set not_before");
-    builder.set_not_after(&not_after).expect("Failed to set not_after");
+    builder
+        .set_not_before(&not_before)
+        .expect("Failed to set not_before");
+    builder
+        .set_not_after(&not_after)
+        .expect("Failed to set not_after");
 
     let serial = BigNum::from_u32(1).expect("Failed to create serial");
     builder
@@ -148,14 +157,19 @@ fn cc06_certificate_checker_detects_valid() {
         .expect("Failed to set serial");
 
     let context = builder.x509v3_context(None, None);
-    let ski = SubjectKeyIdentifier::new().build(&context).expect("Failed to build SKI");
+    let ski = SubjectKeyIdentifier::new()
+        .build(&context)
+        .expect("Failed to build SKI");
     builder.append_extension(ski).expect("Failed to append SKI");
 
-    builder.sign(&pkey, MessageDigest::sha256()).expect("Failed to sign cert");
+    builder
+        .sign(&pkey, MessageDigest::sha256())
+        .expect("Failed to sign cert");
     let cert = builder.build();
 
     let cert_path = temp_dir.path().join("valid.crt");
-    fs::write(&cert_path, cert.to_pem().expect("Failed to PEM encode")).expect("Failed to write cert");
+    fs::write(&cert_path, cert.to_pem().expect("Failed to PEM encode"))
+        .expect("Failed to write cert");
 
     let checker = CertificateChecker::new(vec![cert_path.to_str().unwrap().to_string()]);
     let statuses = checker.check_all();
@@ -173,7 +187,6 @@ fn cc06_certificate_checker_detects_valid() {
 /// 说明：检查器正确识别未生效状态
 #[test]
 fn cc07_certificate_checker_detects_not_yet_valid() {
-    use trustruntime_framework::core::cert_checker::CertificateChecker;
     use openssl::asn1::Asn1Time;
     use openssl::bn::BigNum;
     use openssl::ec::{EcGroup, EcKey};
@@ -182,6 +195,7 @@ fn cc07_certificate_checker_detects_not_yet_valid() {
     use openssl::pkey::PKey;
     use openssl::x509::extension::SubjectKeyIdentifier;
     use openssl::x509::{X509Builder, X509NameBuilder};
+    use trustruntime_framework::core::cert_checker::CertificateChecker;
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
@@ -190,19 +204,28 @@ fn cc07_certificate_checker_detects_not_yet_valid() {
     let pkey = PKey::from_ec_key(key).expect("Failed to create PKey");
 
     let mut name = X509NameBuilder::new().expect("Failed to create name builder");
-    name.append_entry_by_text("CN", "Not Yet Valid Cert").expect("Failed to append CN");
+    name.append_entry_by_text("CN", "Not Yet Valid Cert")
+        .expect("Failed to append CN");
     let name = name.build();
 
     let mut builder = X509Builder::new().expect("Failed to create builder");
     builder.set_version(2).expect("Failed to set version");
-    builder.set_subject_name(&name).expect("Failed to set subject");
-    builder.set_issuer_name(&name).expect("Failed to set issuer");
+    builder
+        .set_subject_name(&name)
+        .expect("Failed to set subject");
+    builder
+        .set_issuer_name(&name)
+        .expect("Failed to set issuer");
     builder.set_pubkey(&pkey).expect("Failed to set pubkey");
 
     let not_before = Asn1Time::days_from_now(365).expect("Failed to create not_before");
     let not_after = Asn1Time::days_from_now(3650).expect("Failed to create not_after");
-    builder.set_not_before(&not_before).expect("Failed to set not_before");
-    builder.set_not_after(&not_after).expect("Failed to set not_after");
+    builder
+        .set_not_before(&not_before)
+        .expect("Failed to set not_before");
+    builder
+        .set_not_after(&not_after)
+        .expect("Failed to set not_after");
 
     let serial = BigNum::from_u32(1).expect("Failed to create serial");
     builder
@@ -210,14 +233,19 @@ fn cc07_certificate_checker_detects_not_yet_valid() {
         .expect("Failed to set serial");
 
     let context = builder.x509v3_context(None, None);
-    let ski = SubjectKeyIdentifier::new().build(&context).expect("Failed to build SKI");
+    let ski = SubjectKeyIdentifier::new()
+        .build(&context)
+        .expect("Failed to build SKI");
     builder.append_extension(ski).expect("Failed to append SKI");
 
-    builder.sign(&pkey, MessageDigest::sha256()).expect("Failed to sign cert");
+    builder
+        .sign(&pkey, MessageDigest::sha256())
+        .expect("Failed to sign cert");
     let cert = builder.build();
 
     let cert_path = temp_dir.path().join("not_yet_valid.crt");
-    fs::write(&cert_path, cert.to_pem().expect("Failed to PEM encode")).expect("Failed to write cert");
+    fs::write(&cert_path, cert.to_pem().expect("Failed to PEM encode"))
+        .expect("Failed to write cert");
 
     let checker = CertificateChecker::new(vec![cert_path.to_str().unwrap().to_string()]);
     let statuses = checker.check_all();

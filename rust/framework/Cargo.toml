@@ -15,6 +15,7 @@ sd-notify.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 vsock.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

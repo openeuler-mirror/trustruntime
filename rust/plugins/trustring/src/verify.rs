@@ -367,8 +367,8 @@ impl Verifier {
     /// * `signer_cert_id` - 签名方证书ID（Subject Key Identifier）
     ///
     /// # Returns
-/// * `Ok(VerifyOutcome::SameNode)` - 验签通过，公钥不同且ID相同
-/// * `Ok(VerifyOutcome::OtherNode)` - 验签通过，公钥不同且ID不同
+    /// * `Ok(VerifyOutcome::SameNode)` - 验签通过，公钥不同且ID相同
+    /// * `Ok(VerifyOutcome::OtherNode)` - 验签通过，公钥不同且ID不同
     /// * `Ok(VerifyOutcome::IdentityConflict)` - 公钥相同（安全告警，优先级最高）
     /// * `Err(VerifyError)` - 验签失败
     ///
@@ -446,9 +446,9 @@ mod tests {
     ///
     /// 避免在每个测试中重复创建临时目录、证书文件、加载对象等步骤。
     struct TestEnv {
-        temp_dir: tempfile::TempDir,
-        ca_cert: CaCertificate,
-        local_cert: CmsCertificate,
+        _temp_dir: tempfile::TempDir,
+        _ca_cert: CaCertificate,
+        _local_cert: CmsCertificate,
         signer: Signer,
         verifier: Verifier,
         cert_id: Vec<u8>,
@@ -483,9 +483,9 @@ mod tests {
         let verifier = Verifier::new(ca_cert.clone(), None, local_cert.clone());
 
         TestEnv {
-            temp_dir,
-            ca_cert,
-            local_cert,
+            _temp_dir: temp_dir,
+            _ca_cert: ca_cert,
+            _local_cert: local_cert,
             signer,
             verifier,
             cert_id,
@@ -589,9 +589,7 @@ mod tests {
     ///
     /// # Returns
     /// (CA PEM, 签名者 PEM 列表, 私钥 PEM 列表)
-    fn create_ca_and_multiple_signers(
-        num_signers: usize,
-    ) -> (Vec<u8>, Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    fn create_ca_and_multiple_signers(num_signers: usize) -> (Vec<u8>, Vec<Vec<u8>>, Vec<Vec<u8>>) {
         let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
 
         let ca_key = EcKey::generate(&group).unwrap();
@@ -769,8 +767,8 @@ mod tests {
         Verifier,
         Vec<u8>,
     ) {
-        use openssl::x509::X509CrlBuilder;
         use openssl::x509::extension::{AuthorityKeyIdentifier, CrlNumber};
+        use openssl::x509::X509CrlBuilder;
 
         let temp_dir = tempfile::tempdir().unwrap();
 
@@ -800,7 +798,9 @@ mod tests {
             crl_builder.set_next_update(&next_update).unwrap();
 
             let crl_number = CrlNumber::new(BigNum::from_u32(1).unwrap()).unwrap();
-            crl_builder.append_extension(crl_number.build().unwrap()).unwrap();
+            crl_builder
+                .append_extension(crl_number.build().unwrap())
+                .unwrap();
 
             let temp_builder = X509Builder::new().unwrap();
             let context = temp_builder.x509v3_context(Some(&ca_cert), None);
@@ -916,7 +916,9 @@ mod tests {
         let data = b"test data";
         let signed = env.signer.sign(data).unwrap();
 
-        let result = env.verifier.verify_signature_only(&signed, data, &env.cert_id);
+        let result = env
+            .verifier
+            .verify_signature_only(&signed, data, &env.cert_id);
         assert!(result.is_ok());
     }
 

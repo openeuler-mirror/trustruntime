@@ -68,6 +68,7 @@ fn n01_two_node_sign_verify() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-a");
 
@@ -76,6 +77,7 @@ fn n01_two_node_sign_verify() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-b");
 
@@ -193,6 +195,7 @@ fn n02_three_node_sign_verify() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-a");
 
@@ -201,6 +204,7 @@ fn n02_three_node_sign_verify() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-b");
 
@@ -209,6 +213,7 @@ fn n02_three_node_sign_verify() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-c");
 
@@ -306,6 +311,7 @@ fn n03_single_node_sign_verify() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-a");
 

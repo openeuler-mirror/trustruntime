@@ -140,18 +140,18 @@ impl Daemon {
     /// - Ready → Stopping（开始关闭）
     /// - Stopping → Stopped（关闭完成）
     fn transition_to(&mut self, target: DaemonState) -> Result<(), String> {
-        let valid = match (&self.state, target) {
-            (DaemonState::Initializing, DaemonState::Ready) => true,
-            (DaemonState::Ready, DaemonState::Stopping) => true,
-            (DaemonState::Stopping, DaemonState::Stopped) => true,
-            _ => false,
-        };
+        let valid = matches!(
+            (&self.state, target),
+            (DaemonState::Initializing, DaemonState::Ready)
+                | (DaemonState::Ready, DaemonState::Stopping)
+                | (DaemonState::Stopping, DaemonState::Stopped)
+        );
 
         if !valid {
             return Err(format!(
-                "Invalid state transition: cannot transition from {} to {}",
+                "Invalid state transition: cannot transition from {} to {:?}",
                 self.state_name(),
-                format!("{:?}", target)
+                target
             ));
         }
 

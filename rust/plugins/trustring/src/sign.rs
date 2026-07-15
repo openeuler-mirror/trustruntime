@@ -129,7 +129,7 @@ impl Signer {
     fn sign_with_input(&self, data: &[u8], id: &[u8]) -> Result<Vec<u8>, SignError> {
         let mut input = data.to_vec();
         input.extend_from_slice(id);
-        
+
         let cms = openssl::cms::CmsContentInfo::sign(
             Some(&self.cert),
             Some(&self.key),
@@ -137,7 +137,7 @@ impl Signer {
             Some(&input),
             CMSOptions::BINARY,
         )?;
-        
+
         Ok(cms.to_der()?)
     }
 }
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn signer_new_from_cms_certificate() {
         let temp_dir = tempfile::tempdir().unwrap();
-        
+
         let (cert_pem, key_pem) = create_test_cert_and_key();
         let cert_path = temp_dir.path().join("signer.crt");
         let key_path = temp_dir.path().join("signer.key");
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn sign_returns_der_bytes() {
         let temp_dir = tempfile::tempdir().unwrap();
-        
+
         let (cert_pem, key_pem) = create_test_cert_and_key();
         let cert_path = temp_dir.path().join("signer.crt");
         let key_path = temp_dir.path().join("signer.key");
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn sign_with_id_uses_external_cert_id() {
         let temp_dir = tempfile::tempdir().unwrap();
-        
+
         let (cert_pem, key_pem) = create_test_cert_and_key();
         let cert_path = temp_dir.path().join("signer.crt");
         let key_path = temp_dir.path().join("signer.key");
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn cert_id_returns_subject_key_id() {
         let temp_dir = tempfile::tempdir().unwrap();
-        
+
         let (cert_pem, key_pem) = create_test_cert_and_key();
         let cert_path = temp_dir.path().join("signer.crt");
         let key_path = temp_dir.path().join("signer.key");
