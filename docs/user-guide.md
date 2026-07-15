@@ -451,7 +451,52 @@ RUST_LOG=debug systemctl restart trustruntime
 
 ---
 
-## 8. 相关文档
+## 8. 示例代码
+
+项目提供 Rust 示例代码，演示如何调用 TrustRuntime 接口：
+
+| 示例文件 | 功能 |
+|----------|------|
+| `sign_example.rs` | 签名接口 (0x10→0x11) |
+| `verify_example.rs` | 验签接口 (0x14→0x15) |
+| `verify_and_sign_example.rs` | 验签+签名接口 (0x12→0x13) |
+
+示例代码位置：`rust/examples/`
+
+### 运行示例
+
+```bash
+cd rust
+
+# 运行签名示例
+cargo run --example sign_example
+
+# 运行验签示例
+cargo run --example verify_example
+
+# 运行验签+签名示例
+cargo run --example verify_and_sign_example
+```
+
+### 前置条件
+
+运行示例前需确保：
+- TrustRuntime 服务已启动
+- 客户端证书已配置
+
+可通过环境变量配置连接参数：
+
+```bash
+export TRUSTRUNTIME_CID=3
+export TRUSTRUNTIME_PORT=12345
+export TRUSTRUNTIME_CLIENT_CERT=/path/to/client.crt
+export TRUSTRUNTIME_CLIENT_KEY=/path/to/client.key
+export TRUSTRUNTIME_CA_CERT=/path/to/ca_root.crt
+```
+
+---
+
+## 9. 相关文档
 
 - [接口文档](interface.md)
 - [架构设计](architecture.md)

@@ -20,3 +20,17 @@ accepted
 - `PluginContext` 需要传递 `&dyn TransportLayer` 给插件
 - 插件内部状态需要 `Arc` 包裹以支持并发 handler 调用
 - main.rs 负责接线：创建 Transport → 创建 PluginManager → init_all(ctx{transport}) → transport.start()
+
+## Implementation Notes
+
+2026-07-06: 为避免反向依赖问题（communication 模块依赖 plugin_manager），将 `TransportLayer` trait、`DataHandler` trait 和 `TransportError` 从 `plugin_manager` 模块移动到独立的 `transport` 模块。
+
+新的依赖方向：
+```
+communication/vsock_server → transport ← plugin_manager
+```
+
+模块位置：
+- `framework/src/transport/mod.rs`: 定义 `TransportLayer` trait、`DataHandler` trait、`TransportError`
+- `framework/src/communication/vsock_server/mod.rs`: `VsockTransport` 实现 `TransportLayer`
+- `framework/src/plugin_manager/mod.rs`: `PluginContext` 引用 `transport::TransportLayer`

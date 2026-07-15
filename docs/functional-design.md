@@ -43,11 +43,12 @@ rust/framework/
 │   │   ├── mod.rs                # log + log4rs，按大小滚动，gzip 归档
 │   ├── message/                  # 报文解析/构造
 │   │   ├── mod.rs                # VsockHeader、VsockMessage结构定义
-│   ├── plugin_manager/           # 插件生命周期管理 + 通信抽象
+│   ├── plugin_manager/           # 插件生命周期管理
 │   │   ├── mod.rs
 │   │   ├── plugin_trait.rs       # Plugin trait、PluginError
 │   │   ├── context.rs            # PluginContext定义
-│   │   ├── transport.rs          # TransportLayer trait、DataHandler trait
+│   ├── transport/                # TransportLayer trait、DataHandler trait
+│   │   ├── mod.rs
 │   ├── communication/            # 通信层
 │   │   ├── mod.rs
 │   │   ├── vsock_server/         # vsock listener + TLS封装（实现 TransportLayer）
@@ -70,6 +71,7 @@ rust/framework/
 | message | 报文序列化/反序列化（结构体↔字节流） | 协议版本校验、长度校验、业务解析 | 纯数据转换，校验归属 vsock_server |
 | logger | 初始化日志系统、配置回滚策略 | 各模块日志内容 | 仅初始化，日志内容由调用方决定 |
 | plugin_manager | Plugin trait 定义、生命周期管理 | 业务 handler 实现 | 仅管理生命周期，业务由 trustring 实现 |
+| transport | TransportLayer trait、DataHandler trait 定义 | 具体通信实现 | 定义通信抽象，实现由 communication 模块提供 |
 | communication::tls | TLS 双向认证配置、算法白名单 | vsock 连接管理 | 仅 TLS 配置，连接由 vsock_server 管理 |
 | communication::vsock_server | vsock listener、连接并发、消息分发 | TLS 配置细节 | 实现 TransportLayer，依赖 tls 模块 |
 
@@ -129,7 +131,7 @@ trustruntime (binary) ──→ framework (library)
 trustring (library)  ──→ framework (library)
 ```
 
-- `framework`：定义 Plugin trait、PluginContext、TransportLayer trait、DataHandler trait、VsockMessage 等基础设施
+- `framework`：定义 Plugin trait、PluginContext、TransportLayer trait、DataHandler trait（transport 模块）、VsockMessage 等基础设施
 - `trustring`：依赖 framework，实现 Plugin trait 和 DataHandler trait，提供签名验签业务
 - `trustruntime`：依赖 framework + trustring，组装启动
 
@@ -160,7 +162,7 @@ trustring (library)  ──→ framework (library)
 
 | 需求类型 | 需求描述 | 参与模块 | 实现方式 | 方案选择原因 |
 |----------|---------|---------|----------|-------------|
-| 性能 | 16 并发连接 | vsock_server | tokio async runtime + Semaphore(16) | Semaphore 精确控制并发数，防止资源耗尽；tokio 异步高效处理多连接 |
+| 性能 | 16 并发连接 | vsock_server | tokio async runtime (4 worker threads) + Semaphore(16) | 4线程足够处理16并发；Semaphore 精确控制并发数，防止资源耗尽 |
 | 性能 | 10KB 消息上限 | vsock_server + message | vsock_server 校验 header.len，超限返回 type=0x02 | 10KB 满足签名数据需求，防止大报文攻击；框架层统一处理避免业务层负担 |
 | 安全 | TLS 双向认证 | tls | OpenSSL SslAcceptor + 白名单算法套件 + CRL 校验 | 双向认证防伪造客户端；白名单禁用弱算法；CRL 防止吊销证书连接 |
 | 安全 | PEM/DER 双格式 | cert + cert_loader | 自动识别 PEM/DER 格式解析 | 支持两种常见格式，降低运维门槛；统一接口避免格式转换 |
@@ -342,6 +344,7 @@ interval_hours = 24         # 证书巡检间隔（可选）
 | VerifyContext | trustring::cert_loader | 进程级 | CA+CRL 加载对象，init 时加载 |
 | TlsContext | tls | 进程级 | TLS 配置+通信证书，init 时加载 |
 | PluginInstance | plugin_manager | 进程级 | 业务插件实例（trustring），框架管理生命周期 |
+| TransportLayer | transport | 进程级 | 通信层抽象接口（由 VsockTransport 实现） |
 
 ### 5.2 数据在各模块间的流转
 

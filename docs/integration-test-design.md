@@ -57,24 +57,32 @@ rust/
 │   │   ├── lib.rs                 # 公共模块导出
 │   │   ├── proc_manager.rs        # 进程启动管理
 │   │   ├── vsock_client.rs        # vsock客户端封装
-│   │   ├── test_utils.rs          # 测试辅助函数（含证书生成）
+│   │   ├── test_cert_gen.rs       # 测试证书生成
+│   │   ├── test_crl_gen.rs        # CRL吊销列表生成
+│   │   ├── test_helpers.rs        # 测试辅助工具（路径管理、断言辅助）
 │   │   └── tests/
 │   │       ├── normal_scenarios.rs    # 正常场景测试
 │   │       ├── error_scenarios.rs     # 异常场景测试
 │   │       ├── boundary_scenarios.rs  # 边界场景测试
-│   │       └── communication_tests.rs # 通信层测试
+│   │       ├── communication_tests.rs # 通信层测试
+│   │       ├── cert_check_tests.rs    # 证书检查测试
+│   │       ├── handler_tests.rs       # Handler层测试
+│   │       ├── lifecycle_tests.rs     # 进程生命周期测试
+│   │       ├── tls_debug_test.rs      # TLS调试测试
+│   │       └── proc_debug_test.rs     # 进程调试测试
 ```
 
 ### 2.3 证书生成策略
 
-测试证书在 `test_utils.rs` 中通过 OpenSSL 编程生成，无需独立工具：
+测试证书在 `test_cert_gen.rs` 中通过 OpenSSL 编程生成，无需独立工具：
 
 - 正常证书（CA、节点A/B/C）：运行时生成临时证书
 - 过期证书：使用固定时间戳（Unix epoch）构造
+- 未生效证书：not_before 设置为未来时间（365天后）
 - 被吊销证书：生成 CRL 并加入对应证书序列号
 - 自签名证书：issuer 与 subject 相同
 
-**证书生成函数**（test_utils.rs）：
+**证书生成函数**（test_cert_gen.rs）：
 
 ```rust
 pub fn generate_ca_and_signer() -> (Vec<u8>, Vec<u8>, Vec<u8>);
@@ -288,6 +296,34 @@ comm_ca_root = "test-certs/tls/ca.crt"
 
 ---
 
+### 4.5 证书检查测试场景
+
+证书检查测试验证 `CertificateChecker` 的证书状态检测能力，包括过期检测和未生效检测。
+
+**执行环境**：无需 vsock 环境，使用 OpenSSL 编程生成临时证书进行测试。
+
+#### 4.5.1 配置解析场景
+
+| 编号 | 场景名称 | 描述 | 验证点 |
+|------|----------|------|--------|
+| CC03 | 周期检查间隔默认值 | 解析不包含 cert_check 配置的 TOML | interval_hours=24 |
+| CC04 | 周期检查间隔自定义值 | 解析包含 interval_hours=48 的配置 | interval_hours=48 |
+
+#### 4.5.2 证书状态检测场景
+
+| 编号 | 场景名称 | 描述 | 验证点 |
+|------|----------|------|--------|
+| CC05 | 过期证书检测 | 使用 CertificateChecker 检查已过期证书 | expired=true |
+| CC06 | 有效证书检测 | 使用 CertificateChecker 检查有效证书（365天有效期） | expired=false, not_yet_valid=false |
+| CC07 | 未生效证书检测 | 使用 CertificateChecker 检查尚未生效证书（not_before在未来365天） | not_yet_valid=true, expired=false |
+
+**证书生成方式**：
+- 过期证书：not_before/not_after 使用固定时间戳（2000-2001年）
+- 未生效证书：not_before = days_from_now(365)，not_after = days_from_now(3650)
+- 有效证书：not_before = days_from_now(0)，not_after = days_from_now(365)
+
+---
+
 ## 5. 测试用例详细设计
 
 ### 5.1 正常场景用例表
@@ -327,7 +363,7 @@ comm_ca_root = "test-certs/tls/ca.crt"
 
 **验证点**：
 - 步骤2：A验签A签名通过（仅验证签名有效性，不做身份判定），A签名使用idA，返回result=0
-- 步骤3：A验签A签名，验签通过后执行身份判定：输入id=idA，A本地id=idA，id相同，签名方证书=A证书（公钥相同），返回result=2（证书身份冲突，优先级高于result=0）
+- 步骤3：A验签A签名，验签通过后执行身份判定：签名方证书=A证书（公钥相同），返回result=2（公钥相同，优先级最高）
 
 ### 5.2 异常场景用例表
 
@@ -555,7 +591,7 @@ cargo test --release boundary_scenarios
 cargo test --release communication_tests
 ```
 
-**注意**：测试证书由 `test_utils.rs` 在运行时自动生成，无需预生成。
+**注意**：测试证书由 `test_cert_gen.rs` 在运行时自动生成，无需预生成。
 
 ### 6.2 进程启动流程（测试代码内部）
 
@@ -602,15 +638,21 @@ pm.start_node(config)?;
 
 ### 7.1 证书生成辅助函数
 
-**文件**：`rust/integration-tests/src/test_utils.rs`
+**文件**：`rust/integration-tests/src/test_cert_gen.rs`
 
 **功能**：
 - 生成CA根证书和签名证书
 - 生成过期签名证书（固定时间戳）
 - 生成被吊销签名证书（并生成CRL）
 - 生成自签名证书
+
+**文件**：`rust/integration-tests/src/test_helpers.rs`
+
+**功能**：
 - 构造测试请求JSON
 - 解析测试响应
+- 路径管理辅助函数
+- 插件测试上下文
 
 **主要函数**：
 
@@ -764,6 +806,8 @@ fn b03_message_too_long() { ... }
 
 | 版本 | 日期 | 修订内容 |
 |------|------|----------|
+| V1.4 | 2026-07-15 | 修正模块名称：test_utils.rs 拆分为 test_cert_gen.rs、test_crl_gen.rs、test_helpers.rs 三个模块 |
+| V1.3 | 2026-07-02 | 新增证书检查测试设计：4.5证书检查测试场景（CC03-CC07），覆盖配置解析和证书状态检测（过期、未生效）；更新测试crate结构 |
 | V1.2 | 2026-06-27 | 修正测试代码结构：移除独立证书生成工具，改为test_utils.rs运行时生成；更新进程管理和vsock_client接口描述与实际代码一致 |
 | V1.1 | 2026-06-24 | 新增通信层测试设计：4.4通信层测试场景（C01-C06）、5.4通信层场景用例表、扩展TLS异常测试证书、调整边界场景编号 |
 | V1.0 | 2026-06-23 | 初始版本：定义集成测试架构、场景设计、用例详细设计、执行流程 |
