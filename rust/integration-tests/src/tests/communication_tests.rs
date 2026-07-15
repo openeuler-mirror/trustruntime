@@ -58,6 +58,7 @@ fn c01_tls_mutual_auth_success() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect with TLS");
 
@@ -109,6 +110,7 @@ fn c02_client_cert_crl_revoked() {
         &paths.tls_ca_cert(),
         &paths.tls_client_revoked_cert(),
         &paths.tls_client_revoked_key(),
+        None,
     );
 
     assert!(
@@ -161,6 +163,7 @@ fn c03_client_cert_wrong_ca() {
         &paths.tls_ca_cert(),
         &paths.tls_client_wrong_ca_cert(),
         &paths.tls_client_wrong_ca_key(),
+        None,
     );
 
     assert!(
@@ -220,6 +223,7 @@ fn c04_client_cert_invalid() {
         &paths.tls_ca_cert(),
         &invalid_cert_path,
         &invalid_key_path,
+        None,
     );
 
     assert!(
@@ -272,6 +276,7 @@ fn c05_message_too_long() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect with TLS");
 
@@ -325,6 +330,7 @@ fn c06_version_mismatch() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect with TLS");
 
@@ -378,6 +384,7 @@ fn c07_byte_order_le_consistency() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect with TLS");
 
@@ -386,8 +393,14 @@ fn c07_byte_order_le_consistency() {
         .sign("test data for byte order consistency")
         .expect("Sign request with LE byte order should succeed");
 
-    assert_eq!(sign_resp.result, 0, "Expected successful sign result with LE byte order");
-    assert!(!sign_resp.signed_data.is_empty(), "signed_data should not be empty");
+    assert_eq!(
+        sign_resp.result, 0,
+        "Expected successful sign result with LE byte order"
+    );
+    assert!(
+        !sign_resp.signed_data.is_empty(),
+        "signed_data should not be empty"
+    );
     assert!(!sign_resp.id.is_empty(), "id should not be empty");
 
     client.close().expect("Failed to close client");
@@ -428,13 +441,14 @@ fn c08_version_mismatch_rejection() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect with TLS");
 
     // Test version mismatch (wrong version number)
     // Note: This test uses send_raw_header which allows sending wrong version
     // to verify server rejects it with type=0x01
-    let wrong_version: u32 = 0xDEADBEEF;  // Invalid version
+    let wrong_version: u32 = 0xDEADBEEF; // Invalid version
     let result = client.send_raw_header(wrong_version, MSG_TYPE_SIGN_REQ, 10);
 
     assert!(result.is_ok(), "send_raw_header should succeed");
@@ -463,8 +477,8 @@ fn c08_version_mismatch_rejection() {
 #[test]
 #[ignore = "requires Linux environment (vsock) and certificates, TLS certificate chain issue pending fix"]
 fn c09_concurrent_16_connections() {
-    use std::thread;
     use std::sync::mpsc;
+    use std::thread;
 
     let paths = TestPaths::new();
     let manager = ProcessManager::new(paths.binary_path.clone(), paths.cert_base.clone());
@@ -494,18 +508,19 @@ fn c09_concurrent_16_connections() {
         let tls_key = paths.tls_client_key();
 
         let handle = thread::spawn(move || {
-            let mut client = VsockClient::connect(
-                12345,
-                &tls_ca,
-                &tls_cert,
-                &tls_key,
-            ).expect(&format!("Failed to connect client {}", i));
+            let mut client = VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, None)
+                .unwrap_or_else(|e| panic!("Failed to connect client {}: {}", i, e));
 
-            let resp = client.sign(&format!("test data {}", i))
-                .expect(&format!("Sign request {} failed", i));
+            let resp = client
+                .sign(&format!("test data {}", i))
+                .unwrap_or_else(|e| panic!("Sign request {} failed: {}", i, e));
 
-            tx_clone.send((i, resp.result)).expect("Failed to send result");
-            client.close().expect(&format!("Failed to close client {}", i));
+            tx_clone
+                .send((i, resp.result))
+                .expect("Failed to send result");
+            client
+                .close()
+                .unwrap_or_else(|e| panic!("Failed to close client {}: {}", i, e));
         });
 
         handles.push(handle);
@@ -571,12 +586,8 @@ fn c10_semaphore_limit_wait() {
         let tls_key = paths.tls_client_key();
 
         let handle = thread::spawn(move || {
-            let mut client = VsockClient::connect(
-                12345,
-                &tls_ca,
-                &tls_cert,
-                &tls_key,
-            ).expect(&format!("Failed to connect long client {}", i));
+            let mut client = VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, None)
+                .unwrap_or_else(|e| panic!("Failed to connect long client {}: {}", i, e));
 
             // Keep connection alive by doing multiple requests
             for _ in 0..5 {
@@ -584,7 +595,9 @@ fn c10_semaphore_limit_wait() {
                 client.sign("keep alive data").ok();
             }
 
-            client.close().expect(&format!("Failed to close long client {}", i));
+            client
+                .close()
+                .unwrap_or_else(|e| panic!("Failed to close long client {}: {}", i, e));
         });
 
         long_handles.push(handle);
@@ -599,18 +612,19 @@ fn c10_semaphore_limit_wait() {
     let tls_key = paths.tls_client_key();
 
     let start_time = std::time::Instant::now();
-    let mut client_17 = VsockClient::connect(
-        12345,
-        &tls_ca,
-        &tls_cert,
-        &tls_key,
-    ).expect("Failed to connect client 17");
+    let mut client_17 = VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, None)
+        .expect("Failed to connect client 17");
 
     // Connection should eventually succeed (after one of the 16 releases)
     let elapsed = start_time.elapsed();
-    assert!(elapsed < Duration::from_secs(10), "Connection 17 should succeed within 10s");
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "Connection 17 should succeed within 10s"
+    );
 
-    let resp = client_17.sign("test data 17").expect("Sign request 17 failed");
+    let resp = client_17
+        .sign("test data 17")
+        .expect("Sign request 17 failed");
     assert_eq!(resp.result, 0, "Client 17 should have successful result");
 
     client_17.close().expect("Failed to close client 17");
@@ -664,16 +678,14 @@ fn c11_semaphore_release_after_disconnect() {
         let tls_key = paths.tls_client_key();
 
         let handle = thread::spawn(move || {
-            let mut client = VsockClient::connect(
-                12345,
-                &tls_ca,
-                &tls_cert,
-                &tls_key,
-            ).expect(&format!("Failed to connect client {}", i));
+            let mut client = VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, None)
+                .unwrap_or_else(|e| panic!("Failed to connect client {}: {}", i, e));
 
             client.sign(&format!("test data {}", i)).ok();
             // Immediately close to release semaphore
-            client.close().expect(&format!("Failed to close client {}", i));
+            client
+                .close()
+                .unwrap_or_else(|e| panic!("Failed to close client {}: {}", i, e));
         });
 
         handles.push(handle);
@@ -692,18 +704,21 @@ fn c11_semaphore_release_after_disconnect() {
         let tls_key = paths.tls_client_key();
 
         let handle = thread::spawn(move || {
-            let mut client = VsockClient::connect(
-                12345,
-                &tls_ca,
-                &tls_cert,
-                &tls_key,
-            ).expect(&format!("Failed to connect new client {}", i));
+            let mut client = VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, None)
+                .unwrap_or_else(|e| panic!("Failed to connect new client {}: {}", i, e));
 
-            let resp = client.sign(&format!("new test data {}", i))
-                .expect(&format!("Sign request new {} failed", i));
+            let resp = client
+                .sign(&format!("new test data {}", i))
+                .unwrap_or_else(|e| panic!("Sign request new {} failed: {}", i, e));
 
-            assert_eq!(resp.result, 0, "New client {} should have successful result", i);
-            client.close().expect(&format!("Failed to close new client {}", i));
+            assert_eq!(
+                resp.result, 0,
+                "New client {} should have successful result",
+                i
+            );
+            client
+                .close()
+                .unwrap_or_else(|e| panic!("Failed to close new client {}: {}", i, e));
         });
 
         new_handles.push(handle);

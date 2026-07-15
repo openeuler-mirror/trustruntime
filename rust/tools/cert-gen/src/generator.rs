@@ -1,4 +1,5 @@
 use openssl::ec::EcGroup;
+use openssl::symm::Cipher;
 use openssl::x509::X509;
 use std::fs;
 use std::path::Path;
@@ -111,6 +112,10 @@ pub fn generate_tls_certificates(output_path: &Path, group: &EcGroup) {
     let tls_dir = output_path.join("tls");
     fs::create_dir_all(&tls_dir).expect("Failed to create tls directory");
 
+    let key_password = b"MyPasswd123";
+    fs::write(tls_dir.join("key_pwd.txt"), key_password)
+        .expect("Failed to write key password file");
+
     let (ca_cert, ca_pkey, _) = create_ca_cert(group, "TLS Test CA");
     fs::write(
         tls_dir.join("ca.crt"),
@@ -139,8 +144,8 @@ pub fn generate_tls_certificates(output_path: &Path, group: &EcGroup) {
         .expect("Failed to write cert");
         fs::write(
             server_dir.join("node.key"),
-            key.private_key_to_pem_pkcs8()
-                .expect("Failed to PEM encode"),
+            key.private_key_to_pem_pkcs8_passphrase(Cipher::aes_256_cbc(), key_password)
+                .expect("Failed to encrypt and PEM encode key"),
         )
         .expect("Failed to write key");
 
@@ -160,8 +165,8 @@ pub fn generate_tls_certificates(output_path: &Path, group: &EcGroup) {
     fs::write(
         client_dir.join("client.key"),
         client_key
-            .private_key_to_pem_pkcs8()
-            .expect("Failed to PEM encode"),
+            .private_key_to_pem_pkcs8_passphrase(Cipher::aes_256_cbc(), key_password)
+            .expect("Failed to encrypt and PEM encode key"),
     )
     .expect("Failed to write client key");
     println!("Generated TLS client certificate");
@@ -176,8 +181,8 @@ pub fn generate_tls_certificates(output_path: &Path, group: &EcGroup) {
     fs::write(
         client_dir.join("revoked.key"),
         revoked_client_key
-            .private_key_to_pem_pkcs8()
-            .expect("Failed to PEM encode"),
+            .private_key_to_pem_pkcs8_passphrase(Cipher::aes_256_cbc(), key_password)
+            .expect("Failed to encrypt and PEM encode key"),
     )
     .expect("Failed to write revoked client key");
     println!("Generated TLS revoked client certificate");
@@ -192,8 +197,8 @@ pub fn generate_tls_certificates(output_path: &Path, group: &EcGroup) {
     fs::write(
         client_dir.join("wrong-ca.key"),
         wrong_ca_client_key
-            .private_key_to_pem_pkcs8()
-            .expect("Failed to PEM encode"),
+            .private_key_to_pem_pkcs8_passphrase(Cipher::aes_256_cbc(), key_password)
+            .expect("Failed to encrypt and PEM encode key"),
     )
     .expect("Failed to write wrong-ca client key");
     println!("Generated TLS wrong-ca client certificate");

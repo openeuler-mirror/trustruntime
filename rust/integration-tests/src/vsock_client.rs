@@ -12,7 +12,7 @@
 //! ## 使用示例
 //! ```text
 //! // 连接服务端
-//! let client = VsockClient::connect(port, tls_ca, client_cert, client_key)?;
+//! let client = VsockClient::connect(port, tls_ca, client_cert, client_key, None)?;
 //! // 发送签名请求
 //! let response = client.sign("test data")?;
 //! ```
@@ -197,6 +197,7 @@ impl VsockClient {
     /// * `tls_ca_cert` - TLS CA证书路径
     /// * `tls_client_cert` - TLS客户端证书路径
     /// * `tls_client_key` - TLS客户端私钥路径
+    /// * `key_password` - 私钥密码（可选，用于加密私钥）
     ///
     /// # Returns
     /// 成功返回客户端实例
@@ -208,6 +209,7 @@ impl VsockClient {
         tls_ca_cert: &PathBuf,
         tls_client_cert: &PathBuf,
         tls_client_key: &PathBuf,
+        key_password: Option<&str>,
     ) -> Result<Self, VsockError> {
         // 使用VMADDR_CID_LOCAL (1) 作为连接CID
         let cid: u32 = 1;
@@ -215,8 +217,14 @@ impl VsockClient {
         let raw_stream =
             connect_vsock(cid, port).map_err(|e| VsockError::ConnectionFailed(e.to_string()))?;
 
-        let tls_stream = wrap_with_tls(raw_stream, tls_ca_cert, tls_client_cert, tls_client_key)
-            .map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
+        let tls_stream = wrap_with_tls(
+            raw_stream,
+            tls_ca_cert,
+            tls_client_cert,
+            tls_client_key,
+            key_password,
+        )
+        .map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
 
         Ok(Self {
             stream: Box::new(tls_stream),
@@ -549,7 +557,9 @@ fn wrap_with_tls(
     ca_cert: &PathBuf,
     client_cert: &PathBuf,
     client_key: &PathBuf,
+    key_password: Option<&str>,
 ) -> Result<openssl::ssl::SslStream<vsock::VsockStream>, VsockError> {
+    use openssl::pkey::PKey;
     use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
     use openssl::x509::X509;
 
@@ -566,18 +576,26 @@ fn wrap_with_tls(
         .add_cert(ca)
         .map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
 
-    let _client_cert_pem =
-        std::fs::read(client_cert).map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
-    let _client_key_pem =
-        std::fs::read(client_key).map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
-
-    // 加载客户端证书和私钥
+    // 加载客户端证书
     builder
         .set_certificate_file(client_cert, openssl::ssl::SslFiletype::PEM)
         .map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
-    builder
-        .set_private_key_file(client_key, openssl::ssl::SslFiletype::PEM)
-        .map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
+
+    // 加载客户端私钥（支持加密私钥）
+    if let Some(pwd) = key_password {
+        let key_data =
+            std::fs::read(client_key).map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
+        let pkey = PKey::private_key_from_pem_passphrase(&key_data, pwd.as_bytes())
+            .or_else(|_| PKey::private_key_from_pkcs8_passphrase(&key_data, pwd.as_bytes()))
+            .map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
+        builder
+            .set_private_key(&pkey)
+            .map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
+    } else {
+        builder
+            .set_private_key_file(client_key, openssl::ssl::SslFiletype::PEM)
+            .map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
+    }
 
     // 启用服务端证书验证
     builder.set_verify(SslVerifyMode::PEER);
@@ -597,6 +615,7 @@ fn wrap_with_tls(
     _ca_cert: &PathBuf,
     _client_cert: &PathBuf,
     _client_key: &PathBuf,
+    _key_password: Option<&str>,
 ) -> Result<std::net::TcpStream, VsockError> {
     Ok(stream)
 }

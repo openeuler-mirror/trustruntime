@@ -4,7 +4,9 @@
 //!
 //! ## 模块结构
 //! - `vsock_client`: vsock客户端，用于发送签名/验签请求
-//! - `test_utils`: 测试辅助工具，包括证书生成、临时目录管理
+//! - `test_cert_gen`: 测试证书生成（CA、签名者、过期、吊销等）
+//! - `test_helpers`: 测试辅助工具（路径管理、插件测试上下文、断言辅助）
+//! - `test_crl_gen`: CRL吊销列表生成
 //! - `proc_manager`: 进程管理器，负责启动/停止trustruntime进程
 //!
 //! ## 测试场景覆盖

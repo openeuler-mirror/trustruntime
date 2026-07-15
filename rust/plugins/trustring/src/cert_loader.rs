@@ -118,6 +118,14 @@ pub(crate) struct CaCertificate {
     cert: X509,
 }
 
+impl Clone for CaCertificate {
+    fn clone(&self) -> Self {
+        Self {
+            cert: self.cert.clone(),
+        }
+    }
+}
+
 impl CaCertificate {
     /// 加载CA根证书
     ///

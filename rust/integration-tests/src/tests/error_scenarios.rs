@@ -104,6 +104,7 @@ fn e01_signature_mismatch() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-a");
 
@@ -112,6 +113,7 @@ fn e01_signature_mismatch() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-b");
 
@@ -183,6 +185,7 @@ fn e02_certificate_chain_invalid() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to self-signed node");
 
@@ -191,6 +194,7 @@ fn e02_certificate_chain_invalid() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-b");
 
@@ -260,6 +264,7 @@ fn e03_crl_revoked() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to revoked node");
 
@@ -268,6 +273,7 @@ fn e03_crl_revoked() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-b");
 
@@ -324,6 +330,7 @@ fn e04_cms_format_error() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-b");
 
@@ -375,6 +382,7 @@ fn e05_json_parse_error() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-b");
 
@@ -428,6 +436,7 @@ fn e06_base64_decode_error() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
+        None,
     )
     .expect("Failed to connect to node-b");
 

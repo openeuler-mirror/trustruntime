@@ -271,7 +271,7 @@ impl log4rs::encode::Encode for BasenameEncoder {
             .level(record.level())
             .target(record.target())
             .module_path(record.module_path())
-            .file(Some(file))  // 替换为截取后的文件名
+            .file(Some(file)) // 替换为截取后的文件名
             .line(record.line())
             .args(args);
 
@@ -334,19 +334,21 @@ pub fn init_logger(config: &LogConfig) -> Result<(), LoggerError> {
                 .recursive(true)
                 .mode(LOG_DIR_MODE)
                 .create(parent)
-                .map_err(|e| LoggerError::InitError(format!("cannot create log directory: {}", e)))?;
+                .map_err(|e| {
+                    LoggerError::InitError(format!("cannot create log directory: {}", e))
+                })?;
         }
     }
 
     // 配置滚动策略参数
-    let max_size = config.max_file_size * 1024 * 1024;  // MB转换为字节
+    let max_size = config.max_file_size * 1024 * 1024; // MB转换为字节
     let archive_count = config.max_roll_count;
     let level_filter = config.level.to_level_filter();
 
     // 构建固定窗口滚动器（归档文件命名：file.log.1.gz）
     let archive_pattern = format!("{}.{{}}.gz", log_path);
     let roller = FixedWindowRoller::builder()
-        .base(1)  // 归档文件从1开始编号
+        .base(1) // 归档文件从1开始编号
         .build(&archive_pattern, archive_count)
         .map_err(|e| LoggerError::InitError(e.to_string()))?;
 
@@ -457,8 +459,8 @@ mod tests {
             encoder.encode(&mut writer, &record).unwrap();
         }
         let result = String::from_utf8(buf).unwrap();
-        assert!(result.contains("file.rs"));  // 包含文件名
-        assert!(!result.contains("/very/long/path/to/"));  // 不包含目录路径
+        assert!(result.contains("file.rs")); // 包含文件名
+        assert!(!result.contains("/very/long/path/to/")); // 不包含目录路径
     }
 
     /// 测试BasenameEncoder处理无文件信息的情况
@@ -475,7 +477,7 @@ mod tests {
             let mut writer = SimpleWriter(&mut buf);
             let record = log::Record::builder()
                 .level(log::Level::Info)
-                .file(None)  // 无文件信息
+                .file(None) // 无文件信息
                 .args(format_args!("no file"))
                 .build();
             encoder.encode(&mut writer, &record).unwrap();
@@ -594,14 +596,21 @@ mod tests {
         let metadata = std::fs::metadata(&log_dir).expect("directory should exist");
         let mode = metadata.permissions().mode();
         let perm_bits = mode & 0o777;
-        assert_eq!(perm_bits, LOG_DIR_MODE, "directory permission should be 0o750");
+        assert_eq!(
+            perm_bits, LOG_DIR_MODE,
+            "directory permission should be 0o750"
+        );
 
         // 验证中间层目录权限也为 0o750
         let nested_dir = temp_base.join("nested");
-        let nested_metadata = std::fs::metadata(&nested_dir).expect("nested directory should exist");
+        let nested_metadata =
+            std::fs::metadata(&nested_dir).expect("nested directory should exist");
         let nested_mode = nested_metadata.permissions().mode();
         let nested_perm_bits = nested_mode & 0o777;
-        assert_eq!(nested_perm_bits, LOG_DIR_MODE, "nested directory permission should be 0o750");
+        assert_eq!(
+            nested_perm_bits, LOG_DIR_MODE,
+            "nested directory permission should be 0o750"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_base);
     }

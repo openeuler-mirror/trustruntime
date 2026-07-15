@@ -159,7 +159,10 @@ where
     F: Fn(BusinessError) -> Option<Vec<u8>>,
 {
     fn new(data: &'a [u8], error_response_builder: F) -> Self {
-        Self { data, error_response_builder }
+        Self {
+            data,
+            error_response_builder,
+        }
     }
 
     fn parse_json<T: DeserializeOwned>(&self) -> Result<T, Option<Vec<u8>>> {
@@ -186,7 +189,8 @@ fn build_sign_error_response(error: BusinessError) -> Option<Vec<u8>> {
         signed_data: String::new(),
         id: String::new(),
         result: error.to_result_code(),
-    }).ok()
+    })
+    .ok()
 }
 
 /// 构造 VerifySignResponse 错误响应
@@ -195,14 +199,16 @@ fn build_verify_sign_error_response(error: BusinessError) -> Option<Vec<u8>> {
         signed_data: String::new(),
         id: String::new(),
         result: error.to_result_code(),
-    }).ok()
+    })
+    .ok()
 }
 
 /// 构造 VerifyResponse 错误响应
 fn build_verify_error_response(error: BusinessError) -> Option<Vec<u8>> {
     serde_json::to_vec(&VerifyResponse {
         result: error.to_result_code(),
-    }).ok()
+    })
+    .ok()
 }
 
 /// 签名请求处理器
@@ -442,7 +448,9 @@ impl DataHandler for VerifyHandler {
             Err(e) => map_verify_error(&e).to_result_code(),
         };
 
-        let resp = VerifyResponse { result: result_code };
+        let resp = VerifyResponse {
+            result: result_code,
+        };
         serde_json::to_vec(&resp).ok()
     }
 }

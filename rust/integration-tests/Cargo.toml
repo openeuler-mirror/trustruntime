@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 trustruntime-framework = { path = "../framework" }
 trustring = { path = "../plugins/trustring" }
+cert-gen = { path = "../tools/cert-gen" }
 async-trait.workspace = true
 openssl.workspace = true
 serde.workspace = true
@@ -36,3 +37,7 @@ path = "src/tests/communication_tests.rs"
 [[test]]
 name = "cert_check_tests"
 path = "src/tests/cert_check_tests.rs"
+
+[[test]]
+name = "handler_tests"
+path = "src/tests/handler_tests.rs"

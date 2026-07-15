@@ -12,10 +12,7 @@ use std::path::Path;
 
 use crate::utils::{get_subject_key_id, rand_serial};
 
-pub fn create_ca_cert(
-    group: &EcGroup,
-    cn: &str,
-) -> (X509, PKey<openssl::pkey::Private>, Vec<u8>) {
+pub fn create_ca_cert(group: &EcGroup, cn: &str) -> (X509, PKey<openssl::pkey::Private>, Vec<u8>) {
     let ca_key = EcKey::generate(group).expect("Failed to generate CA key");
     let ca_pkey = PKey::from_ec_key(ca_key.clone()).expect("Failed to create CA PKey");
 
@@ -171,6 +168,65 @@ pub fn create_expired_cert(
 
     let not_before = Asn1Time::from_str("20000101000000Z").expect("Failed to create not_before");
     let not_after = Asn1Time::from_str("20100101000000Z").expect("Failed to create not_after");
+    builder
+        .set_not_before(&not_before)
+        .expect("Failed to set not_before");
+    builder
+        .set_not_after(&not_after)
+        .expect("Failed to set not_after");
+
+    let serial = BigNum::from_u32(rand_serial()).expect("Failed to create serial");
+    builder
+        .set_serial_number(&serial.to_asn1_integer().expect("Failed to convert serial"))
+        .expect("Failed to set serial");
+
+    let context = builder.x509v3_context(Some(ca_cert), None);
+    let ski = SubjectKeyIdentifier::new()
+        .build(&context)
+        .expect("Failed to build SKI");
+    builder.append_extension(ski).expect("Failed to append SKI");
+
+    builder
+        .sign(ca_pkey, MessageDigest::sha256())
+        .expect("Failed to sign cert");
+    let cert = builder.build();
+
+    let cert_id = get_subject_key_id(&cert);
+
+    (cert, signer_pkey, cert_id)
+}
+
+#[allow(dead_code)]
+pub fn create_not_yet_valid_cert(
+    group: &EcGroup,
+    ca_cert: &X509,
+    ca_pkey: &PKey<openssl::pkey::Private>,
+    cn: &str,
+) -> (X509, PKey<openssl::pkey::Private>, Vec<u8>) {
+    let signer_key = EcKey::generate(group).expect("Failed to generate signer key");
+    let signer_pkey = PKey::from_ec_key(signer_key.clone()).expect("Failed to create signer PKey");
+
+    let mut name = X509NameBuilder::new().expect("Failed to create name builder");
+    name.append_entry_by_text("CN", cn)
+        .expect("Failed to append CN");
+    let name = name.build();
+
+    let ca_name = ca_cert.subject_name();
+
+    let mut builder = X509Builder::new().expect("Failed to create builder");
+    builder.set_version(2).expect("Failed to set version");
+    builder
+        .set_subject_name(&name)
+        .expect("Failed to set subject");
+    builder
+        .set_issuer_name(ca_name)
+        .expect("Failed to set issuer");
+    builder
+        .set_pubkey(&signer_pkey)
+        .expect("Failed to set pubkey");
+
+    let not_before = Asn1Time::days_from_now(365).expect("Failed to create not_before");
+    let not_after = Asn1Time::days_from_now(3650).expect("Failed to create not_after");
     builder
         .set_not_before(&not_before)
         .expect("Failed to set not_before");
