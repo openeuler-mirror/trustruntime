@@ -1,0 +1,53 @@
+# CMS 测试工具配置示例
+# 用法: cms-test-cli --config /path/to/config.toml
+
+# =============================================================================
+# 连接配置
+# =============================================================================
+[connection]
+# 目标服务端口（必填）
+port = 12345
+
+# =============================================================================
+# TLS 客户端证书（用于连接服务端）
+# =============================================================================
+[tls_client]
+# CA证书路径，用于验证服务端证书（必填）
+ca_cert = "/tmp/test-certs/tls/ca.crt"
+
+# 客户端证书路径（必填）
+client_cert = "/tmp/test-certs/tls/client/client.crt"
+
+# 客户端私钥路径（必填）
+client_key = "/tmp/test-certs/tls/client/client.key"
+
+# 私钥密码文件路径（可选，私钥未加密时不需要）
+# client_key_pwd = "/tmp/test-certs/tls/key_pwd.txt"
+
+# =============================================================================
+# CMS 测试证书（用于签名验签测试）
+# =============================================================================
+[cms_certs]
+# CA根证书路径（必填，用于验签测试）
+ca_cert = "/tmp/test-certs/cms/ca.crt"
+
+# 签名证书路径（必填，用于签名测试）
+signer_cert = "/tmp/test-certs/cms/node-a/signer.crt"
+
+# 签名私钥路径（必填）
+signer_key = "/tmp/test-certs/cms/node-a/signer.key"
+
+# 过期证书路径（可选，用于安全测试）
+# expired_cert = "/tmp/test-certs/cms/expired/signer.crt"
+# expired_key = "/tmp/test-certs/cms/expired/signer.key"
+
+# 已吊销证书路径（可选，用于安全测试）
+# revoked_cert = "/tmp/test-certs/cms/revoked/signer.crt"
+# revoked_key = "/tmp/test-certs/cms/revoked/signer.key"
+
+# =============================================================================
+# 测试服务进程配置（用于场景测试）
+# =============================================================================
+[server]
+# trustruntime 二进制路径
+binary_path = "trustruntime"
