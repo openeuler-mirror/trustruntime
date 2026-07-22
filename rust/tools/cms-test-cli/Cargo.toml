@@ -9,9 +9,7 @@ openssl.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-anyhow.workspace = true
 thiserror.workspace = true
 base64.workspace = true
 clap = { workspace = true, features = ["derive"] }
 tempfile.workspace = true
-toml.workspace = true

@@ -543,15 +543,17 @@ impl CommandRouter {
     /// 注意：证书层和TLS层测试需要特殊环境，请使用其他命令或集成测试。
     fn handle_security_all(&self) -> Result<ExecuteResult, CommandError> {
         println!("Running all available security tests...\n");
-        
+
         // 执行协议层测试（已实现）
         self.handle_security_protocol(None)?;
-        
+
         // 告知用户证书层和TLS层测试的状态
         println!("\n--- Other Security Tests ---");
-        println!("Certificate tests: Use 'scenario error-chain' for certificate-related error tests.");
+        println!(
+            "Certificate tests: Use 'scenario error-chain' for certificate-related error tests."
+        );
         println!("TLS tests: Use integration-tests for comprehensive TLS testing.");
-        
+
         Ok(ExecuteResult::Continue)
     }
 
