@@ -6,7 +6,7 @@
 
 - **sign**: CMS 签名计算——将 data 与证书 id 拼接后执行 ECC-256 CMS 签名
 - **verify**: CMS 验签 + 证书链校验 + CRL 校验 + 证书身份判定（result 0/1/2）
-- **error_code_mapper**: 将 sign/verify 的领域错误类型转换为业务 result code（3-9）
+- **error_code_mapper**: 将 sign/verify 的领域错误类型转换为业务 result code（验签3-9、签名10-19、解析20-29）
 
 ### 不负责
 
@@ -135,18 +135,28 @@ pub(crate) enum VerifyError {
 ### error_code_mapper 模块
 
 ```rust
-/// 业务错误码（result 3-12）
+/// 业务错误码（按错误类型分组，预留扩展空间）
 pub(crate) enum BusinessError {
+    // 验签失败（result 3-9，预留7个位置）
     CertificateChainInvalid,    // result=3
     CertificateRevoked,         // result=4
     SignatureMismatch,          // result=5
-    FormatError,                // result=6
-    CertificateLoadFailed,      // result=7
-    PrivateKeyUnavailable,      // result=8
-    SigningAlgorithmError,      // result=9
-    JsonParseError,             // result=10（JSON解析失败）
-    Base64DecodeError,          // result=11（Base64解码失败）
-    Other(u32),                 // result>=12
+    InvalidKeyUsage,            // result=6
+    FormatError,                // result=7
+    // result=8-9: 预留扩展
+
+    // 签名失败（result 10-19，预留10个位置）
+    CertificateLoadFailed,      // result=10
+    PrivateKeyUnavailable,      // result=11
+    SigningAlgorithmError,      // result=12
+    // result=13-19: 预留扩展
+
+    // 数据解析错误（result 20-29，预留10个位置）
+    JsonParseError,             // result=20（JSON解析失败）
+    Base64DecodeError,          // result=21（Base64解码失败）
+    // result=22-29: 预留扩展
+
+    Other(u32),                 // result>=30（透传错误码）
 }
 
 impl BusinessError {

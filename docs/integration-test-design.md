@@ -398,7 +398,7 @@ comm_ca_root = "test-certs/tls/ca.crt"
 
 | 步骤 | 操作 | 输入 | 预期输出 |
 |------|------|------|----------|
-| E04-1 | 调用B节点验签接口 | `{"to-verify":{"data":"字符串A","signed_data":"invalid_random_bytes","id":"idA"}}` | result=6 |
+| E04-1 | 调用B节点验签接口 | `{"to-verify":{"data":"字符串A","signed_data":"invalid_random_bytes","id":"idA"}}` | result=7 |
 
 **验证点**：signed_data为随机字节，非CMS DER结构。
 
@@ -406,7 +406,7 @@ comm_ca_root = "test-certs/tls/ca.crt"
 
 | 步骤 | 操作 | 输入 | 预期输出 |
 |------|------|------|----------|
-| E05-1 | 调用B节点验签接口 | `{"to-verify":{"data":"字符串A"}}`（缺少signed_data和id字段） | result=10 |
+| E05-1 | 调用B节点验签接口 | `{"to-verify":{"data":"字符串A"}}`（缺少signed_data和id字段） | result=20 |
 
 **验证点**：请求报文缺少必填字段，JSON解析失败。
 
@@ -414,7 +414,7 @@ comm_ca_root = "test-certs/tls/ca.crt"
 
 | 步骤 | 操作 | 输入 | 预期输出 |
 |------|------|------|----------|
-| E06-1 | 调用B节点验签接口 | `{"to-verify":{"data":"字符串A","signed_data":"validSign","id":"!!!invalidBase64!!!"}}` | result=11 |
+| E06-1 | 调用B节点验签接口 | `{"to-verify":{"data":"字符串A","signed_data":"validSign","id":"!!!invalidBase64!!!"}}` | result=21 |
 
 **验证点**：id字段非有效Base64编码。
 
@@ -423,9 +423,9 @@ comm_ca_root = "test-certs/tls/ca.crt"
 | 步骤 | 操作 | 输入 | 预期输出 |
 |------|------|------|----------|
 | E07-1 | 删除A节点signer.crt | — | — |
-| E07-2 | 调用A节点签名接口 | `{"to-sign":{"data":"字符串A"}}` | result=7 |
+| E07-2 | 调用A节点签名接口 | `{"to-sign":{"data":"字符串A"}}` | result=10 |
 | E08-1 | 删除A节点signer.key | — | — |
-| E08-2 | 调用A节点签名接口 | `{"to-sign":{"data":"字符串A"}}` | result=8 |
+| E08-2 | 调用A节点签名接口 | `{"to-sign":{"data":"字符串A"}}` | result=11 |
 
 #### E09-E14: 验签+签名失败类（验签步骤失败）
 
@@ -448,9 +448,9 @@ comm_ca_root = "test-certs/tls/ca.crt"
 |------|------|------|----------|
 | E15-1 | 调用A节点签名接口 | `{"to-sign":{"data":"字符串A"}}` | result=0, id=idA, signed_data=signA |
 | E15-2 | 删除B节点signer.crt | — | — |
-| E15-3 | 调用B节点验签并签名接口 | `{"to-verify":{"data":"字符串A","signed_data":"signA","id":"idA"},"to-sign":{"data":"字符串B","id":"idA"}}` | result=7, signed_data="", id="" |
+| E15-3 | 调用B节点验签并签名接口 | `{"to-verify":{"data":"字符串A","signed_data":"signA","id":"idA"},"to-sign":{"data":"字符串B","id":"idA"}}` | result=10, signed_data="", id="" |
 
-**验证点**：验签通过（result=0），签名步骤证书缺失，签名失败（result=7）。
+**验证点**：验签通过（result=0），签名步骤证书缺失，签名失败（result=10）。
 
 **E16类似，略（见4.2.4表格）**
 
@@ -460,7 +460,7 @@ comm_ca_root = "test-certs/tls/ca.crt"
 
 | 步骤 | 操作 | 输入 | 预期输出 |
 |------|------|------|----------|
-| E17-1 | 调用B节点验签并签名接口 | `{"to-verify":{"data":"字符串A","signed_data":"signA","id":"idA"}}`（缺少to-sign） | result=10 |
+| E17-1 | 调用B节点验签并签名接口 | `{"to-verify":{"data":"字符串A","signed_data":"signA","id":"idA"}}`（缺少to-sign） | result=20 |
 
 **验证点**：VerifySignRequest缺少to-sign字段，JSON解析失败。
 

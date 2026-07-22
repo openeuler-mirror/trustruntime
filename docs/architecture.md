@@ -500,21 +500,22 @@ graph TB
     REQ[业务请求]
 
     REQ --> JSON{JSON解析}
-    JSON -->|失败| R10[result=10]
+    JSON -->|失败| R20[result=20]
 
     JSON -->|成功| B64{Base64解码}
-    B64 -->|失败| R11[result=11]
+    B64 -->|失败| R21[result=21]
 
     B64 -->|成功| CERT{证书加载}
-    CERT -->|失败| R07[result=7]
+    CERT -->|失败| R10[result=10]
 
     CERT -->|成功| OP{签名/验签操作}
-    OP -->|私钥不可用| R08[result=8]
-    OP -->|算法错误| R09[result=9]
+    OP -->|私钥不可用| R11[result=11]
+    OP -->|算法错误| R12[result=12]
     OP -->|证书链无效| R03[result=3]
     OP -->|CRL吊销| R04[result=4]
     OP -->|签名不匹配| R05[result=5]
-    OP -->|格式错误| R06[result=6]
+    OP -->|KeyUsage无效| R06[result=6]
+    OP -->|格式错误| R07[result=7]
 
     OP -->|成功| R00[result=0/1/2]
 ```

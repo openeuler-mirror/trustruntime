@@ -103,8 +103,8 @@ fn b01_expired_signer_cert_sign() {
 ///
 /// 测试场景：验证由过期证书生成的签名
 ///
-/// 预期结果：验签返回result=1（验签失败）
-/// 原因：证书有效期检查失败（OpenSSL默认检查）
+/// 预期结果：验签返回result=1（其他节点签名）
+/// 说明：忽略签名方证书过期错误，正常验签并返回身份判断结果
 ///
 /// 测试依赖：无（插件API测试）
 #[test]
@@ -193,7 +193,7 @@ fn b04_special_characters_data_sign() {
 ///
 /// 测试场景：verify-sign请求中to-verify.id字段无效
 ///
-/// 预期结果：返回result=11，signed_data=""，id=""
+/// 预期结果：返回result=21，signed_data=""，id=""
 /// 原因：无法解码Base64字符串
 ///
 /// 测试依赖：无（插件API测试）
@@ -221,7 +221,7 @@ fn b05_invalid_base64_in_id() {
     );
     let resp = handle_verify_sign_and_parse(&ctx, &req);
 
-    assert_eq!(resp["result"], 11);
+    assert_eq!(resp["result"], 21);
     assert_eq!(resp["signed_data"], "");
     assert_eq!(resp["id"], "");
 }
@@ -230,8 +230,8 @@ fn b05_invalid_base64_in_id() {
 ///
 /// 测试场景：验证由未来生效证书生成的签名
 ///
-/// 预期结果：验签返回result=1（验签失败）
-/// 原因：证书notBefore时间在未来
+/// 预期结果：验签返回result=1（其他节点签名）
+/// 说明：忽略签名方证书尚未生效错误，正常验签并返回身份判断结果
 ///
 /// 测试依赖：无（插件API测试）
 #[test]

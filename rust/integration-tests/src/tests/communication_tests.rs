@@ -58,7 +58,7 @@ fn c01_tls_mutual_auth_success() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect with TLS");
 
@@ -110,7 +110,7 @@ fn c02_client_cert_crl_revoked() {
         &paths.tls_ca_cert(),
         &paths.tls_client_revoked_cert(),
         &paths.tls_client_revoked_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     );
 
     assert!(
@@ -163,7 +163,7 @@ fn c03_client_cert_wrong_ca() {
         &paths.tls_ca_cert(),
         &paths.tls_client_wrong_ca_cert(),
         &paths.tls_client_wrong_ca_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     );
 
     assert!(
@@ -276,7 +276,7 @@ fn c05_message_too_long() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect with TLS");
 
@@ -330,7 +330,7 @@ fn c06_version_mismatch() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect with TLS");
 
@@ -384,7 +384,7 @@ fn c07_byte_order_le_consistency() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect with TLS");
 
@@ -441,7 +441,7 @@ fn c08_version_mismatch_rejection() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect with TLS");
 
@@ -506,10 +506,12 @@ fn c09_concurrent_16_connections() {
         let tls_ca = paths.tls_ca_cert();
         let tls_cert = paths.tls_client_cert();
         let tls_key = paths.tls_client_key();
+        let key_pwd = paths.tls_key_password();
 
         let handle = thread::spawn(move || {
-            let mut client = VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, None)
-                .unwrap_or_else(|e| panic!("Failed to connect client {}: {}", i, e));
+            let mut client =
+                VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, key_pwd.as_deref())
+                    .unwrap_or_else(|e| panic!("Failed to connect client {}: {}", i, e));
 
             let resp = client
                 .sign(&format!("test data {}", i))
@@ -580,14 +582,22 @@ fn c10_semaphore_limit_wait() {
 
     // Spawn 16 connections that hold permits (keep them alive)
     let mut long_handles = vec![];
+    let key_pwd = paths.tls_key_password();
     for i in 0..16 {
         let tls_ca = paths.tls_ca_cert();
         let tls_cert = paths.tls_client_cert();
         let tls_key = paths.tls_client_key();
+        let key_pwd_clone = key_pwd.clone();
 
         let handle = thread::spawn(move || {
-            let mut client = VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, None)
-                .unwrap_or_else(|e| panic!("Failed to connect long client {}: {}", i, e));
+            let mut client = VsockClient::connect(
+                12345,
+                &tls_ca,
+                &tls_cert,
+                &tls_key,
+                key_pwd_clone.as_deref(),
+            )
+            .unwrap_or_else(|e| panic!("Failed to connect long client {}: {}", i, e));
 
             // Keep connection alive by doing multiple requests
             for _ in 0..5 {
@@ -612,8 +622,9 @@ fn c10_semaphore_limit_wait() {
     let tls_key = paths.tls_client_key();
 
     let start_time = std::time::Instant::now();
-    let mut client_17 = VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, None)
-        .expect("Failed to connect client 17");
+    let mut client_17 =
+        VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, key_pwd.as_deref())
+            .expect("Failed to connect client 17");
 
     // Connection should eventually succeed (after one of the 16 releases)
     let elapsed = start_time.elapsed();
@@ -672,14 +683,22 @@ fn c11_semaphore_release_after_disconnect() {
 
     // Create 16 connections and immediately close them
     let mut handles = vec![];
+    let key_pwd = paths.tls_key_password();
     for i in 0..16 {
         let tls_ca = paths.tls_ca_cert();
         let tls_cert = paths.tls_client_cert();
         let tls_key = paths.tls_client_key();
+        let key_pwd_clone = key_pwd.clone();
 
         let handle = thread::spawn(move || {
-            let mut client = VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, None)
-                .unwrap_or_else(|e| panic!("Failed to connect client {}: {}", i, e));
+            let mut client = VsockClient::connect(
+                12345,
+                &tls_ca,
+                &tls_cert,
+                &tls_key,
+                key_pwd_clone.as_deref(),
+            )
+            .unwrap_or_else(|e| panic!("Failed to connect client {}: {}", i, e));
 
             client.sign(&format!("test data {}", i)).ok();
             // Immediately close to release semaphore
@@ -702,10 +721,17 @@ fn c11_semaphore_release_after_disconnect() {
         let tls_ca = paths.tls_ca_cert();
         let tls_cert = paths.tls_client_cert();
         let tls_key = paths.tls_client_key();
+        let key_pwd_clone = key_pwd.clone();
 
         let handle = thread::spawn(move || {
-            let mut client = VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, None)
-                .unwrap_or_else(|e| panic!("Failed to connect new client {}: {}", i, e));
+            let mut client = VsockClient::connect(
+                12345,
+                &tls_ca,
+                &tls_cert,
+                &tls_key,
+                key_pwd_clone.as_deref(),
+            )
+            .unwrap_or_else(|e| panic!("Failed to connect new client {}: {}", i, e));
 
             let resp = client
                 .sign(&format!("new test data {}", i))

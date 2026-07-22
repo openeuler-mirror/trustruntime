@@ -941,7 +941,7 @@ comm_ca_root = "/tmp/comm_ca.crt"
     /// 测试：验签+签名处理器处理请求（Base64解码失败）
     ///
     /// 场景：signed_data 包含无效的 Base64
-    /// 预期：result=11（Base64解码错误）
+    /// 预期：result=21（Base64解码错误）
     #[test]
     fn verify_sign_handler_returns_error_when_base64_decode_fails() {
         let env = TestEnv::new();
@@ -969,7 +969,7 @@ comm_ca_root = "/tmp/comm_ca.crt"
         assert!(result.is_some());
 
         let resp: VerifySignResponse = serde_json::from_slice(&result.unwrap()).unwrap();
-        assert_eq!(resp.result, 11); // Base64 解码错误
+        assert_eq!(resp.result, 21); // Base64 解码错误
         assert!(resp.signed_data.is_empty());
     }
 }

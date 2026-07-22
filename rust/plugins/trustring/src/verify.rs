@@ -97,6 +97,9 @@ pub(crate) enum VerifyError {
     /// CMS数据格式错误
     #[error("format error")]
     FormatError,
+    /// 证书KeyUsage无效
+    #[error("invalid key usage")]
+    InvalidKeyUsage,
 }
 
 impl From<openssl::error::ErrorStack> for VerifyError {

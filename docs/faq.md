@@ -182,7 +182,7 @@ openssl crl -in /etc/cert/cms/communication/cert.crl -CAfile \
 
 ## 签名/验签相关
 
-### Q: 签名返回 result=7（证书加载失败）？
+### Q: 签名返回 result=10（证书加载失败）？
 
 **A**: 原因：签名证书或私钥加载失败。
 
@@ -204,7 +204,7 @@ stat /etc/cert/cms/signer.key  # 应为 600 或 400
 
 ---
 
-### Q: 签名返回 result=8（私钥不可用）？
+### Q: 签名返回 result=11（私钥不可用）？
 
 **A**: 原因：签名私钥无法使用。
 
@@ -219,7 +219,7 @@ stat /etc/cert/cms/signer.key  # 应为 600 或 400
 
 ---
 
-### Q: 签名返回 result=9（签名算法错误）？
+### Q: 签名返回 result=12（签名算法错误）？
 
 **A**: 服务仅支持 ECC-256 签名算法。
 
@@ -287,12 +287,12 @@ openssl verify -CAfile /etc/cert/cms/ca_root.crt signer.crt
 可能原因：
 
 - signed_data 不是有效的 CMS DER 结构
-- Base64 解码失败（返回 result=11）
+- Base64 解码失败（返回 result=21）
 - signed_data 被篡改
 
 ---
 
-### Q: 签名/验签返回 result=10（JSON解析失败）？
+### Q: 签名/验签返回 result=20（JSON解析失败）？
 
 **A**: 原因：请求消息 JSON 格式错误。
 
@@ -315,7 +315,7 @@ cat request.json | jq .  # 使用 jq 验证 JSON 格式
 
 ---
 
-### Q: 签名/验签返回 result=11（Base64解码失败）？
+### Q: 签名/验签返回 result=21（Base64解码失败）？
 
 **A**: 原因：Base64 字段解码失败。
 

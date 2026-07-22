@@ -9,22 +9,26 @@
 //! - 统一结果码编码（ADR-0001: Unified Result Code Encoding）
 //! - 错误码范围：0-11，便于vsock消息传递和日志分析
 //!
-//! 编码规则：
+//! 编码规则（按错误类型分组，预留扩展空间）：
 //! - result=0：成功
 //! - result=1/2：验签身份判定（SameNode、OtherNode、IdentityConflict）
 //!   注意：result=1/2为验签通过的合法结果，不表示失败
-//! - result=3-6：验签失败
+//! - result=3-9：验签失败（预留7个位置，当前使用5个）
 //!   - result=3：证书链无效（CertificateChainInvalid）
 //!   - result=4：CRL吊销（CertificateRevoked）
 //!   - result=5：签名不匹配（SignatureMismatch）
-//!   - result=6：格式错误（FormatError）
-//! - result=7-9：签名失败
-//!   - result=7：证书加载失败（CertificateLoadFailed）
-//!   - result=8：私钥不可用（PrivateKeyUnavailable）
-//!   - result=9：签名算法错误（SigningAlgorithmError）
-//! - result=10-11：其他错误
-//!   - result=10：JSON解析错误（JsonParseError）
-//!   - result=11：Base64解码错误（Base64DecodeError）
+//!   - result=6：证书KeyUsage无效（InvalidKeyUsage）
+//!   - result=7：格式错误（FormatError）
+//!   - result=8-9：预留扩展
+//! - result=10-19：签名失败（预留10个位置，当前使用3个）
+//!   - result=10：证书加载失败（CertificateLoadFailed）
+//!   - result=11：私钥不可用（PrivateKeyUnavailable）
+//!   - result=12：签名算法错误（SigningAlgorithmError）
+//!   - result=13-19：预留扩展
+//! - result=20-29：数据解析错误（预留10个位置，当前使用2个）
+//!   - result=20：JSON解析错误（JsonParseError）
+//!   - result=21：Base64解码错误（Base64DecodeError）
+//!   - result=22-29：预留扩展
 //!
 //! 依赖：
 //! - sign模块：SignError（签名错误类型）
@@ -45,18 +49,19 @@ use openssl::error::ErrorStack;
 /// - 错误码分类清晰（验签失败3-6、签名失败7-9、其他10-11）
 /// - 支持OpenSSL错误的字符串匹配映射
 ///
-/// 映射规则：
+/// 映射规则（按错误类型分组，预留扩展空间）：
 /// | 错误类型                  | 结果码 | 说明                     |
 /// |---------------------------|--------|--------------------------|
 /// | CertificateChainInvalid   | 3      | 证书链验证失败           |
 /// | CertificateRevoked        | 4      | 证书被CRL吊销            |
 /// | SignatureMismatch         | 5      | 签名不匹配               |
-/// | FormatError               | 6      | CMS数据格式错误          |
-/// | CertificateLoadFailed     | 7      | 证书加载失败             |
-/// | PrivateKeyUnavailable     | 8      | 私钥不可用               |
-/// | SigningAlgorithmError     | 9      | 签名算法错误             |
-/// | JsonParseError            | 10     | JSON解析错误             |
-/// | Base64DecodeError         | 11     | Base64解码错误           |
+/// | InvalidKeyUsage           | 6      | 证书KeyUsage无效         |
+/// | FormatError               | 7      | CMS数据格式错误          |
+/// | CertificateLoadFailed     | 10     | 证书加载失败             |
+/// | PrivateKeyUnavailable     | 11     | 私钥不可用               |
+/// | SigningAlgorithmError     | 12     | 签名算法错误             |
+/// | JsonParseError            | 20     | JSON解析错误             |
+/// | Base64DecodeError         | 21     | Base64解码错误           |
 /// | Other(code)               | code   | 其他错误（透传错误码）   |
 #[derive(Debug, PartialEq)]
 pub(crate) enum BusinessError {
@@ -83,7 +88,14 @@ pub(crate) enum BusinessError {
     /// - 公钥不匹配
     SignatureMismatch,
 
-    /// 格式错误（result=6）
+    /// 证书KeyUsage无效（result=6）
+    ///
+    /// 场景：
+    /// - 签名证书缺少digitalSignature或nonRepudiation
+    /// - 验签时签名方证书KeyUsage不匹配
+    InvalidKeyUsage,
+
+    /// 格式错误（result=7）
     ///
     /// 场景：
     /// - CMS数据格式无效
@@ -91,7 +103,7 @@ pub(crate) enum BusinessError {
     /// - 数据结构不符合预期
     FormatError,
 
-    /// 证书加载失败（result=7）
+    /// 证书加载失败（result=10）
     ///
     /// 场景：
     /// - 证书文件不存在
@@ -99,7 +111,7 @@ pub(crate) enum BusinessError {
     /// - 证书格式不支持
     CertificateLoadFailed,
 
-    /// 私钥不可用（result=8）
+    /// 私钥不可用（result=11）
     ///
     /// 场景：
     /// - 私钥文件不存在
@@ -108,21 +120,21 @@ pub(crate) enum BusinessError {
     /// - 私钥密码错误
     PrivateKeyUnavailable,
 
-    /// 签名算法错误（result=9）
+    /// 签名算法错误（result=12）
     ///
     /// 场景：
     /// - 签名算法不支持
     /// - 算法参数错误
     SigningAlgorithmError,
 
-    /// JSON解析错误（result=10）
+    /// JSON解析错误（result=20）
     ///
     /// 场景：
     /// - 请求消息JSON格式错误
     /// - 响应消息JSON序列化失败
     JsonParseError,
 
-    /// Base64解码错误（result=11）
+    /// Base64解码错误（result=21）
     ///
     /// 场景：
     /// - 签名数据Base64解码失败
@@ -142,11 +154,11 @@ impl BusinessError {
     /// 将业务错误映射为统一的结果码（详见ADR-0001）。
     /// 结果码用于vsock消息响应，便于客户端判断错误类型。
     ///
-    /// 编码规则：
+    /// 编码规则（按错误类型分组，预留扩展空间）：
     /// - 成功：result=0（验签通过，返回身份判定结果1/2）
-    /// - 验签失败：result=3-6
-    /// - 签名失败：result=7-9
-    /// - 其他错误：result=10-11
+    /// - 验签失败：result=3-9（预留7个位置）
+    /// - 签名失败：result=10-19（预留10个位置）
+    /// - 数据解析错误：result=20-29（预留10个位置）
     ///
     /// # Returns
     /// 标准结果码（u32）
@@ -157,23 +169,25 @@ impl BusinessError {
     /// | CertificateChainInvalid | 3 |
     /// | CertificateRevoked | 4 |
     /// | SignatureMismatch | 5 |
-    /// | FormatError | 6 |
-    /// | CertificateLoadFailed | 7 |
-    /// | PrivateKeyUnavailable | 8 |
-    /// | SigningAlgorithmError | 9 |
-    /// | JsonParseError | 10 |
-    /// | Base64DecodeError | 11 |
+    /// | InvalidKeyUsage | 6 |
+    /// | FormatError | 7 |
+    /// | CertificateLoadFailed | 10 |
+    /// | PrivateKeyUnavailable | 11 |
+    /// | SigningAlgorithmError | 12 |
+    /// | JsonParseError | 20 |
+    /// | Base64DecodeError | 21 |
     pub(crate) fn to_result_code(&self) -> u32 {
         match self {
             BusinessError::CertificateChainInvalid => 3,
             BusinessError::CertificateRevoked => 4,
             BusinessError::SignatureMismatch => 5,
-            BusinessError::FormatError => 6,
-            BusinessError::CertificateLoadFailed => 7,
-            BusinessError::PrivateKeyUnavailable => 8,
-            BusinessError::SigningAlgorithmError => 9,
-            BusinessError::JsonParseError => 10,
-            BusinessError::Base64DecodeError => 11,
+            BusinessError::InvalidKeyUsage => 6,
+            BusinessError::FormatError => 7,
+            BusinessError::CertificateLoadFailed => 10,
+            BusinessError::PrivateKeyUnavailable => 11,
+            BusinessError::SigningAlgorithmError => 12,
+            BusinessError::JsonParseError => 20,
+            BusinessError::Base64DecodeError => 21,
             BusinessError::Other(code) => *code,
         }
     }
@@ -214,7 +228,8 @@ pub(crate) fn map_sign_error(err: &SignError) -> BusinessError {
 /// - VerifyError::CertificateChainInvalid → CertificateChainInvalid（result=3）
 /// - VerifyError::CertificateRevoked → CertificateRevoked（result=4）
 /// - VerifyError::SignatureMismatch → SignatureMismatch（result=5）
-/// - VerifyError::FormatError → FormatError（result=6）
+/// - VerifyError::InvalidKeyUsage → InvalidKeyUsage（result=6）
+/// - VerifyError::FormatError → FormatError（result=7）
 ///
 /// 注意：VerifyError已在verify模块完成错误分类，此处仅做类型转换。
 /// OpenSSL错误的详细解析在map_openssl_error_string中完成。
@@ -231,6 +246,7 @@ pub(crate) fn map_verify_error(err: &VerifyError) -> BusinessError {
         VerifyError::CertificateRevoked => BusinessError::CertificateRevoked,
         VerifyError::SignatureMismatch => BusinessError::SignatureMismatch,
         VerifyError::FormatError => BusinessError::FormatError,
+        VerifyError::InvalidKeyUsage => BusinessError::InvalidKeyUsage,
     }
 }
 
@@ -328,23 +344,27 @@ mod tests {
     /// - CertificateChainInvalid → 3
     /// - CertificateRevoked → 4
     /// - SignatureMismatch → 5
-    /// - FormatError → 6
-    /// - CertificateLoadFailed → 7
-    /// - PrivateKeyUnavailable → 8
-    /// - SigningAlgorithmError → 9
-    /// - Other(10) → 10
-    /// - Other(15) → 15（透传）
+    /// - InvalidKeyUsage → 6
+    /// - FormatError → 7
+    /// - CertificateLoadFailed → 10
+    /// - PrivateKeyUnavailable → 11
+    /// - SigningAlgorithmError → 12
+    /// - JsonParseError → 20
+    /// - Base64DecodeError → 21
+    /// - Other(30) → 30（透传）
     #[test]
     fn business_error_maps_to_correct_result_code() {
         assert_eq!(BusinessError::CertificateChainInvalid.to_result_code(), 3);
         assert_eq!(BusinessError::CertificateRevoked.to_result_code(), 4);
         assert_eq!(BusinessError::SignatureMismatch.to_result_code(), 5);
-        assert_eq!(BusinessError::FormatError.to_result_code(), 6);
-        assert_eq!(BusinessError::CertificateLoadFailed.to_result_code(), 7);
-        assert_eq!(BusinessError::PrivateKeyUnavailable.to_result_code(), 8);
-        assert_eq!(BusinessError::SigningAlgorithmError.to_result_code(), 9);
-        assert_eq!(BusinessError::Other(10).to_result_code(), 10);
-        assert_eq!(BusinessError::Other(15).to_result_code(), 15);
+        assert_eq!(BusinessError::InvalidKeyUsage.to_result_code(), 6);
+        assert_eq!(BusinessError::FormatError.to_result_code(), 7);
+        assert_eq!(BusinessError::CertificateLoadFailed.to_result_code(), 10);
+        assert_eq!(BusinessError::PrivateKeyUnavailable.to_result_code(), 11);
+        assert_eq!(BusinessError::SigningAlgorithmError.to_result_code(), 12);
+        assert_eq!(BusinessError::JsonParseError.to_result_code(), 20);
+        assert_eq!(BusinessError::Base64DecodeError.to_result_code(), 21);
+        assert_eq!(BusinessError::Other(30).to_result_code(), 30);
     }
 
     /// 测试：map_sign_error映射OpenSSL错误

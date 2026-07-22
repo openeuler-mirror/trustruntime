@@ -64,10 +64,10 @@ impl VsockTransport {
         max_connections: u32,
     ) -> Result<Self, VsockError> {
         let mut builder = configure_tls_builder()?;
-        load_tls_certificates(&mut builder, tls_config)?;
+        let ca_cert = load_tls_certificates(&mut builder, tls_config)?;
 
         if let Some(crl_path) = &tls_config.crl_path {
-            tls::configure_crl_verification(&mut builder, crl_path)?;
+            tls::configure_crl_verification(&mut builder, crl_path, &ca_cert)?;
         }
 
         let ssl_acceptor = builder.build();

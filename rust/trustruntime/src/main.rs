@@ -83,18 +83,18 @@ async fn check_certificates(
     daemon: &mut Daemon,
 ) -> Result<CertificateChecker, ()> {
     let cert_checker = CertificateChecker::new(vec![
-        config.certificate.comm_cert.clone(),
-        config.certificate.signer_cert.clone(),
+        config.certificate.comm_cert().to_string(),
+        config.certificate.signer_cert().to_string(),
     ]);
 
     let statuses = cert_checker.check_all();
 
     let comm_expired = statuses
         .iter()
-        .find(|s| s.path == config.certificate.comm_cert && s.expired);
+        .find(|s| s.path == config.certificate.comm_cert() && s.expired);
 
-    if let Some(expired) = comm_expired {
-        log::error!("通信证书已过期: {}", expired.path);
+    if let Some(_expired) = comm_expired {
+        log::error!("通信证书已过期");
         daemon.notify_status("通信证书已过期").ok();
         daemon.notify_ready().ok();
 
@@ -105,8 +105,8 @@ async fn check_certificates(
     }
 
     for status in &statuses {
-        if status.expired && status.path != config.certificate.comm_cert {
-            log::warn!("证书已过期: {}", status.path);
+        if status.expired && status.path != config.certificate.comm_cert() {
+            log::warn!("CMS证书已过期");
         }
     }
 
@@ -114,23 +114,33 @@ async fn check_certificates(
 }
 
 fn create_transport(config: &AppConfig) -> Result<Arc<VsockTransport>, String> {
-    let key_password = config
-        .certificate
-        .comm_key_pwd
-        .as_ref()
-        .map(|path| {
-            std::fs::read_to_string(path)
+    use std::path::Path;
+    use trustruntime_framework::config::{
+        COMM_CA_ROOT_PATH, COMM_CERT_PATH, COMM_CRL_PATH, COMM_KEY_PATH, COMM_KEY_PWD_PATH,
+    };
+
+    let key_password = if Path::new(COMM_KEY_PWD_PATH).exists() {
+        Some(
+            std::fs::read_to_string(COMM_KEY_PWD_PATH)
                 .map(|content| content.trim().to_string())
-                .map_err(|e| format!("读取私钥密码文件失败 '{}': {}", path, e))
-        })
-        .transpose()?;
+                .map_err(|e| format!("读取私钥密码文件失败: {}", e))?,
+        )
+    } else {
+        None
+    };
+
+    let crl_path = if Path::new(COMM_CRL_PATH).exists() {
+        Some(COMM_CRL_PATH.to_string())
+    } else {
+        None
+    };
 
     let tls_config = TlsConfig {
-        cert_path: config.certificate.comm_cert.clone(),
-        key_path: config.certificate.comm_key.clone(),
+        cert_path: COMM_CERT_PATH.to_string(),
+        key_path: COMM_KEY_PATH.to_string(),
         key_password,
-        ca_cert_path: config.certificate.comm_ca_root.clone(),
-        crl_path: config.certificate.comm_crl.clone(),
+        ca_cert_path: COMM_CA_ROOT_PATH.to_string(),
+        crl_path,
     };
 
     VsockTransport::new(&tls_config, config.vsock.port, config.vsock.max_connections)
@@ -142,13 +152,24 @@ fn setup_plugins(
     config: Arc<AppConfig>,
     transport: &Arc<VsockTransport>,
 ) -> Result<PluginManager, String> {
+    use std::path::Path;
+    use trustruntime_framework::config::{
+        CA_ROOT_CERT_PATH, CMS_CRL_PATH, SIGNER_CERT_PATH, SIGNER_KEY_PATH,
+    };
+
     let mut plugin_manager = PluginManager::new();
 
+    let cms_crl_path = if Path::new(CMS_CRL_PATH).exists() {
+        Some(CMS_CRL_PATH)
+    } else {
+        None
+    };
+
     let trustring_plugin = TrustringPlugin::new(
-        &config.certificate.signer_cert,
-        &config.certificate.signer_key,
-        &config.certificate.ca_root_cert,
-        config.certificate.cms_crl.as_deref(),
+        SIGNER_CERT_PATH,
+        SIGNER_KEY_PATH,
+        CA_ROOT_CERT_PATH,
+        cms_crl_path,
     )
     .map_err(|e| format!("Failed to create trustring plugin: {}", e))?;
 
@@ -234,7 +255,7 @@ async fn main() {
     let transport = match create_transport(&config) {
         Ok(t) => t,
         Err(e) => {
-            log::error!("{}", e);
+            log::error!("vsock传输层创建失败: {}", e);
             handle_startup_failure(&mut daemon, "vsock传输层创建失败").await;
             return;
         }
@@ -243,8 +264,8 @@ async fn main() {
     // ==================== 步骤5-6：创建并初始化插件 ====================
     let plugin_manager = match setup_plugins(config.clone(), &transport) {
         Ok(m) => m,
-        Err(e) => {
-            log::error!("{}", e);
+        Err(_e) => {
+            log::error!("插件初始化失败");
             handle_startup_failure(&mut daemon, "插件初始化失败").await;
             return;
         }

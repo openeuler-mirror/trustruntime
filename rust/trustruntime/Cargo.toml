@@ -20,8 +20,22 @@ tempfile.workspace = true
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/trustruntime", dest = "/usr/bin/trustruntime", mode = "550" },
-    { source = "../../conf/agent.toml", dest = "/etc/trustruntime/agent.toml", mode = "640", config = true },
     { source = "../../packaging/trustruntime.service", dest = "/usr/lib/systemd/system/trustruntime.service", mode = "644" },
+    { source = "../../conf/agent.toml", dest = "/etc/trustruntime/agent.toml", mode = "640", config = true },
 ]
-post_install_script = "mkdir -p /var/log/trustruntime && chmod 750 /var/log/trustruntime"
+post_install_script = """
+mkdir -p /var/log/trustruntime
+chmod 750 /var/log/trustruntime
+chown root:root /var/log/trustruntime
+
+if [ -d "/etc/cert/server" ]; then
+    chmod 700 /etc/cert/server
+    chown root:root /etc/cert/server
+fi
+
+if [ -d "/etc/cert/cms" ]; then
+    chmod 700 /etc/cert/cms
+    chown root:root /etc/cert/cms
+fi
+"""
 post_uninstall_script = "systemctl stop trustruntime.service 2>/dev/null || true; systemctl disable trustruntime.service 2>/dev/null || true"
