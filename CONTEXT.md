@@ -173,3 +173,19 @@ comm_crl = "/etc/cert/cms/communication/cert.crl"
 - **服务二进制**: 750 (root:root)
 - **systemd unit**: 644 (root:root)
 - **日志目录**: 750 (root:root)
+
+## 证书用途要求
+
+### 通信证书（TLS）
+
+- **KeyUsage**: 必须包含 `digitalSignature` 和 `keyEncipherment`
+- **ExtendedKeyUsage**: 必须包含 `serverAuth`
+- **校验时机**: TLS配置加载时（启动时）
+- **校验失败**: 启动失败，记录错误日志
+
+### 签名证书（CMS）
+
+- **KeyUsage**: 仅允许 `digitalSignature`（不能包含其他用途）
+- **ExtendedKeyUsage**: 不指定
+- **校验时机**: 插件初始化时
+- **校验失败**: 初始化失败，记录错误日志

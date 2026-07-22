@@ -72,6 +72,13 @@ impl CmsCertificate {
         // PEM/DER双格式加载，由framework::cert模块自动检测格式
         let cert = cert::load_x509(cert_path)?;
         let key = cert::load_private_key(key_path, None)?;
+
+        // 签名证书KeyUsage必须仅包含digitalSignature（精确匹配）
+        let actual_flags = cert::extract_key_usage_flags(&cert)?;
+        if actual_flags != cert::KeyUsageFlags::DIGITAL_SIGNATURE {
+            return Err(CertLoadError::InvalidFormat);
+        }
+
         // 提取证书ID：从SKI扩展中获取20字节SHA-1哈希
         let cert_id = cert::extract_subject_key_id(&cert)?;
         Ok(Self { cert, key, cert_id })
@@ -210,7 +217,7 @@ mod tests {
     use openssl::hash::MessageDigest;
     use openssl::nid::Nid;
     use openssl::pkey::PKey;
-    use openssl::x509::extension::SubjectKeyIdentifier;
+    use openssl::x509::extension::{KeyUsage, SubjectKeyIdentifier};
     use openssl::x509::{X509Builder, X509NameBuilder};
     use std::fs;
 
@@ -220,6 +227,7 @@ mod tests {
     /// - 算法：ECC-256（P-256曲线）
     /// - 有效期：365天
     /// - 包含SKI扩展（用于cert_id提取）
+    /// - 包含KeyUsage扩展（digitalSignature）
     fn create_test_certificate_and_key() -> (Vec<u8>, Vec<u8>) {
         let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
         let ec_key = EcKey::generate(&group).unwrap();
@@ -247,7 +255,11 @@ mod tests {
             .set_serial_number(&serial.to_asn1_integer().unwrap())
             .unwrap();
 
-        // 添加SKI扩展，用于cert_id提取
+        let mut ku_builder = KeyUsage::new();
+        ku_builder.digital_signature();
+        let ku = ku_builder.build().unwrap();
+        builder.append_extension(ku).unwrap();
+
         let context = builder.x509v3_context(None, None);
         let ski = SubjectKeyIdentifier::new().build(&context).unwrap();
         builder.append_extension(ski).unwrap();

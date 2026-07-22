@@ -36,6 +36,19 @@ pub fn load_tls_certificates(
 ) -> Result<openssl::x509::X509, VsockError> {
     let cert = crate::cert::load_x509(&tls_config.cert_path)
         .map_err(|e| VsockError::TlsConfigError(e.to_string()))?;
+
+    // 验证通信证书KeyUsage：必须包含digitalSignature和keyEncipherment
+    crate::cert::check_key_usage_contains(
+        &cert,
+        crate::cert::KeyUsageFlags::DIGITAL_SIGNATURE
+            | crate::cert::KeyUsageFlags::KEY_ENCIPHERMENT,
+    )
+    .map_err(|e| VsockError::TlsConfigError(e.to_string()))?;
+
+    // 验证通信证书ExtendedKeyUsage：必须包含serverAuth
+    crate::cert::check_extended_key_usage(&cert, "serverAuth")
+        .map_err(|e| VsockError::TlsConfigError(e.to_string()))?;
+
     builder.set_certificate(&cert)?;
 
     let key =

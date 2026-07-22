@@ -671,6 +671,12 @@ mod tests {
             .set_serial_number(&serial2.to_asn1_integer().unwrap())
             .unwrap();
 
+        use openssl::x509::extension::KeyUsage;
+        let mut ku_builder = KeyUsage::new();
+        ku_builder.digital_signature();
+        let ku = ku_builder.build().unwrap();
+        signer_builder.append_extension(ku).unwrap();
+
         let context2 = signer_builder.x509v3_context(Some(&ca_cert), None);
         let ski2 = SubjectKeyIdentifier::new().build(&context2).unwrap();
         signer_builder.append_extension(ski2).unwrap();
