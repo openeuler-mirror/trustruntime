@@ -114,14 +114,14 @@ impl CertificateChecker {
                 let expired = cert::is_expired(&x509);
                 let not_after = x509.not_after().to_string();
                 if expired {
-                    log::warn!("证书已过期: {}, not_after: {}", path, not_after);
+                    log::warn!("证书已过期");
                 }
 
                 // 未生效检测：比较当前时间与证书not_before时间
                 let not_yet_valid = cert::is_not_yet_valid(&x509);
                 let not_before = x509.not_before().to_string();
                 if not_yet_valid {
-                    log::warn!("证书尚未生效: {}, not_before: {}", path, not_before);
+                    log::warn!("证书尚未生效");
                 }
 
                 CertificateStatus {
@@ -132,9 +132,8 @@ impl CertificateChecker {
                     not_before: Some(not_before),
                 }
             }
-            Err(e) => {
-                // 加载失败：记录警告，返回错误状态
-                log::warn!("证书加载失败: {}, error: {}", path, e);
+            Err(_e) => {
+                log::warn!("证书加载失败");
                 CertificateStatus {
                     path: path.to_string(),
                     expired: false,

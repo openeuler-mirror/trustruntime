@@ -34,9 +34,14 @@ vsock = "0.4"
 async-trait = "0.1"
 libc = "0.2"
 
-[profile.release]
-strip = true
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
+[package]
+name = "examples"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dev-dependencies]
+openssl.workspace = true
+vsock.workspace = true
+serde.workspace = true
+serde_json.workspace = true

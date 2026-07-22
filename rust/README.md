@@ -47,9 +47,6 @@ cd scripts && ./run-integration-tests.sh
 | 脚本 | 用途 | 证书路径（默认） |
 |------|------|----------|
 | `run-integration-tests.sh` | 完整集成测试流程（推荐） | `$HOME/test-certs` |
-| `vsock-test.sh` | vsock连接测试（多CID） | `/tmp/test-certs` |
-| `manual-start.sh` | 手动启动服务+测试连接 | `/tmp/test-certs` |
-| `manual-test-home.sh` | 手动启动（集成测试配套） | `$HOME/test-certs` |
 
 ### run-integration-tests.sh（推荐）
 
@@ -79,25 +76,6 @@ cd scripts
 - `--force`: 强制重新生成证书
 - `--quick`: 跳过证书生成和编译（仅运行测试）
 - `--cert-dir <path>`: 指定证书目录（默认 `$HOME/test-certs`）
-
-### vsock连接测试
-
-测试不同CID的vsock连接：
-
-```bash
-cd scripts && ./vsock-test.sh
-# 测试 CID=1, CID=2, CID=-1 (HOST)
-```
-
-### 手动启动测试
-
-```bash
-# 使用/tmp路径（临时测试）
-cd scripts && ./manual-start.sh
-
-# 使用/home路径（集成测试配套）
-cd scripts && ./manual-test-home.sh
-```
 
 ## 依赖
 

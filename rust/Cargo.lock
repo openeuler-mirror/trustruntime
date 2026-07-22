@@ -202,7 +202,6 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 name = "cms-test-cli"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "base64",
  "clap",
  "integration-tests",
@@ -212,7 +211,6 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
- "toml",
 ]
 
 [[package]]
@@ -278,6 +276,16 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys",
+]
+
+[[package]]
+name = "examples"
+version = "0.1.0"
+dependencies = [
+ "openssl",
+ "serde",
+ "serde_json",
+ "vsock",
 ]
 
 [[package]]
@@ -1113,10 +1121,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "foreign-types-shared",
  "libc",
  "log",
  "log4rs",
  "openssl",
+ "openssl-sys",
  "sd-notify",
  "serde",
  "tempfile",
