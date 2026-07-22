@@ -17,7 +17,10 @@ cargo test --workspace
 
 echo "[4/4] Building RPM..."
 cargo build --release -p trustruntime
+cargo build --release -p trt-launcher
 cargo generate-rpm -p trustruntime
+cargo generate-rpm -p launcher
+cargo generate-rpm -p builder
 
 echo ""
 echo "RPM package built successfully"

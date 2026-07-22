@@ -1,0 +1,80 @@
+#!/bin/sh
+
+[-d /dev] || mkdir -m 0755 /dev
+[-d /root] || mkdir -m 0700 /root
+[-d /sys] || mkdir /sys
+[-d /proc] || mkdir /proc
+[-d /mnt] || mkdir /mnt
+[-d /tmp] || mkdir /tmp
+[-d /sysroot] || mkdir /sysroot
+
+mount -t sysfs -o nodev,noexec,nosuid sysfs /sys
+mount -t proc -o nodev,noexec,nosuid proc /proc
+mount -t devtmpfs devtmpfs /dev
+
+mdev -s
+
+mount -t tmpfs tmpfs /sysroot/
+/sbin/busybox tar -axf /rootfs.tar.gz -C /sysroot/
+
+/sbin/busybox insmod /kernel/virtio_ring.ko
+/sbin/busybox insmod /kernel/virtio.ko
+/sbin/busybox insmod /kernel/virtio_pci_modern_dev.ko
+/sbin/busybox insmod /kernel/virtio_pci_legacy_dev.ko
+/sbin/busybox insmod /kernel/virtio_pci.ko
+
+/sbin/busybox insmod /kernel/virtio_blk.ko
+/sbin/busybox insmod /kernel/failover.ko
+/sbin/busybox insmod /kernel/net_failover.ko
+/sbin/busybox insmod /kernel/virtio_net.ko
+
+/sbin/busybox insmod /kernel/netfs.ko
+/sbin/busybox insmod /kernel/fscache.ko
+/sbin/busybox insmod /kernel/9pnet.ko
+/sbin/busybox insmod /kernel/9p.ko
+/sbin/busybox insmod /kernel/9pnet_virtio.ko
+
+/sbin/busybox ip addr add 10.0.2.15/24 dev eth0
+/sbin/busybox ip link set eth0 up
+/sbin/busybox ip route add default via 10.0.2.2
+
+mount -t configfs -o nodev,noexec,nosuid configfs /sys/kernel/config
+mount -t debugfs -o nodev,noexec,nosuid debugfs /sys/kernel/debug
+
+mkdir -p /tmp/share
+
+mount -t 9p -o trans=virtio,version=9p2000.L certshare /tmp/share
+cat /tmp/share/login.pub >> /sysroot/root/.ssh/authorized_keys
+mkdir -p /sysroot/etc/cert/cms/
+cp -f /tmp/share/cms/ca_root.crt    /sysroot/etc/cert/cms/ca_root.crt
+cp -f /tmp/share/cms/cms.crl        /sysroot/etc/cert/cms/cms.crl
+cp -f /tmp/share/cms/signer.crt     /sysroot/etc/cert/cms/signer.crt
+cp -f /tmp/share/cms/signer.key     /sysroot/etc/cert/cms/signer.key
+mkdir -p /sysroot/etc/cert/communication/
+cp -f /tmp/share/communication/ca_root.crt          /sysroot/etc/cert/communication/ca_root.crt
+cp -f /tmp/share/communication/certificate.crt      /sysroot/etc/cert/communication/certificate.crt
+cp -f /tmp/share/communication/private.key          /sysroot/etc/cert/communication/private.key
+cp -f /tmp/share/communication/key_pwd.txt          /sysroot/etc/cert/communication/key_pwd.txt
+cp -f /tmp/share/communication/communication.crl    /sysroot/etc/cert/communication/communication.crl
+
+/sbin/busybox chmod 550 /sysroot/etc/cert
+/sbin/busybox chmod 550 /sysroot/etc/cert/cms
+/sbin/busybox chmod 440 /sysroot/etc/cert/cms/*
+/sbin/busybox chmod 550 /sysroot/etc/cert/communication
+/sbin/busybox chmod 440 /sysroot/etc/cert/communication/*
+
+/sbin/busybox chown -R 1202:1202 /sysroot/etc/cert/
+
+umount /tmp/share
+
+mount -t 9p -o trans=virtio,version=9p2000.L ccashare /tmp/share
+mv /tmp/share/fstab /sysroot/etc/fstab
+umount /tmp/share
+
+umount /sys/kernel/config
+umount /sys/kernel/debug
+umount /proc
+umount /sys
+umount /dev
+
+exec switch_root /sysroot /sbin/init

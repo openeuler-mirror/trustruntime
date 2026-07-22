@@ -1,0 +1,37 @@
+dir /sbin 0755 0 0
+dir /bin 0755 0 0
+dir /kernel 0755 0 0
+
+file /init bootstrapd 0755 0 0
+file /sbin/busybox tmp/busybox/busybox 0755 0 0
+
+slink /sbin/cp /sbin/busybox 0755 0 0
+slink /bin/sh /sbin/busybox 0755 0 0
+slink /bin/mkdir /sbin/busybox 0755 0 0
+slink /bin/cat /sbin/busybox 0755 0 0
+slink /sbin/switch_root /sbin/busybox 0755 0 0
+slink /sbin/mdev /sbin/busybox 0755 0 0
+slink /sbin/umount /sbin/busybox 0755 0 0
+slink /sbin/mount /sbin/busybox 0755 0 0
+slink /sbin/mv /sbin/busybox 0755 0 0
+
+
+file /kernel/virtio.ko tmp/kernel/drivers/virtio/virtio.ko 0644 0 0
+file /kernel/virtio_ring.ko tmp/kernel/drivers/virtio/virtio_ring.ko 0644 0 0
+file /kernel/virtio_blk.ko tmp/kernel/drivers/block/virtio_blk.ko 0644 0 0
+
+file /kernel/failover.ko tmp/kernel/net/core/failover.ko 0644 0 0
+file /kernel/net_failover.ko tmp/kernel/drivers/net/net_failover.ko 0644 0 0
+file /kernel/virtio_net.ko tmp/kernel/drivers/net/virtio_net.ko 0644 0 0
+
+file /kernel/virtio_pci_modern_dev.ko tmp/kernel/drivers/virtio/virtio_pci_modern_dev.ko 0644 0 0
+file /kernel/virtio_pci_legacy_dev.ko tmp/kernel/drivers/virtio/virtio_pci_legacy_dev.ko 0644 0 0
+file /kernel/virtio_pci.ko tmp/kernel/drivers/virtio/virtio_pci.ko 0644 0 0
+
+file /kernel/netfs.ko tmp/kernel/fs/netfs/netfs.ko 0644 0 0
+file /kernel/fscache.ko tmp/kernel/fs/fscache/fscache.ko 0644 0 0
+file /kernel/9pnet.ko tmp/kernel/net/9p/9pnet.ko 0644 0 0
+file /kernel/9p.ko tmp/kernel/fs/9p/9p.ko 0644 0 0
+file /kernel/9pnet_virtio.ko tmp/kernel/net/9p/9pnet_virtio.ko 0644 0 0
+
+file /rootfs.tar.gz tmp/euler_rootfs.tar.gz 0755 0 0

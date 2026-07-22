@@ -417,6 +417,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64",
+ "cert-gen",
  "openssl",
  "serde",
  "serde_json",
@@ -1067,6 +1068,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
+name = "trt-launcher"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "log4rs",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "trustring"
 version = "0.1.0"
 dependencies = [
@@ -1077,6 +1090,7 @@ dependencies = [
  "openssl-sys",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "trustruntime-framework",
 ]
@@ -1099,6 +1113,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "libc",
  "log",
  "log4rs",
  "openssl",

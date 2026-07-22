@@ -5,6 +5,7 @@ members = [
     "plugins/trustring",
     "integration-tests",
     "tools/cert-gen",
+    "launcher",
     "tools/cms-test-cli",
 ]
 resolver = "2"
