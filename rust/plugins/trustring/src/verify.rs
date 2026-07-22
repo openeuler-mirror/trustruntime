@@ -79,7 +79,8 @@ unsafe extern "C" fn verify_callback(ok: c_int, ctx: *mut X509_STORE_CTX) -> c_i
 /// - CertificateChainInvalid → result=3（证书链无效）
 /// - CertificateRevoked → result=4（CRL吊销）
 /// - SignatureMismatch → result=5（签名不匹配）
-/// - FormatError → result=6（格式错误）
+/// - InvalidKeyUsage → result=6（证书KeyUsage无效）
+/// - FormatError → result=7（格式错误）
 #[derive(Error, Debug, PartialEq)]
 pub(crate) enum VerifyError {
     /// OpenSSL内部错误
@@ -305,6 +306,20 @@ impl Verifier {
         Ok(())
     }
 
+    fn verify_signer_key_usage(cert: &X509) -> Result<(), VerifyError> {
+        // 签名证书KeyUsage必须仅包含digitalSignature（精确匹配）
+        let actual_flags = match trustruntime_framework::cert::extract_key_usage_flags(cert) {
+            Ok(flags) => flags,
+            Err(_) => return Err(VerifyError::InvalidKeyUsage),
+        };
+
+        if actual_flags != trustruntime_framework::cert::KeyUsageFlags::DIGITAL_SIGNATURE {
+            return Err(VerifyError::InvalidKeyUsage);
+        }
+
+        Ok(())
+    }
+
     /// 判断签名者证书身份
     ///
     /// 身份判断优先级：
@@ -389,6 +404,11 @@ impl Verifier {
         let mut cms = Self::parse_cms(signed_data)?;
         let store = self.build_cert_store()?;
         self.verify_cms_signature(&mut cms, &store, data, signer_cert_id)?;
+
+        // 验证签名方证书的KeyUsage（必须存在，否则返回格式错误）
+        let signer_cert = Self::extract_signer_cert(&cms).ok_or(VerifyError::FormatError)?;
+        Self::verify_signer_key_usage(&signer_cert)?;
+
         self.check_crl_revocation(&cms)?;
         self.determine_identity(&cms, signer_cert_id)
     }
@@ -426,6 +446,11 @@ impl Verifier {
         let mut cms = Self::parse_cms(signed_data)?;
         let store = self.build_cert_store()?;
         self.verify_cms_signature(&mut cms, &store, data, signer_cert_id)?;
+
+        // 验证签名方证书的KeyUsage（必须存在，否则返回格式错误）
+        let signer_cert = Self::extract_signer_cert(&cms).ok_or(VerifyError::FormatError)?;
+        Self::verify_signer_key_usage(&signer_cert)?;
+
         self.check_crl_revocation(&cms)
     }
 }
@@ -577,6 +602,12 @@ mod tests {
             .set_serial_number(&serial_bn.to_asn1_integer().unwrap())
             .unwrap();
 
+        use openssl::x509::extension::KeyUsage;
+        let mut ku_builder = KeyUsage::new();
+        ku_builder.digital_signature();
+        let ku = ku_builder.build().unwrap();
+        builder.append_extension(ku).unwrap();
+
         let context = builder.x509v3_context(Some(ca_cert), None);
         let ski = SubjectKeyIdentifier::new().build(&context).unwrap();
         builder.append_extension(ski).unwrap();
@@ -725,7 +756,7 @@ mod tests {
     /// 测试验签错误：FormatError
     ///
     /// 场景：传入无效的CMS DER数据
-    /// 预期：验签失败，返回FormatError（result=6）
+    /// 预期：验签失败，返回FormatError（result=7）
     #[test]
     fn verify_format_error_for_invalid_der() {
         let env = create_test_env();

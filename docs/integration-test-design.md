@@ -322,6 +322,23 @@ comm_ca_root = "test-certs/tls/ca.crt"
 - 未生效证书：not_before = days_from_now(365)，not_after = days_from_now(3650)
 - 有效证书：not_before = days_from_now(0)，not_after = days_from_now(365)
 
+#### 4.5.3 证书用途校验场景
+
+| 编号 | 场景名称 | 描述 | 验证点 |
+|------|----------|------|--------|
+| CC08 | 签名证书KeyUsage精确匹配 | 签名证书仅含digitalSignature | check_key_usage_exact 返回 Ok |
+| CC09 | 签名证书KeyUsage包含额外位 | 签名证书含digitalSignature+keyEncipherment | check_key_usage_exact 返回 Err |
+| CC10 | 通信证书KeyUsage包含匹配 | 通信证书含digitalSignature+keyEncipherment | check_key_usage_contains 返回 Ok |
+| CC11 | 通信证书ExtendedKeyUsage校验 | 通信证书含serverAuth | check_extended_key_usage 返回 Ok |
+| CC12 | 通信证书缺少必需KeyUsage位 | 通信证书仅含digitalSignature | check_key_usage_contains 返回 Err |
+| CC13 | 通信证书缺少ExtendedKeyUsage | 通信证书无EKU扩展 | check_extended_key_usage 返回 Err |
+
+**证书生成方式**：
+- 使用 cert-gen 库的 `create_cert_with_usage` 函数
+- 支持自定义 KeyUsage 和 ExtendedKeyUsage
+- KeyUsage 标志位：DIGITAL_SIGNATURE (0x80), KEY_ENCIPHERMENT (0x20)
+- ExtendedKeyUsage OID：serverAuth, clientAuth
+
 ---
 
 ## 5. 测试用例详细设计

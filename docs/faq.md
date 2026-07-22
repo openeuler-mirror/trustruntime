@@ -280,7 +280,25 @@ openssl verify -CAfile /etc/cert/cms/ca_root.crt signer.crt
 
 ---
 
-### Q: 验签返回 result=6（格式错误）？
+### Q: 验签返回 result=6（KeyUsage无效）？
+
+**A**: 原因：签名方证书KeyUsage扩展不符合要求。
+
+可能原因：
+
+- 签名证书缺少digitalSignature或nonRepudiation KeyUsage
+- 签名证书KeyUsage包含不允许的用途
+
+**检查证书KeyUsage**：
+
+```bash
+openssl x509 -in signer.crt -noout -text | grep "Key Usage"
+# 应显示: Digital Signature
+```
+
+---
+
+### Q: 验签返回 result=7（格式错误）？
 
 **A**: 原因：CMS DER 结构解析失败。
 

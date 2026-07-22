@@ -152,13 +152,13 @@ mod tests {
     use openssl::hash::MessageDigest;
     use openssl::nid::Nid;
     use openssl::pkey::PKey;
-    use openssl::x509::extension::SubjectKeyIdentifier;
+    use openssl::x509::extension::{KeyUsage, SubjectKeyIdentifier};
     use openssl::x509::{X509Builder, X509NameBuilder};
     use std::fs;
 
     /// 创建测试用的ECC-256证书和私钥
     ///
-    /// 生成自签名证书，包含Subject Key Identifier扩展
+    /// 生成自签名证书，包含Subject Key Identifier扩展和KeyUsage扩展
     fn create_test_cert_and_key() -> (Vec<u8>, Vec<u8>) {
         let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
         let ec_key = EcKey::generate(&group).unwrap();
@@ -184,6 +184,11 @@ mod tests {
         let serial = BigNum::from_u32(1).unwrap();
         let serial = serial.to_asn1_integer().unwrap();
         builder.set_serial_number(&serial).unwrap();
+
+        let mut ku_builder = KeyUsage::new();
+        ku_builder.digital_signature();
+        let ku = ku_builder.build().unwrap();
+        builder.append_extension(ku).unwrap();
 
         let context = builder.x509v3_context(None, None);
         let ski = SubjectKeyIdentifier::new().build(&context).unwrap();

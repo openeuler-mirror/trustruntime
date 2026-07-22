@@ -279,8 +279,8 @@ fn b06_verify_not_yet_valid_cert() {
 ///
 /// 测试场景：验证由无KeyUsage扩展证书生成的签名
 ///
-/// 预期结果：验签返回result=1（验签失败）
-/// 原因：证书缺少必要的KeyUsage扩展
+/// 预期结果：验签返回result=6（InvalidKeyUsage）
+/// 原因：证书缺少必要的KeyUsage扩展（digitalSignature或nonRepudiation）
 ///
 /// 测试依赖：无（插件API测试）
 #[test]
@@ -382,6 +382,12 @@ fn b07_verify_cert_without_key_usage() {
         .set_serial_number(&serial3.to_asn1_integer().unwrap())
         .unwrap();
 
+    use openssl::x509::extension::KeyUsage;
+    let mut ku_builder = KeyUsage::new();
+    ku_builder.digital_signature();
+    let ku = ku_builder.build().unwrap();
+    valid_signer_builder.append_extension(ku).unwrap();
+
     let context3 = valid_signer_builder.x509v3_context(Some(&ca_cert), None);
     let ski3 = SubjectKeyIdentifier::new().build(&context3).unwrap();
     valid_signer_builder.append_extension(ski3).unwrap();
@@ -434,7 +440,7 @@ fn b07_verify_cert_without_key_usage() {
     assert!(result.is_some());
 
     let resp: serde_json::Value = serde_json::from_slice(&result.unwrap()).unwrap();
-    assert_eq!(resp["result"], 1);
+    assert_eq!(resp["result"], 6);
 }
 
 /// B08: CRL吊销证书验签

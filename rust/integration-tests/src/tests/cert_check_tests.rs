@@ -5,8 +5,10 @@
 //! - CC04: 周期检查间隔自定义值
 //! - CC05: 证书过期检测
 //! - CC06: 证书有效检测
+//! - CC07: 证书未生效检测
+//! - CC08-CC13: 证书用途校验（KeyUsage、ExtendedKeyUsage）
 //!
-//! 重点验证：证书检查器功能、配置解析
+//! 重点验证：证书检查器功能、配置解析、证书用途校验
 
 use integration_tests::test_cert_gen::generate_expired_signer_cert;
 use std::fs;
@@ -253,4 +255,136 @@ fn cc07_certificate_checker_detects_not_yet_valid() {
     assert_eq!(statuses.len(), 1);
     assert!(statuses[0].not_yet_valid);
     assert!(!statuses[0].expired);
+}
+
+/// CC08: 签名证书KeyUsage精确匹配
+///
+/// 测试场景：签名证书仅含digitalSignature
+///
+/// 预期结果：check_key_usage_exact 返回 Ok(())
+/// 说明：签名证书必须精确匹配，仅允许digitalSignature
+#[test]
+fn cc08_signer_cert_key_usage_exact_match() {
+    use integration_tests::test_cert_gen::generate_signer_cert_exact_match;
+    use trustruntime_framework::cert::{
+        check_key_usage_exact, extract_subject_key_id, KeyUsageFlags,
+    };
+
+    let (_ca_pem, _valid_pem, _valid_key_pem, test_pem, _test_key_pem) =
+        generate_signer_cert_exact_match();
+
+    let cert = openssl::x509::X509::from_pem(&test_pem).unwrap();
+
+    // Debug: print certificate info
+    println!("Certificate subject: {:?}", cert.subject_name());
+    println!("Certificate PEM length: {}", test_pem.len());
+
+    // Check if SKI can be extracted (this proves the certificate is valid)
+    let ski_result = extract_subject_key_id(&cert);
+    println!("SKI extraction result: {:?}", ski_result.is_ok());
+
+    let result = check_key_usage_exact(&cert, KeyUsageFlags::DIGITAL_SIGNATURE);
+    println!("check_key_usage_exact result: {:?}", result);
+    assert!(result.is_ok());
+}
+
+/// CC09: 签名证书KeyUsage包含额外位
+///
+/// 测试场景：签名证书含digitalSignature+keyEncipherment
+///
+/// 预期结果：check_key_usage_exact 返回 Err
+/// 说明：签名证书不能包含额外用途位
+#[test]
+fn cc09_signer_cert_key_usage_extra_flags() {
+    use integration_tests::test_cert_gen::generate_signer_cert_with_extra_usage;
+    use trustruntime_framework::cert::{check_key_usage_exact, KeyUsageFlags};
+
+    let (_ca_pem, _valid_pem, _valid_key_pem, test_pem, _test_key_pem) =
+        generate_signer_cert_with_extra_usage();
+
+    let cert = openssl::x509::X509::from_pem(&test_pem).unwrap();
+    let result = check_key_usage_exact(&cert, KeyUsageFlags::DIGITAL_SIGNATURE);
+    assert!(result.is_err());
+}
+
+/// CC10: 通信证书KeyUsage包含匹配
+///
+/// 测试场景：通信证书含digitalSignature+keyEncipherment
+///
+/// 预期结果：check_key_usage_contains 返回 Ok(())
+/// 说明：通信证书必须包含所有必需位，可包含其他位
+#[test]
+fn cc10_comm_cert_key_usage_contains_match() {
+    use integration_tests::test_cert_gen::generate_comm_cert_full_usage;
+    use trustruntime_framework::cert::{check_key_usage_contains, KeyUsageFlags};
+
+    let (_ca_pem, _valid_pem, _valid_key_pem, test_pem, _test_key_pem) =
+        generate_comm_cert_full_usage();
+
+    let cert = openssl::x509::X509::from_pem(&test_pem).unwrap();
+    let result = check_key_usage_contains(
+        &cert,
+        KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
+    );
+    assert!(result.is_ok());
+}
+
+/// CC11: 通信证书ExtendedKeyUsage校验
+///
+/// 测试场景：通信证书含serverAuth
+///
+/// 预期结果：check_extended_key_usage 返回 Ok(())
+/// 说明：通信证书必须包含serverAuth
+#[test]
+fn cc11_comm_cert_extended_key_usage_check() {
+    use integration_tests::test_cert_gen::generate_comm_cert_full_usage;
+    use trustruntime_framework::cert::check_extended_key_usage;
+
+    let (_ca_pem, _valid_pem, _valid_key_pem, test_pem, _test_key_pem) =
+        generate_comm_cert_full_usage();
+
+    let cert = openssl::x509::X509::from_pem(&test_pem).unwrap();
+    let result = check_extended_key_usage(&cert, "serverAuth");
+    assert!(result.is_ok());
+}
+
+/// CC12: 通信证书缺少必需KeyUsage位
+///
+/// 测试场景：通信证书仅含digitalSignature（缺少keyEncipherment）
+///
+/// 预期结果：check_key_usage_contains 返回 Err
+/// 说明：通信证书必须同时包含digitalSignature和keyEncipherment
+#[test]
+fn cc12_comm_cert_missing_required_key_usage() {
+    use integration_tests::test_cert_gen::generate_comm_cert_missing_key_usage;
+    use trustruntime_framework::cert::{check_key_usage_contains, KeyUsageFlags};
+
+    let (_ca_pem, _valid_pem, _valid_key_pem, test_pem, _test_key_pem) =
+        generate_comm_cert_missing_key_usage();
+
+    let cert = openssl::x509::X509::from_pem(&test_pem).unwrap();
+    let result = check_key_usage_contains(
+        &cert,
+        KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
+    );
+    assert!(result.is_err());
+}
+
+/// CC13: 通信证书缺少ExtendedKeyUsage
+///
+/// 测试场景：通信证书不含ExtendedKeyUsage扩展
+///
+/// 预期结果：check_extended_key_usage 返回 Err
+/// 说明：通信证书必须包含ExtendedKeyUsage扩展
+#[test]
+fn cc13_comm_cert_missing_extended_key_usage() {
+    use integration_tests::test_cert_gen::generate_comm_cert_missing_eku;
+    use trustruntime_framework::cert::check_extended_key_usage;
+
+    let (_ca_pem, _valid_pem, _valid_key_pem, test_pem, _test_key_pem) =
+        generate_comm_cert_missing_eku();
+
+    let cert = openssl::x509::X509::from_pem(&test_pem).unwrap();
+    let result = check_extended_key_usage(&cert, "serverAuth");
+    assert!(result.is_err());
 }

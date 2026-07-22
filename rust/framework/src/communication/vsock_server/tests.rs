@@ -68,6 +68,8 @@ fn create_test_server_cert(
     ca_cert: &openssl::x509::X509,
     ca_pkey: &PKey<openssl::pkey::Private>,
 ) -> (openssl::x509::X509, PKey<openssl::pkey::Private>) {
+    use openssl::x509::extension::{ExtendedKeyUsage, KeyUsage};
+
     let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
     let server_key = EcKey::generate(&group).unwrap();
     let server_pkey = PKey::from_ec_key(server_key.clone()).unwrap();
@@ -95,6 +97,18 @@ fn create_test_server_cert(
     server_builder
         .set_serial_number(&serial2.to_asn1_integer().unwrap())
         .unwrap();
+
+    // 添加KeyUsage扩展：digitalSignature + keyEncipherment
+    let key_usage = KeyUsage::new()
+        .digital_signature()
+        .key_encipherment()
+        .build()
+        .unwrap();
+    server_builder.append_extension(key_usage).unwrap();
+
+    // 添加ExtendedKeyUsage扩展：serverAuth
+    let ext_key_usage = ExtendedKeyUsage::new().server_auth().build().unwrap();
+    server_builder.append_extension(ext_key_usage).unwrap();
 
     let context2 = server_builder.x509v3_context(Some(ca_cert), None);
     let ski2 = SubjectKeyIdentifier::new().build(&context2).unwrap();
@@ -214,7 +228,6 @@ fn vsock_transport_handler_registration_overwrites() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-#[ignore = "requires vsock environment"]
 async fn vsock_transport_start_returns_ok() {
     let temp_dir = std::env::temp_dir().join("vsock_start_test");
     fs::create_dir_all(&temp_dir).unwrap();

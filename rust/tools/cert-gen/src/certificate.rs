@@ -4,13 +4,78 @@ use openssl::ec::{EcGroup, EcKey};
 use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;
 use openssl::x509::extension::{
-    AuthorityKeyIdentifier, BasicConstraints, CrlNumber, KeyUsage, SubjectKeyIdentifier,
+    AuthorityKeyIdentifier, BasicConstraints, CrlNumber, ExtendedKeyUsage, KeyUsage,
+    SubjectKeyIdentifier,
 };
-use openssl::x509::{X509Builder, X509CrlBuilder, X509NameBuilder, X509RevokedBuilder, X509};
+use openssl::x509::{X509Builder, X509CrlBuilder, X509Extension, X509NameBuilder, X509RevokedBuilder, X509};
 use std::fs;
 use std::path::Path;
 
 use crate::utils::{get_subject_key_id, rand_serial};
+
+/// KeyUsage 标志位
+pub struct KeyUsageFlags;
+
+impl KeyUsageFlags {
+    pub const DIGITAL_SIGNATURE: u32 = 0x80;
+    pub const KEY_ENCIPHERMENT: u32 = 0x20;
+    pub const NON_REPUDIATION: u32 = 0x40;
+    pub const DATA_ENCIPHERMENT: u32 = 0x10;
+    pub const KEY_AGREEMENT: u32 = 0x08;
+    pub const KEY_CERT_SIGN: u32 = 0x04;
+    pub const CRL_SIGN: u32 = 0x02;
+}
+
+fn build_key_usage_extension(key_usage: u32) -> X509Extension {
+    let mut ku = KeyUsage::new();
+    if (key_usage & KeyUsageFlags::DIGITAL_SIGNATURE) != 0 {
+        ku.digital_signature();
+    }
+    if (key_usage & KeyUsageFlags::KEY_ENCIPHERMENT) != 0 {
+        ku.key_encipherment();
+    }
+    if (key_usage & KeyUsageFlags::NON_REPUDIATION) != 0 {
+        ku.non_repudiation();
+    }
+    if (key_usage & KeyUsageFlags::DATA_ENCIPHERMENT) != 0 {
+        ku.data_encipherment();
+    }
+    if (key_usage & KeyUsageFlags::KEY_AGREEMENT) != 0 {
+        ku.key_agreement();
+    }
+    if (key_usage & KeyUsageFlags::KEY_CERT_SIGN) != 0 {
+        ku.key_cert_sign();
+    }
+    if (key_usage & KeyUsageFlags::CRL_SIGN) != 0 {
+        ku.crl_sign();
+    }
+    ku.build().expect("Failed to build KeyUsage")
+}
+
+fn build_extended_key_usage_extension(eku_oids: &[&str]) -> X509Extension {
+    let mut eku = ExtendedKeyUsage::new();
+    for oid in eku_oids {
+        match *oid {
+            "serverAuth" => eku.server_auth(),
+            "clientAuth" => eku.client_auth(),
+            _ => panic!("Unsupported EKU OID: {}", oid),
+        };
+    }
+    eku.build().expect("Failed to build ExtendedKeyUsage")
+}
+
+fn add_key_identifiers(builder: &mut X509Builder, ca_cert: &X509) {
+    let context = builder.x509v3_context(Some(ca_cert), None);
+    let ski = SubjectKeyIdentifier::new()
+        .build(&context)
+        .expect("Failed to build SKI");
+    let aki = AuthorityKeyIdentifier::new()
+        .keyid(true)
+        .build(&context)
+        .expect("Failed to build AKI");
+    builder.append_extension(ski).expect("Failed to append SKI");
+    builder.append_extension(aki).expect("Failed to append AKI");
+}
 
 pub fn create_ca_cert(group: &EcGroup, cn: &str) -> (X509, PKey<openssl::pkey::Private>, Vec<u8>) {
     let ca_key = EcKey::generate(group).expect("Failed to generate CA key");
@@ -68,74 +133,86 @@ pub fn create_ca_cert(group: &EcGroup, cn: &str) -> (X509, PKey<openssl::pkey::P
     (cert, ca_pkey, cert_id)
 }
 
-pub fn create_signer_cert(
+pub fn create_cert_with_usage(
     group: &EcGroup,
     ca_cert: &X509,
     ca_pkey: &PKey<openssl::pkey::Private>,
-    cn: String,
+    cn: &str,
+    key_usage: u32,
+    extended_key_usage: Option<&[&str]>,
 ) -> (X509, PKey<openssl::pkey::Private>, Vec<u8>) {
-    let signer_key = EcKey::generate(group).expect("Failed to generate signer key");
-    let signer_pkey = PKey::from_ec_key(signer_key.clone()).expect("Failed to create signer PKey");
+    let key = EcKey::generate(group).expect("Failed to generate key");
+    let pkey = PKey::from_ec_key(key.clone()).expect("Failed to create PKey");
 
     let mut name = X509NameBuilder::new().expect("Failed to create name builder");
-    name.append_entry_by_text("CN", &cn)
-        .expect("Failed to append CN");
+    name.append_entry_by_text("CN", cn).expect("Failed to append CN");
     let name = name.build();
-
-    let ca_name = ca_cert.subject_name();
 
     let mut builder = X509Builder::new().expect("Failed to create builder");
     builder.set_version(2).expect("Failed to set version");
-    builder
-        .set_subject_name(&name)
-        .expect("Failed to set subject");
-    builder
-        .set_issuer_name(ca_name)
-        .expect("Failed to set issuer");
-    builder
-        .set_pubkey(&signer_pkey)
-        .expect("Failed to set pubkey");
+    builder.set_subject_name(&name).expect("Failed to set subject");
+    builder.set_issuer_name(ca_cert.subject_name()).expect("Failed to set issuer");
+    builder.set_pubkey(&pkey).expect("Failed to set pubkey");
 
     let not_before = Asn1Time::days_from_now(0).expect("Failed to create not_before");
     let not_after = Asn1Time::days_from_now(3650).expect("Failed to create not_after");
-    builder
-        .set_not_before(&not_before)
-        .expect("Failed to set not_before");
-    builder
-        .set_not_after(&not_after)
-        .expect("Failed to set not_after");
+    builder.set_not_before(&not_before).expect("Failed to set not_before");
+    builder.set_not_after(&not_after).expect("Failed to set not_after");
 
     let serial = BigNum::from_u32(rand_serial()).expect("Failed to create serial");
     builder
         .set_serial_number(&serial.to_asn1_integer().expect("Failed to convert serial"))
         .expect("Failed to set serial");
 
-    let context = builder.x509v3_context(Some(ca_cert), None);
-    let ski = SubjectKeyIdentifier::new()
-        .build(&context)
-        .expect("Failed to build SKI");
-    let aki = AuthorityKeyIdentifier::new()
-        .keyid(true)
-        .build(&context)
-        .expect("Failed to build AKI");
-
-    builder.append_extension(ski).expect("Failed to append SKI");
-    builder.append_extension(aki).expect("Failed to append AKI");
-
-    let ku = KeyUsage::new()
-        .digital_signature()
-        .build()
-        .expect("Failed to build KU");
-    builder.append_extension(ku).expect("Failed to append KU");
-
     builder
-        .sign(ca_pkey, MessageDigest::sha256())
-        .expect("Failed to sign cert");
-    let cert = builder.build();
+        .append_extension(build_key_usage_extension(key_usage))
+        .expect("Failed to append KU");
 
+    if let Some(eku_oids) = extended_key_usage {
+        builder
+            .append_extension(build_extended_key_usage_extension(eku_oids))
+            .expect("Failed to append EKU");
+    }
+
+    add_key_identifiers(&mut builder, ca_cert);
+
+    builder.sign(ca_pkey, MessageDigest::sha256()).expect("Failed to sign cert");
+    let cert = builder.build();
     let cert_id = get_subject_key_id(&cert);
 
-    (cert, signer_pkey, cert_id)
+    (cert, pkey, cert_id)
+}
+
+pub fn create_signer_cert(
+    group: &EcGroup,
+    ca_cert: &X509,
+    ca_pkey: &PKey<openssl::pkey::Private>,
+    cn: String,
+) -> (X509, PKey<openssl::pkey::Private>, Vec<u8>) {
+    create_cert_with_usage(
+        group,
+        ca_cert,
+        ca_pkey,
+        &cn,
+        KeyUsageFlags::DIGITAL_SIGNATURE,
+        None,
+    )
+}
+
+pub fn create_comm_cert(
+    group: &EcGroup,
+    ca_cert: &X509,
+    ca_pkey: &PKey<openssl::pkey::Private>,
+    cn: &str,
+) -> (X509, PKey<openssl::pkey::Private>, Vec<u8>) {
+    create_cert_with_usage(
+        group,
+        ca_cert,
+        ca_pkey,
+        cn,
+        KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
+        Some(&["serverAuth"]),
+    )
 }
 
 pub fn create_expired_cert(
@@ -179,6 +256,11 @@ pub fn create_expired_cert(
     builder
         .set_serial_number(&serial.to_asn1_integer().expect("Failed to convert serial"))
         .expect("Failed to set serial");
+
+    let mut ku_builder = KeyUsage::new();
+    ku_builder.digital_signature();
+    let ku = ku_builder.build().expect("Failed to build KU");
+    builder.append_extension(ku).expect("Failed to append KU");
 
     let context = builder.x509v3_context(Some(ca_cert), None);
     let ski = SubjectKeyIdentifier::new()
@@ -239,7 +321,12 @@ pub fn create_not_yet_valid_cert(
         .set_serial_number(&serial.to_asn1_integer().expect("Failed to convert serial"))
         .expect("Failed to set serial");
 
-    let context = builder.x509v3_context(Some(ca_cert), None);
+    let mut ku_builder = KeyUsage::new();
+    ku_builder.digital_signature();
+    let ku = ku_builder.build().expect("Failed to build KU");
+    builder.append_extension(ku).expect("Failed to append KU");
+
+    let context = builder.x509v3_context(None, None);
     let ski = SubjectKeyIdentifier::new()
         .build(&context)
         .expect("Failed to build SKI");
@@ -291,6 +378,11 @@ pub fn create_self_signed_cert(
         .set_serial_number(&serial.to_asn1_integer().expect("Failed to convert serial"))
         .expect("Failed to set serial");
 
+    let mut ku_builder = KeyUsage::new();
+    ku_builder.digital_signature();
+    let ku = ku_builder.build().expect("Failed to build KU");
+    builder.append_extension(ku).expect("Failed to append KU");
+
     let context = builder.x509v3_context(None, None);
     let ski = SubjectKeyIdentifier::new()
         .build(&context)
@@ -313,7 +405,7 @@ pub fn create_tls_server_cert(
     ca_pkey: &PKey<openssl::pkey::Private>,
     cn: String,
 ) -> (X509, PKey<openssl::pkey::Private>, Vec<u8>) {
-    create_signer_cert(group, ca_cert, ca_pkey, cn)
+    create_comm_cert(group, ca_cert, ca_pkey, &cn)
 }
 
 pub fn create_tls_client_cert(
@@ -355,6 +447,19 @@ pub fn create_tls_client_cert(
     builder
         .set_serial_number(&serial.to_asn1_integer().expect("Failed to convert serial"))
         .expect("Failed to set serial");
+
+    let ku = KeyUsage::new()
+        .digital_signature()
+        .key_encipherment()
+        .build()
+        .expect("Failed to build KU");
+    builder.append_extension(ku).expect("Failed to append KU");
+
+    let eku = ExtendedKeyUsage::new()
+        .client_auth()
+        .build()
+        .expect("Failed to build EKU");
+    builder.append_extension(eku).expect("Failed to append EKU");
 
     let context = builder.x509v3_context(Some(ca_cert), None);
     let ski = SubjectKeyIdentifier::new()

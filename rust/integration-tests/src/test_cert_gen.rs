@@ -21,8 +21,8 @@ use openssl::x509::extension::{AuthorityKeyIdentifier, SubjectKeyIdentifier};
 use openssl::x509::{X509Builder, X509NameBuilder};
 
 use cert_gen::certificate::{
-    create_ca_cert, create_expired_cert, create_not_yet_valid_cert, create_self_signed_cert,
-    create_signer_cert,
+    create_ca_cert, create_cert_with_usage, create_expired_cert, create_not_yet_valid_cert,
+    create_self_signed_cert, create_signer_cert, KeyUsageFlags,
 };
 
 /// 证书包类型
@@ -185,6 +185,12 @@ pub fn generate_revoked_signer_cert() -> RevokedCertBundle {
         .set_serial_number(&serial_revoked.to_asn1_integer().unwrap())
         .unwrap();
 
+    use openssl::x509::extension::KeyUsage;
+    let mut ku_builder = KeyUsage::new();
+    ku_builder.digital_signature();
+    let ku = ku_builder.build().unwrap();
+    revoked_signer_builder.append_extension(ku).unwrap();
+
     let context_revoked = revoked_signer_builder.x509v3_context(Some(&ca_cert), None);
     let ski_revoked = SubjectKeyIdentifier::new().build(&context_revoked).unwrap();
     let aki_revoked = AuthorityKeyIdentifier::new()
@@ -246,4 +252,219 @@ pub fn extract_cert_id_from_pem(cert_pem: &[u8]) -> Vec<u8> {
     cert.subject_key_id()
         .map(|ski| ski.as_slice().to_vec())
         .unwrap_or_default()
+}
+
+/// 生成签名证书（仅digitalSignature）用于CC08测试
+///
+/// 用于测试证书用途校验场景 CC08（签名证书KeyUsage精确匹配）。
+/// 签名证书仅含digitalSignature，符合签名证书用途要求。
+///
+/// # Returns
+/// CertBundle元组：
+/// - CA证书PEM
+/// - 有效签名者证书PEM
+/// - 有效签名者私钥PEM
+/// - 测试签名者证书PEM（仅digitalSignature）
+/// - 测试签名者私钥PEM
+pub fn generate_signer_cert_exact_match() -> CertBundle {
+    let group = get_group();
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+
+    let (valid_cert, valid_pkey, _) = create_cert_with_usage(
+        &group,
+        &ca_cert,
+        &ca_pkey,
+        "Valid Signer",
+        KeyUsageFlags::DIGITAL_SIGNATURE,
+        None,
+    );
+
+    let (test_cert, test_pkey, _) = create_cert_with_usage(
+        &group,
+        &ca_cert,
+        &ca_pkey,
+        "Test Signer",
+        KeyUsageFlags::DIGITAL_SIGNATURE,
+        None,
+    );
+
+    (
+        ca_cert.to_pem().unwrap(),
+        valid_cert.to_pem().unwrap(),
+        valid_pkey.private_key_to_pem_pkcs8().unwrap(),
+        test_cert.to_pem().unwrap(),
+        test_pkey.private_key_to_pem_pkcs8().unwrap(),
+    )
+}
+
+/// 生成签名证书（含额外用途）用于CC09测试
+///
+/// 用于测试证书用途校验场景 CC09（签名证书KeyUsage包含额外位）。
+/// 签名证书含digitalSignature+keyEncipherment，不符合签名证书用途要求。
+///
+/// # Returns
+/// CertBundle元组：
+/// - CA证书PEM
+/// - 有效签名者证书PEM
+/// - 有效签名者私钥PEM
+/// - 测试签名者证书PEM（含额外用途）
+/// - 测试签名者私钥PEM
+pub fn generate_signer_cert_with_extra_usage() -> CertBundle {
+    let group = get_group();
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+
+    let (valid_cert, valid_pkey, _) = create_cert_with_usage(
+        &group,
+        &ca_cert,
+        &ca_pkey,
+        "Valid Signer",
+        KeyUsageFlags::DIGITAL_SIGNATURE,
+        None,
+    );
+
+    let (test_cert, test_pkey, _) = create_cert_with_usage(
+        &group,
+        &ca_cert,
+        &ca_pkey,
+        "Test Signer",
+        KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
+        None,
+    );
+
+    (
+        ca_cert.to_pem().unwrap(),
+        valid_cert.to_pem().unwrap(),
+        valid_pkey.private_key_to_pem_pkcs8().unwrap(),
+        test_cert.to_pem().unwrap(),
+        test_pkey.private_key_to_pem_pkcs8().unwrap(),
+    )
+}
+
+/// 生成通信证书（完整用途）用于CC10/CC11测试
+///
+/// 用于测试证书用途校验场景 CC10/CC11（通信证书KeyUsage包含匹配、ExtendedKeyUsage校验）。
+/// 通信证书含digitalSignature+keyEncipherment+serverAuth，符合通信证书用途要求。
+///
+/// # Returns
+/// CertBundle元组：
+/// - CA证书PEM
+/// - 有效通信证书PEM
+/// - 有效通信私钥PEM
+/// - 测试通信证书PEM（完整用途）
+/// - 测试通信私钥PEM
+pub fn generate_comm_cert_full_usage() -> CertBundle {
+    let group = get_group();
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+
+    let (valid_cert, valid_pkey, _) = create_cert_with_usage(
+        &group,
+        &ca_cert,
+        &ca_pkey,
+        "Valid Comm",
+        KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
+        Some(&["serverAuth"]),
+    );
+
+    let (test_cert, test_pkey, _) = create_cert_with_usage(
+        &group,
+        &ca_cert,
+        &ca_pkey,
+        "Test Comm",
+        KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
+        Some(&["serverAuth"]),
+    );
+
+    (
+        ca_cert.to_pem().unwrap(),
+        valid_cert.to_pem().unwrap(),
+        valid_pkey.private_key_to_pem_pkcs8().unwrap(),
+        test_cert.to_pem().unwrap(),
+        test_pkey.private_key_to_pem_pkcs8().unwrap(),
+    )
+}
+
+/// 生成通信证书（缺少keyEncipherment）用于CC12测试
+///
+/// 用于测试证书用途校验场景 CC12（通信证书缺少必需KeyUsage位）。
+/// 通信证书仅含digitalSignature+serverAuth，缺少keyEncipherment，不符合通信证书用途要求。
+///
+/// # Returns
+/// CertBundle元组：
+/// - CA证书PEM
+/// - 有效通信证书PEM
+/// - 有效通信私钥PEM
+/// - 测试通信证书PEM（缺少keyEncipherment）
+/// - 测试通信私钥PEM
+pub fn generate_comm_cert_missing_key_usage() -> CertBundle {
+    let group = get_group();
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+
+    let (valid_cert, valid_pkey, _) = create_cert_with_usage(
+        &group,
+        &ca_cert,
+        &ca_pkey,
+        "Valid Comm",
+        KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
+        Some(&["serverAuth"]),
+    );
+
+    let (test_cert, test_pkey, _) = create_cert_with_usage(
+        &group,
+        &ca_cert,
+        &ca_pkey,
+        "Test Comm",
+        KeyUsageFlags::DIGITAL_SIGNATURE,
+        Some(&["serverAuth"]),
+    );
+
+    (
+        ca_cert.to_pem().unwrap(),
+        valid_cert.to_pem().unwrap(),
+        valid_pkey.private_key_to_pem_pkcs8().unwrap(),
+        test_cert.to_pem().unwrap(),
+        test_pkey.private_key_to_pem_pkcs8().unwrap(),
+    )
+}
+
+/// 生成通信证书（缺少EKU）用于CC13测试
+///
+/// 用于测试证书用途校验场景 CC13（通信证书缺少ExtendedKeyUsage）。
+/// 通信证书含digitalSignature+keyEncipherment，但无ExtendedKeyUsage，不符合通信证书用途要求。
+///
+/// # Returns
+/// CertBundle元组：
+/// - CA证书PEM
+/// - 有效通信证书PEM
+/// - 有效通信私钥PEM
+/// - 测试通信证书PEM（缺少EKU）
+/// - 测试通信私钥PEM
+pub fn generate_comm_cert_missing_eku() -> CertBundle {
+    let group = get_group();
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+
+    let (valid_cert, valid_pkey, _) = create_cert_with_usage(
+        &group,
+        &ca_cert,
+        &ca_pkey,
+        "Valid Comm",
+        KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
+        Some(&["serverAuth"]),
+    );
+
+    let (test_cert, test_pkey, _) = create_cert_with_usage(
+        &group,
+        &ca_cert,
+        &ca_pkey,
+        "Test Comm",
+        KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
+        None,
+    );
+
+    (
+        ca_cert.to_pem().unwrap(),
+        valid_cert.to_pem().unwrap(),
+        valid_pkey.private_key_to_pem_pkcs8().unwrap(),
+        test_cert.to_pem().unwrap(),
+        test_pkey.private_key_to_pem_pkcs8().unwrap(),
+    )
 }

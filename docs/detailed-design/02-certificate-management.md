@@ -44,6 +44,30 @@ pub enum CertLoadError {
     OpenSslError(openssl::error::ErrorStack),
     InvalidFormat,  // PEM 和 DER 均解析失败
 }
+
+/// KeyUsage 标志位
+pub struct KeyUsageFlags;
+
+impl KeyUsageFlags {
+    pub const DIGITAL_SIGNATURE: u32 = 0x80;
+    pub const KEY_ENCIPHERMENT: u32 = 0x20;
+    pub const NON_REPUDIATION: u32 = 0x40;
+    pub const DATA_ENCIPHERMENT: u32 = 0x10;
+    pub const KEY_AGREEMENT: u32 = 0x08;
+    pub const KEY_CERT_SIGN: u32 = 0x04;
+    pub const CRL_SIGN: u32 = 0x02;
+}
+
+/// 检查证书是否包含指定的KeyUsage位（包含匹配）
+/// 用于通信证书：证书必须包含所有指定位，可包含其他位
+pub fn check_key_usage_contains(cert: &X509, required_flags: u32) -> Result<(), CertLoadError>;
+
+/// 检查证书是否仅包含指定的KeyUsage位（精确匹配）
+/// 用于签名证书：证书必须仅包含指定位，不能包含其他位
+pub fn check_key_usage_exact(cert: &X509, required_flags: u32) -> Result<(), CertLoadError>;
+
+/// 检查证书ExtendedKeyUsage扩展
+pub fn check_extended_key_usage(cert: &X509, required_oid: &str) -> Result<(), CertLoadError>;
 ```
 
 ### framework::core::cert_checker
@@ -226,6 +250,19 @@ cert_checker (后台 task)
 | 有效证书 is_expired() | 返回 false |
 | 未生效证书 is_not_yet_valid() | 返回 true |
 | 已生效证书 is_not_yet_valid() | 返回 false |
+
+### 证书用途校验必须覆盖的场景
+
+| 场景 | 验证点 |
+|------|--------|
+| KeyUsage包含匹配 | 证书包含所有必需位，返回Ok |
+| KeyUsage包含匹配（额外位） | 证书包含必需位+额外位，返回Ok |
+| KeyUsage包含匹配失败 | 证书缺少必需位，返回Err |
+| KeyUsage精确匹配 | 证书仅包含指定位，返回Ok |
+| KeyUsage精确匹配失败（额外位） | 证书包含额外位，返回Err |
+| KeyUsage精确匹配失败（缺少位） | 证书缺少必需位，返回Err |
+| ExtendedKeyUsage匹配 | 证书包含指定OID，返回Ok |
+| ExtendedKeyUsage匹配失败 | 证书缺少指定OID，返回Err |
 
 ### cert_loader 必须覆盖的场景
 
