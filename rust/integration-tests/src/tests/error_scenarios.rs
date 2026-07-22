@@ -104,7 +104,7 @@ fn e01_signature_mismatch() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect to node-a");
 
@@ -113,7 +113,7 @@ fn e01_signature_mismatch() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect to node-b");
 
@@ -185,7 +185,7 @@ fn e02_certificate_chain_invalid() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect to self-signed node");
 
@@ -194,7 +194,7 @@ fn e02_certificate_chain_invalid() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect to node-b");
 
@@ -264,7 +264,7 @@ fn e03_crl_revoked() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect to revoked node");
 
@@ -273,7 +273,7 @@ fn e03_crl_revoked() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect to node-b");
 
@@ -300,7 +300,7 @@ fn e03_crl_revoked() {
 ///
 /// 测试场景：发送非CMS DER结构的签名数据
 ///
-/// 预期结果：验签返回result=6（CMS格式错误）
+/// 预期结果：验签返回result=7（CMS格式错误）
 /// 原因：无法解析签名数据结构
 ///
 /// 测试依赖：Linux环境、vsock、TLS证书链
@@ -330,7 +330,7 @@ fn e04_cms_format_error() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect to node-b");
 
@@ -341,7 +341,7 @@ fn e04_cms_format_error() {
         .verify(TEST_DATA_A, &invalid_signed_data, &fake_id)
         .expect("Verify request to node-b failed");
 
-    assert_verify_failed(verify_resp.result, 6);
+    assert_verify_failed(verify_resp.result, 7);
 
     client_b.close().expect("Failed to close client_b");
 
@@ -352,7 +352,7 @@ fn e04_cms_format_error() {
 ///
 /// 测试场景：发送不完整的JSON请求（缺少必要字段）
 ///
-/// 预期结果：验签返回result=10（JSON解析错误）
+/// 预期结果：验签返回result=20（JSON解析错误）
 /// 原因：请求格式不符合协议规范
 ///
 /// 测试依赖：Linux环境、vsock、TLS证书链
@@ -382,7 +382,7 @@ fn e05_json_parse_error() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect to node-b");
 
@@ -395,7 +395,7 @@ fn e05_json_parse_error() {
         .verify_raw(incomplete_req.to_string())
         .expect("Verify request to node-b failed");
 
-    assert_verify_failed(verify_resp.result, 10);
+    assert_verify_failed(verify_resp.result, 20);
 
     client_b.close().expect("Failed to close client_b");
 
@@ -406,7 +406,7 @@ fn e05_json_parse_error() {
 ///
 /// 测试场景：发送无效Base64编码的ID字段
 ///
-/// 预期结果：验签返回result=11（Base64解码错误）
+/// 预期结果：验签返回result=21（Base64解码错误）
 /// 原因：ID字段包含非法Base64字符
 ///
 /// 测试依赖：Linux环境、vsock、TLS证书链
@@ -436,7 +436,7 @@ fn e06_base64_decode_error() {
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
         &paths.tls_client_key(),
-        None,
+        paths.tls_key_password().as_deref(),
     )
     .expect("Failed to connect to node-b");
 
@@ -445,7 +445,7 @@ fn e06_base64_decode_error() {
         .verify(TEST_DATA_A, "validlookingbase64", invalid_base64)
         .expect("Verify request to node-b failed");
 
-    assert_verify_failed(verify_resp.result, 11);
+    assert_verify_failed(verify_resp.result, 21);
 
     client_b.close().expect("Failed to close client_b");
 
@@ -593,7 +593,7 @@ fn e11_verify_sign_crl_revoked() {}
 ///
 /// 测试场景：verify-sign操作中，签名数据格式无效
 ///
-/// 预期结果：返回result=6，signed_data=""，id=""
+/// 预期结果：返回result=7，signed_data=""，id=""
 /// 原因：无法解析CMS结构
 ///
 /// 测试依赖：无（插件API测试）
@@ -614,7 +614,7 @@ fn e12_verify_sign_cms_format_error() {
     );
     let resp = handle_verify_sign_and_parse(&ctx, &req);
 
-    assert_eq!(resp["result"], 6);
+    assert_eq!(resp["result"], 7);
     assert_eq!(resp["signed_data"], "");
     assert_eq!(resp["id"], "");
 }
@@ -713,7 +713,7 @@ fn e16_verify_sign_signer_key_missing() {
 ///
 /// 测试场景：verify-sign请求中缺少to-sign字段
 ///
-/// 预期结果：返回result=10（JSON解析错误）
+/// 预期结果：返回result=20（JSON解析错误）
 /// 原因：请求格式不完整
 ///
 /// 测试依赖：无（插件API测试）
@@ -732,14 +732,14 @@ fn e17_missing_to_sign_field() {
     .unwrap();
 
     let resp = handle_verify_sign_and_parse(&ctx, &req);
-    assert_eq!(resp["result"], 10);
+    assert_eq!(resp["result"], 20);
 }
 
 /// E18: verify-sign缺少to-verify字段
 ///
 /// 测试场景：verify-sign请求中缺少to-verify字段
 ///
-/// 预期结果：返回result=10（JSON解析错误）
+/// 预期结果：返回result=20（JSON解析错误）
 /// 原因：请求格式不完整
 ///
 /// 测试依赖：无（插件API测试）
@@ -757,14 +757,14 @@ fn e18_missing_to_verify_field() {
     .unwrap();
 
     let resp = handle_verify_sign_and_parse(&ctx, &req);
-    assert_eq!(resp["result"], 10);
+    assert_eq!(resp["result"], 20);
 }
 
 /// E19: verify-sign中to-sign.id无效Base64
 ///
 /// 测试场景：verify-sign请求中to-sign.id字段包含非法Base64字符
 ///
-/// 预期结果：返回result=11，signed_data=""，id=""
+/// 预期结果：返回result=21，signed_data=""，id=""
 /// 原因：无法解码Base64字符串
 ///
 /// 测试依赖：无（插件API测试）
@@ -792,7 +792,7 @@ fn e19_invalid_base64_in_to_sign_id() {
     );
     let resp = handle_verify_sign_and_parse(&ctx, &req);
 
-    assert_eq!(resp["result"], 11);
+    assert_eq!(resp["result"], 21);
     assert_eq!(resp["signed_data"], "");
     assert_eq!(resp["id"], "");
 }
@@ -801,7 +801,7 @@ fn e19_invalid_base64_in_to_sign_id() {
 ///
 /// 测试场景：verify-sign请求中signed_data字段包含非法Base64字符
 ///
-/// 预期结果：返回result=11，signed_data=""，id=""
+/// 预期结果：返回result=21，signed_data=""，id=""
 /// 原因：无法解码Base64字符串
 ///
 /// 测试依赖：无（插件API测试）
@@ -821,7 +821,7 @@ fn e20_invalid_base64_in_signed_data() {
     );
     let resp = handle_verify_sign_and_parse(&ctx, &req);
 
-    assert_eq!(resp["result"], 11);
+    assert_eq!(resp["result"], 21);
     assert_eq!(resp["signed_data"], "");
     assert_eq!(resp["id"], "");
 }

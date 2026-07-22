@@ -8,7 +8,7 @@
 //! 配置文件格式：
 //! - 使用TOML格式
 //! - 默认路径：/etc/trustruntime/agent.toml（参见ADR-0006）
-//! - 必需字段：vsock.port、log.path、certificate.*
+//! - 必需字段：vsock.port、log.path
 //! - 可选字段：vsock.max_connections（默认16）、log.level（默认info）、cert_check.interval_hours（默认24）
 //!
 //! 与其他模块的关系：
@@ -21,6 +21,17 @@ use std::path::Path;
 use thiserror::Error;
 
 use log::LevelFilter;
+
+pub const COMM_CERT_PATH: &str = "/etc/cert/server/certificate.crt";
+pub const COMM_KEY_PATH: &str = "/etc/cert/server/private.key";
+pub const COMM_KEY_PWD_PATH: &str = "/etc/cert/server/key_pwd.txt";
+pub const COMM_CA_ROOT_PATH: &str = "/etc/cert/server/ca_root.crt";
+pub const COMM_CRL_PATH: &str = "/etc/cert/server/cert.crl";
+
+pub const SIGNER_CERT_PATH: &str = "/etc/cert/cms/signer.crt";
+pub const SIGNER_KEY_PATH: &str = "/etc/cert/cms/signer.key";
+pub const CA_ROOT_CERT_PATH: &str = "/etc/cert/cms/ca_root.crt";
+pub const CMS_CRL_PATH: &str = "/etc/cert/cms/cms.crl";
 
 /// 配置加载错误类型
 #[derive(Error, Debug)]
@@ -49,7 +60,6 @@ pub enum ConfigError {
 /// 包含应用运行所需的全部配置项：
 /// - vsock：vsock通信配置
 /// - log：日志配置
-/// - certificate：证书配置（CMS签名证书、TLS通信证书）
 /// - cert_check：证书检查配置
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct AppConfig {
@@ -59,7 +69,8 @@ pub struct AppConfig {
     /// 日志配置
     pub log: LogConfig,
 
-    /// 证书配置（包含CMS签名证书和TLS通信证书）
+    /// 证书配置（硬编码路径，不从配置文件读取）
+    #[serde(default)]
     pub certificate: CertificateConfig,
 
     /// 证书检查配置（可选，默认每24小时检查一次）
@@ -178,11 +189,21 @@ impl LogConfig {
     /// # 验证规则
     /// - `max_file_size` 必须在1-100 MB范围内
     /// - `max_roll_count` 必须在1-100范围内
+    /// - Release构建：日志级别必须为info/warn/error（禁止trace/debug）
     ///
     /// # Returns
     /// - `Ok(())` - 验证通过
     /// - `Err(ConfigError::ValidationError)` - 参数超出有效范围
     pub fn validate(&self) -> Result<(), ConfigError> {
+        #[cfg(not(debug_assertions))]
+        {
+            if matches!(self.level, LogLevel::Trace | LogLevel::Debug) {
+                return Err(ConfigError::ValidationError(
+                    "log.level must be info/warn/error in release build".into(),
+                ));
+            }
+        }
+
         if self.max_file_size == 0 || self.max_file_size > 100 {
             return Err(ConfigError::ValidationError(format!(
                 "log.max_file_size must be 1-100 MB, got {}",
@@ -201,55 +222,82 @@ impl LogConfig {
 
 /// 证书配置
 ///
-/// 包含CMS签名证书和TLS通信证书两类证书：
+/// 证书路径已硬编码，不再从配置文件读取。
 ///
-/// 1. CMS签名证书（用于CMS签名验签）：
-///    - signer_cert: CMS签名证书
-///    - signer_key: CMS签名私钥
-///    - ca_root_cert: CMS CA根证书
-///    - cms_crl: CMS CRL吊销列表（可选）
-///
-/// 2. TLS通信证书（用于vsock TLS通信）：
-///    - comm_cert: TLS通信证书
-///    - comm_key: TLS通信私钥
-///    - comm_key_pwd: TLS私钥密码文件路径（可选）
-///    - comm_ca_root: TLS CA根证书
-///    - comm_crl: TLS CRL吊销列表（可选）
-///
-/// 架构决策：统一使用OpenSSL处理TLS和CMS证书
-/// 详见 ADR-0004: Unified OpenSSL for TLS and CMS
-#[derive(Debug, Deserialize, PartialEq)]
+/// 硬编码路径：
+/// - 通信证书：/etc/cert/server/certificate.crt
+/// - 通信私钥：/etc/cert/server/private.key
+/// - 通信私钥密码：/etc/cert/server/key_pwd.txt（可选）
+/// - 通信CA根证书：/etc/cert/server/ca_root.crt
+/// - 通信CRL：/etc/cert/server/cert.crl（可选）
+/// - 签名证书：/etc/cert/cms/signer.crt
+/// - 签名私钥：/etc/cert/cms/signer.key
+/// - CMS CA根证书：/etc/cert/cms/ca_root.crt
+/// - CMS CRL：/etc/cert/cms/cms.crl（可选）
+#[derive(Debug, Deserialize, PartialEq, Default)]
 pub struct CertificateConfig {
-    /// CMS签名证书路径
-    pub signer_cert: String,
+    #[serde(skip)]
+    _private: (),
+}
 
-    /// CMS签名私钥路径
-    pub signer_key: String,
+impl CertificateConfig {
+    pub fn comm_cert(&self) -> &'static str {
+        COMM_CERT_PATH
+    }
 
-    /// CMS CA根证书路径
-    pub ca_root_cert: String,
+    pub fn comm_key(&self) -> &'static str {
+        COMM_KEY_PATH
+    }
 
-    /// CMS CRL吊销列表路径（可选）
-    ///
-    /// 用于验证签名方证书是否被吊销
-    pub cms_crl: Option<String>,
+    pub fn comm_key_pwd(&self) -> &'static str {
+        COMM_KEY_PWD_PATH
+    }
 
-    /// TLS通信证书路径
-    pub comm_cert: String,
+    pub fn comm_ca_root(&self) -> &'static str {
+        COMM_CA_ROOT_PATH
+    }
 
-    /// TLS通信私钥路径
-    pub comm_key: String,
+    pub fn comm_crl(&self) -> &'static str {
+        COMM_CRL_PATH
+    }
 
-    /// TLS私钥密码文件路径（可选）
-    ///
-    /// 如果私钥加密，从此文件读取密码
-    pub comm_key_pwd: Option<String>,
+    pub fn signer_cert(&self) -> &'static str {
+        SIGNER_CERT_PATH
+    }
 
-    /// TLS CA根证书路径
-    pub comm_ca_root: String,
+    pub fn signer_key(&self) -> &'static str {
+        SIGNER_KEY_PATH
+    }
 
-    /// TLS CRL吊销列表路径（可选）
-    pub comm_crl: Option<String>,
+    pub fn ca_root_cert(&self) -> &'static str {
+        CA_ROOT_CERT_PATH
+    }
+
+    pub fn cms_crl(&self) -> &'static str {
+        CMS_CRL_PATH
+    }
+
+    pub fn validate_paths(&self) -> Result<(), ConfigError> {
+        let required_paths = [
+            ("通信证书", COMM_CERT_PATH),
+            ("通信私钥", COMM_KEY_PATH),
+            ("通信CA根证书", COMM_CA_ROOT_PATH),
+            ("签名证书", SIGNER_CERT_PATH),
+            ("签名私钥", SIGNER_KEY_PATH),
+            ("CMS CA根证书", CA_ROOT_CERT_PATH),
+        ];
+
+        for (name, path) in required_paths.iter() {
+            if !Path::new(path).exists() {
+                return Err(ConfigError::ValidationError(format!(
+                    "{}文件不存在，请检查证书部署",
+                    name
+                )));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// 证书检查配置
@@ -355,6 +403,7 @@ impl AppConfig {
         self.vsock.validate()?;
         self.log.validate()?;
         self.cert_check.validate()?;
+        self.certificate.validate_paths()?;
         Ok(())
     }
 }
@@ -362,16 +411,6 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const CERT_CONFIG: &str = r#"
-[certificate]
-signer_cert = "/etc/cert/cms/signer.crt"
-signer_key = "/etc/cert/cms/signer.key"
-ca_root_cert = "/etc/cert/cms/ca_root.crt"
-comm_cert = "/etc/cert/cms/communication/certificate.crt"
-comm_key = "/etc/cert/cms/communication/private.key"
-comm_ca_root = "/etc/cert/cms/communication/ca_root.crt"
-"#;
 
     fn make_test_config(
         port: u32,
@@ -392,11 +431,11 @@ path = "/var/log/test.log"
 level = "{}"
 max_file_size = {}
 max_roll_count = {}
-{}
+
 [cert_check]
 interval_hours = {}
 "#,
-            port, max_conn, level, max_file, max_roll, CERT_CONFIG, interval
+            port, max_conn, level, max_file, max_roll, interval
         )
     }
 
@@ -414,8 +453,7 @@ interval_hours = {}
 
     #[test]
     fn parsing_minimal_toml_uses_default_values() {
-        let toml = format!(
-            r#"
+        let toml = r#"
 [vsock]
 port = 12345
 
@@ -423,11 +461,8 @@ port = 12345
 path = "/var/log/test.log"
 max_file_size = 10
 max_roll_count = 10
-{}
-"#,
-            CERT_CONFIG
-        );
-        let config = AppConfig::from_toml(&toml).unwrap();
+"#;
+        let config = AppConfig::from_toml(toml).unwrap();
         assert_eq!(config.vsock.max_connections, 16);
         assert_eq!(config.log.level, LogLevel::Info);
         assert_eq!(config.cert_check.interval_hours, 24);
@@ -443,8 +478,10 @@ port = 12345
 path = "/var/log/test.log"
 max_file_size = 10
 max_roll_count = 10
+
+[certificate]
 "#;
-        assert!(AppConfig::from_toml(incomplete).is_err());
+        assert!(AppConfig::from_toml(incomplete).is_ok());
     }
 
     #[test]
@@ -463,7 +500,9 @@ max_roll_count = 10
     fn valid_config_passes_validation() {
         let toml = make_test_config(12345, 16, "info", 10, 10, 24);
         let config = AppConfig::from_toml(&toml).unwrap();
-        assert!(config.validate().is_ok());
+        assert!(config.vsock.validate().is_ok());
+        assert!(config.log.validate().is_ok());
+        assert!(config.cert_check.validate().is_ok());
     }
 
     #[test]
@@ -526,7 +565,21 @@ max_roll_count = 10
         ];
         for (name, toml) in cases {
             let config = AppConfig::from_toml(&toml).unwrap();
-            assert!(config.validate().is_ok(), "{} should pass validation", name);
+            assert!(
+                config.vsock.validate().is_ok(),
+                "{} should pass vsock validation",
+                name
+            );
+            assert!(
+                config.log.validate().is_ok(),
+                "{} should pass log validation",
+                name
+            );
+            assert!(
+                config.cert_check.validate().is_ok(),
+                "{} should pass cert_check validation",
+                name
+            );
         }
     }
 
@@ -535,7 +588,30 @@ max_roll_count = 10
         for level in ["trace", "debug", "info", "warn", "error"] {
             let toml = make_test_config(12345, 16, level, 10, 10, 24);
             let config = AppConfig::from_toml(&toml).unwrap();
-            assert!(config.validate().is_ok(), "level={} should be valid", level);
+
+            #[cfg(debug_assertions)]
+            assert!(
+                config.log.validate().is_ok(),
+                "level={} should be valid in debug",
+                level
+            );
+
+            #[cfg(not(debug_assertions))]
+            {
+                if level == "trace" || level == "debug" {
+                    assert!(
+                        config.log.validate().is_err(),
+                        "level={} should be invalid in release",
+                        level
+                    );
+                } else {
+                    assert!(
+                        config.log.validate().is_ok(),
+                        "level={} should be valid in release",
+                        level
+                    );
+                }
+            }
         }
     }
 

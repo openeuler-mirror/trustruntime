@@ -117,8 +117,9 @@
 
 - **core**: 进程daemon化、信号处理、证书过期巡检
 - **config**: TOML配置解析与分发
-- **plugin-manager**: 插件生命周期管理、trait定义
-- **vsock-server**: vsock listener + TLS封装、报文收发
+- **transport**: TransportLayer trait、DataHandler trait（传输层抽象）
+- **plugin-manager**: 插件生命周期管理、Plugin trait
+- **communication**: vsock listener + TLS封装、报文收发（实现 TransportLayer）
 - **logger**: 统一日志管理（tracing）
 - **message**: 报文解析/构造
 

@@ -188,6 +188,18 @@ impl TestPaths {
     pub fn tls_client_wrong_ca_key(&self) -> PathBuf {
         self.cert_base.join("tls/client/wrong-ca.key")
     }
+
+    /// TLS私钥密码
+    pub fn tls_key_password(&self) -> Option<String> {
+        let pwd_path = self.cert_base.join("tls/key_pwd.txt");
+        if pwd_path.exists() {
+            std::fs::read_to_string(pwd_path)
+                .map(|s| s.trim().to_string())
+                .ok()
+        } else {
+            None
+        }
+    }
 }
 
 /// 断言结果码匹配预期值

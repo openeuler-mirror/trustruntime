@@ -33,7 +33,7 @@ pub fn configure_tls_builder() -> Result<openssl::ssl::SslAcceptorBuilder, Vsock
 pub fn load_tls_certificates(
     builder: &mut openssl::ssl::SslAcceptorBuilder,
     tls_config: &TlsConfig,
-) -> Result<(), VsockError> {
+) -> Result<openssl::x509::X509, VsockError> {
     let cert = crate::cert::load_x509(&tls_config.cert_path)
         .map_err(|e| VsockError::TlsConfigError(e.to_string()))?;
     builder.set_certificate(&cert)?;
@@ -45,16 +45,17 @@ pub fn load_tls_certificates(
 
     let ca_cert = crate::cert::load_x509(&tls_config.ca_cert_path)
         .map_err(|e| VsockError::TlsConfigError(e.to_string()))?;
-    builder.cert_store_mut().add_cert(ca_cert)?;
+    builder.cert_store_mut().add_cert(ca_cert.clone())?;
 
     builder.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
 
-    Ok(())
+    Ok(ca_cert)
 }
 
 pub fn configure_crl_verification(
     builder: &mut openssl::ssl::SslAcceptorBuilder,
     crl_path: &str,
+    _ca_cert: &openssl::x509::X509,
 ) -> Result<(), VsockError> {
     let crl =
         crate::cert::load_crl(crl_path).map_err(|e| VsockError::TlsConfigError(e.to_string()))?;
@@ -76,9 +77,15 @@ fn verify_cert_with_crl(
         return false;
     }
 
-    ctx.current_cert()
-        .map(|cert| !is_cert_revoked(cert, crl))
-        .unwrap_or(true)
+    if let Some(chain) = ctx.chain() {
+        for cert in chain.iter() {
+            if is_cert_revoked(cert, crl) {
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 fn is_cert_revoked(cert: &openssl::x509::X509Ref, crl: &openssl::x509::X509Crl) -> bool {

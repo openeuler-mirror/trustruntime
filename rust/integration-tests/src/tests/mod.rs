@@ -3,11 +3,11 @@
 //! 模块组织结构：
 //! - normal_scenarios: 正常场景测试（N01-N03）
 //! - error_scenarios: 错误场景测试（E01-E20）
-//! - boundary_scenarios: 边界场景测试（B01-B07）
+//! - boundary_scenarios: 边界场景测试（B01-B08）
 //! - handler_tests: DataHandler处理器测试
 //! - lifecycle_tests: 进程生命周期测试（启动、关闭）
 //! - communication_tests: vsock通信测试（TLS握手、并发连接）
-//! - cert_check_tests: 证书状态检查测试（过期检测、周期检查）
+//! - cert_check_tests: 证书状态检查测试（过期检测、周期检查、用途校验CC03-CC13）
 //! - tls_debug_test: TLS证书链调试测试（问题诊断）
 //! - proc_debug_test: 进程调试测试（问题诊断）
 //!
@@ -17,7 +17,7 @@
 //! - B系列：边界条件测试
 //! - L系列：生命周期测试
 //! - C系列：通信层测试
-//! - CC系列：证书检查测试
+//! - CC系列：证书检查测试（包括用途校验）
 //!
 //! 注意：tls_debug_test和proc_debug_test为调试测试，仅手动运行
 
