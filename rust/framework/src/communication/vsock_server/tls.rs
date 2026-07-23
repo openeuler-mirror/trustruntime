@@ -1,4 +1,15 @@
 //! TLS 配置相关
+//!
+//! 职责：
+//! - TLS安全参数配置
+//! - 证书加载与验证
+//! - CRL吊销检查
+//!
+//! 架构决策：
+//! - 统一OpenSSL处理TLS和CMS（ADR-0004）
+//! - 仅允许TLS 1.2/1.3和强密码套件
+//!
+//! 依赖：error模块、cert模块
 
 use super::error::VsockError;
 use openssl::ssl::{SslAcceptor, SslMethod, SslVerifyMode};
@@ -48,6 +59,20 @@ pub fn configure_tls_builder() -> Result<openssl::ssl::SslAcceptorBuilder, Vsock
     Ok(builder)
 }
 
+/// 加载TLS证书并配置验证
+///
+/// # Arguments
+/// * `builder` - TLS配置构建器
+/// * `tls_config` - TLS配置参数
+///
+/// # Returns
+/// - `Ok(X509)` - CA根证书（用于CRL验证）
+/// - `Err(VsockError)` - 证书加载或验证失败
+///
+/// # 验证项
+/// - 服务端证书：DigitalSignature + KeyEncipherment
+/// - 扩展密钥用法：serverAuth
+/// - 客户端证书：必须提供（FAIL_IF_NO_PEER_CERT）
 pub fn load_tls_certificates(
     builder: &mut openssl::ssl::SslAcceptorBuilder,
     tls_config: &TlsConfig,
@@ -81,6 +106,18 @@ pub fn load_tls_certificates(
     Ok(ca_cert)
 }
 
+/// 配置CRL吊销验证
+///
+/// 使用自定义验证回调检查证书是否被吊销
+///
+/// # Arguments
+/// * `builder` - TLS配置构建器
+/// * `crl_path` - CRL吊销列表路径
+/// * `_ca_cert` - CA根证书（预留参数）
+///
+/// # Returns
+/// - `Ok(())` - 配置成功
+/// - `Err(VsockError)` - CRL加载失败
 pub fn configure_crl_verification(
     builder: &mut openssl::ssl::SslAcceptorBuilder,
     crl_path: &str,
@@ -97,6 +134,16 @@ pub fn configure_crl_verification(
     Ok(())
 }
 
+/// 带CRL检查的证书验证回调
+///
+/// # Arguments
+/// * `ok` - OpenSSL验证结果
+/// * `ctx` - 证书存储上下文
+/// * `crl` - CRL吊销列表
+///
+/// # Returns
+/// - `true` - 证书有效且未被吊销
+/// - `false` - 证书无效或已被吊销
 fn verify_cert_with_crl(
     ok: bool,
     ctx: &mut openssl::x509::X509StoreContextRef,
@@ -117,6 +164,15 @@ fn verify_cert_with_crl(
     true
 }
 
+/// 检查证书是否在CRL中
+///
+/// # Arguments
+/// * `cert` - 待检查的证书
+/// * `crl` - CRL吊销列表
+///
+/// # Returns
+/// - `true` - 证书已被吊销
+/// - `false` - 证书未被吊销
 fn is_cert_revoked(cert: &openssl::x509::X509Ref, crl: &openssl::x509::X509Crl) -> bool {
     let serial = cert.serial_number();
     crl.get_revoked()
@@ -128,6 +184,17 @@ fn is_cert_revoked(cert: &openssl::x509::X509Ref, crl: &openssl::x509::X509Crl) 
         .unwrap_or(false)
 }
 
+/// 设置socket接收超时
+///
+/// 用于accept()超时，避免阻塞关闭信号检查
+///
+/// # Arguments
+/// * `fd` - socket文件描述符
+/// * `timeout` - 超时时间
+///
+/// # Returns
+/// - `Ok(())` - 设置成功
+/// - `Err(VsockError)` - 设置失败
 #[cfg(target_os = "linux")]
 pub fn set_socket_timeout(fd: i32, timeout: Duration) -> Result<(), VsockError> {
     use libc::{setsockopt, timeval, SOL_SOCKET, SO_RCVTIMEO};
