@@ -98,7 +98,6 @@ fn find_executable(bin_name: &str) -> Option<PathBuf> {
     None
 }
 
-#[allow(clippy::incompatible_msrv)]
 fn check_unshare() -> Result<(), Box<dyn Error>> {
     let unshare_output = match Command::new("unshare").arg("-r").arg("id").output() {
         Ok(out) => out,
@@ -147,4 +146,201 @@ pub fn find_required_tools() -> Result<ExecutablePaths, Box<dyn Error>> {
         qemu_path,
         virtiofsd_path,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockrs::mock;
+
+    #[test]
+    fn escape_path_normal() {
+        assert_eq!(escape_path("/root/app"), "root-app");
+    }
+
+    #[test]
+    fn escape_path_all_slashes() {
+        assert_eq!(escape_path("/"), "-");
+        assert_eq!(escape_path("///"), "-");
+    }
+
+    #[test]
+    fn escape_path_consecutive_slashes() {
+        assert_eq!(escape_path("/a//b"), "a-b");
+    }
+
+    #[test]
+    fn escape_path_special_chars() {
+        let result = escape_path("/path@with!special");
+        assert!(result.contains("path"));
+        assert!(result.contains("\\x40"));
+        assert!(result.contains("\\x21"));
+    }
+
+    #[test]
+    fn escape_path_dot_at_zero() {
+        let result = escape_path("/.hidden");
+        assert!(result.starts_with("\\x2e") || result.contains("hidden"));
+    }
+
+    #[test]
+    fn escape_path_colon_preserved() {
+        assert!(escape_path("/path:with:colon").contains(':'));
+    }
+
+    #[test]
+    fn escape_path_underscore_preserved() {
+        assert!(escape_path("/path_with_underscore").contains('_'));
+    }
+
+    #[test]
+    fn escape_byte_values() {
+        assert_eq!(escape_byte(b'/', 0), "-".to_string());
+        assert_eq!(escape_byte(b':', 0), ":".to_string());
+        assert_eq!(escape_byte(b'_', 0), "_".to_string());
+        assert_eq!(escape_byte(b'a', 0), "a".to_string());
+        assert_eq!(escape_byte(b'Z', 0), "Z".to_string());
+        assert_eq!(escape_byte(b'5', 0), "5".to_string());
+        assert_eq!(escape_byte(b'.', 0), "\\x2e".to_string());
+        assert_eq!(escape_byte(b'.', 1), ".".to_string());
+        assert_eq!(escape_byte(b'@', 0), "\\x40".to_string());
+    }
+
+    #[test]
+    fn generate_12hex_random_id_format() {
+        let id = generate_12hex_random_id().unwrap();
+        assert_eq!(id.len(), 12);
+        for c in id.chars() {
+            assert!(c.is_ascii_hexdigit());
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "coverage"))]
+    fn create_vm_work_dir_mocked() {
+        fn mock_gen_id() -> Result<String, Box<dyn Error>> {
+            Ok("abcdef123456".to_string())
+        }
+
+        let home = env::var("HOME").unwrap_or("/tmp".to_string());
+        let existing = Path::new(&home)
+            .join(".local")
+            .join("share")
+            .join("trt_launcher")
+            .join("abcdef123456");
+        if existing.exists() {
+            fs::remove_dir(&existing).unwrap();
+        }
+
+        let _mocker = mock!(generate_12hex_random_id, mock_gen_id);
+        let result = create_vm_work_dir();
+        assert!(result.is_ok());
+        let work_dir = result.unwrap();
+        assert!(work_dir.to_string_lossy().contains("abcdef123456"));
+        assert!(work_dir.exists());
+    }
+
+    #[test]
+    fn create_vm_work_dir_direct() {
+        let result = create_vm_work_dir();
+        assert!(result.is_ok());
+        let work_dir = result.unwrap();
+        assert!(work_dir.exists());
+        assert!(work_dir.to_string_lossy().contains("trt_launcher"));
+        fs::remove_dir(&work_dir).unwrap();
+    }
+
+    #[test]
+    fn find_executable_known_binary() {
+        let result = find_executable("sh");
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn find_executable_not_found() {
+        let result = find_executable("nonexistent_binary_xyz");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn check_unshare_direct() {
+        let result = check_unshare();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn find_required_tools_direct() {
+        let result = find_required_tools();
+        if find_executable("qemu-system-aarch64").is_some() {
+            assert!(result.is_ok());
+        } else {
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "coverage"))]
+    fn find_required_tools_both_found() {
+        fn mock_find_exec(bin_name: &str) -> Option<PathBuf> {
+            match bin_name {
+                "qemu-system-aarch64" => Some(PathBuf::from("/usr/bin/qemu-system-aarch64")),
+                "virtiofsd" => Some(PathBuf::from("/usr/bin/virtiofsd")),
+                _ => None,
+            }
+        }
+        fn mock_check_unshare() -> Result<(), Box<dyn Error>> {
+            Ok(())
+        }
+        let _m1 = mock!(find_executable, mock_find_exec);
+        let _m2 = mock!(check_unshare, mock_check_unshare);
+        let result = find_required_tools();
+        assert!(result.is_ok());
+        let tools = result.unwrap();
+        assert!(tools.virtiofsd_path.is_some());
+    }
+
+    #[test]
+    #[cfg(not(feature = "coverage"))]
+    fn find_required_tools_only_qemu() {
+        fn mock_find_exec(bin_name: &str) -> Option<PathBuf> {
+            match bin_name {
+                "qemu-system-aarch64" => Some(PathBuf::from("/usr/bin/qemu-system-aarch64")),
+                _ => None,
+            }
+        }
+        let _mocker = mock!(find_executable, mock_find_exec);
+        let result = find_required_tools();
+        assert!(result.is_ok());
+        assert!(result.unwrap().virtiofsd_path.is_none());
+    }
+
+    #[test]
+    #[cfg(not(feature = "coverage"))]
+    fn find_required_tools_no_qemu() {
+        fn mock_find_exec(_bin_name: &str) -> Option<PathBuf> {
+            None
+        }
+        let _mocker = mock!(find_executable, mock_find_exec);
+        assert!(find_required_tools().is_err());
+    }
+
+    #[test]
+    #[cfg(not(feature = "coverage"))]
+    fn find_required_tools_unshare_fail() {
+        fn mock_find_exec(bin_name: &str) -> Option<PathBuf> {
+            match bin_name {
+                "qemu-system-aarch64" => Some(PathBuf::from("/usr/bin/qemu-system-aarch64")),
+                "virtiofsd" => Some(PathBuf::from("/usr/bin/virtiofsd")),
+                _ => None,
+            }
+        }
+        fn mock_check_unshare() -> Result<(), Box<dyn Error>> {
+            Err("unshare failed".into())
+        }
+        let _m1 = mock!(find_executable, mock_find_exec);
+        let _m2 = mock!(check_unshare, mock_check_unshare);
+        assert!(find_required_tools().is_err());
+    }
 }
