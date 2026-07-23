@@ -1094,6 +1094,7 @@ dependencies = [
  "async-trait",
  "base64",
  "foreign-types-shared",
+ "log",
  "openssl",
  "openssl-sys",
  "serde",

@@ -250,7 +250,11 @@ impl DataHandler for SignHandler {
         let data_bytes = req.to_sign.data.as_bytes();
         let signed_der = match self.signer.sign(data_bytes) {
             Ok(der) => der,
-            Err(e) => return build_sign_error_response(map_sign_error(&e)),
+            Err(e) => {
+                let error = map_sign_error(&e);
+                log::error!("Sign request failed: msg_type 0x10, result_code {}", error.to_result_code());
+                return build_sign_error_response(error);
+            }
         };
 
         let resp = SignResponse {
@@ -259,6 +263,7 @@ impl DataHandler for SignHandler {
             result: 0,
         };
 
+        log::info!("Sign request succeeded: msg_type 0x10");
         serde_json::to_vec(&resp).ok()
     }
 }
@@ -314,7 +319,11 @@ impl VerifySignHandler {
 
         self.verifier
             .verify_signature_only(&signed_der, data_bytes, &signer_id)
-            .map_err(|e| build_verify_sign_error_response(map_verify_error(&e)))?;
+            .map_err(|e| {
+                let error = map_verify_error(&e);
+                log::error!("Verify stage failed: msg_type 0x12, result_code {}", error.to_result_code());
+                build_verify_sign_error_response(error)
+            })?;
 
         Ok(())
     }
@@ -339,7 +348,11 @@ impl VerifySignHandler {
         let new_signed = self
             .signer
             .sign_with_id(to_sign.data.as_bytes(), &external_id)
-            .map_err(|e| build_verify_sign_error_response(map_sign_error(&e)))?;
+            .map_err(|e| {
+                let error = map_sign_error(&e);
+                log::error!("Sign stage failed: msg_type 0x12, result_code {}", error.to_result_code());
+                build_verify_sign_error_response(error)
+            })?;
 
         Ok(new_signed)
     }
@@ -376,7 +389,7 @@ impl DataHandler for VerifySignHandler {
 
         // 处理验签部分
         match self.handle_verify_part(&req.to_verify, &|s| ctx.decode_base64(s)) {
-            Ok(_) => {}
+            Ok(_) => log::info!("Verify stage succeeded: msg_type 0x12"),
             Err(e) => return e,
         }
 
@@ -393,6 +406,7 @@ impl DataHandler for VerifySignHandler {
             result: 0,
         };
 
+        log::info!("Sign stage succeeded: msg_type 0x12");
         serde_json::to_vec(&resp).ok()
     }
 }
@@ -445,12 +459,17 @@ impl DataHandler for VerifyHandler {
             Ok(VerifyOutcome::SameNode) => 0,
             Ok(VerifyOutcome::OtherNode) => 1,
             Ok(VerifyOutcome::IdentityConflict) => 2,
-            Err(e) => map_verify_error(&e).to_result_code(),
+            Err(e) => {
+                let error = map_verify_error(&e);
+                log::error!("Verify request failed: msg_type 0x14, result_code {}", error.to_result_code());
+                return build_verify_error_response(error);
+            }
         };
 
         let resp = VerifyResponse {
             result: result_code,
         };
+        log::info!("Verify request succeeded: msg_type 0x14, result {}", result_code);
         serde_json::to_vec(&resp).ok()
     }
 }

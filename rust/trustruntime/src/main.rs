@@ -94,8 +94,8 @@ async fn check_certificates(
         .find(|s| s.path == config.certificate.comm_cert() && s.expired);
 
     if let Some(_expired) = comm_expired {
-        log::error!("通信证书已过期");
-        daemon.notify_status("通信证书已过期").ok();
+        log::error!("Communication certificate has expired");
+        daemon.notify_status("Communication certificate has expired").ok();
         daemon.notify_ready().ok();
 
         let signal_handler = SignalHandler::new();
@@ -106,7 +106,7 @@ async fn check_certificates(
 
     for status in &statuses {
         if status.expired && status.path != config.certificate.comm_cert() {
-            log::warn!("CMS证书已过期");
+            log::warn!("CMS certificate has expired");
         }
     }
 
@@ -123,7 +123,7 @@ fn create_transport(config: &AppConfig) -> Result<Arc<VsockTransport>, String> {
         Some(
             std::fs::read_to_string(COMM_KEY_PWD_PATH)
                 .map(|content| content.trim().to_string())
-                .map_err(|e| format!("读取私钥密码文件失败: {}", e))?,
+                .map_err(|e| format!("Failed to read private key password file: {}", e))?,
         )
     } else {
         None
@@ -255,8 +255,8 @@ async fn main() {
     let transport = match create_transport(&config) {
         Ok(t) => t,
         Err(e) => {
-            log::error!("vsock传输层创建失败: {}", e);
-            handle_startup_failure(&mut daemon, "vsock传输层创建失败").await;
+            log::error!("Failed to create vsock transport: {}", e);
+            handle_startup_failure(&mut daemon, "Failed to create vsock transport").await;
             return;
         }
     };
@@ -265,8 +265,8 @@ async fn main() {
     let plugin_manager = match setup_plugins(config.clone(), &transport) {
         Ok(m) => m,
         Err(_e) => {
-            log::error!("插件初始化失败");
-            handle_startup_failure(&mut daemon, "插件初始化失败").await;
+            log::error!("Plugin initialization failed");
+            handle_startup_failure(&mut daemon, "Plugin initialization failed").await;
             return;
         }
     };
@@ -279,7 +279,7 @@ async fn main() {
     // ==================== 步骤8：启动Transport ====================
     if let Err(e) = transport.start().await {
         log::error!("Failed to start transport: {}", e);
-        handle_startup_failure(&mut daemon, "transport启动失败").await;
+        handle_startup_failure(&mut daemon, "Failed to start transport").await;
         cert_checker_handle.abort();
         return;
     }

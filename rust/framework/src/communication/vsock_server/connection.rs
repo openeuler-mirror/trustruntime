@@ -29,6 +29,7 @@ pub fn handle_connection_blocking(
                     ssl_stream.write_all(&resp.serialize()).ok();
                 }
                 Err(error_code) => {
+                    log::warn!("Handler returned error: msg_type 0x{:02X}, error_code 0x{:02X}", msg.header.msg_type, error_code);
                     send_error_response(
                         &mut ssl_stream,
                         msg.header.seq,
@@ -69,17 +70,20 @@ fn read_message(
     ]);
 
     if version != PROTOCOL_VERSION {
+        log::warn!("Protocol version mismatch: expected 0x{:08X}, got 0x{:08X}", PROTOCOL_VERSION, version);
         send_error_response(ssl_stream, seq, version, ERROR_PROTOCOL);
         return Err(ERROR_PROTOCOL);
     }
 
     if len > MAX_MESSAGE_SIZE {
+        log::warn!("Message too long: len {}, max {}", len, MAX_MESSAGE_SIZE);
         send_error_response(ssl_stream, seq, version, ERROR_MESSAGE_TOO_LONG);
         return Err(ERROR_MESSAGE_TOO_LONG);
     }
 
     let mut body_buf = vec![0u8; len as usize];
     if len > 0 && ssl_stream.read_exact(&mut body_buf).is_err() {
+        log::warn!("Failed to read message body");
         send_error_response(ssl_stream, seq, version, ERROR_PROTOCOL);
         return Err(ERROR_PROTOCOL);
     }
@@ -89,6 +93,7 @@ fn read_message(
     full_buf.extend_from_slice(&body_buf);
 
     if VsockMessage::parse(&full_buf).is_err() {
+        log::warn!("Message parse failed");
         send_error_response(ssl_stream, seq, version, ERROR_PROTOCOL);
         return Err(ERROR_PROTOCOL);
     }
