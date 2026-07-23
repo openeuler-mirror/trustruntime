@@ -35,6 +35,33 @@ See `.opencode/skills/wsl-cargo/SKILL.md` for WSL-specific command patterns.
 - Tests use OpenSSL to generate temporary ECC-256 certificates
 - Test fixtures are generated programmatically, not committed
 
+### AddressSanitizer (ASan) Testing
+
+ASan detects memory leaks, buffer overflows, and double-free issues.
+
+**Prerequisites:**
+- Install nightly Rust: `rustup install nightly`
+
+**Run ASan tests:**
+```bash
+# Unit tests (Linux)
+cd rust && ./scripts/run-asan-test.sh
+
+# Unit tests (WSL)
+wsl bash -c "source ~/.cargo/env && cd <PROJECT_ROOT>/rust && ./scripts/run-asan-test.sh"
+
+# Integration tests (Linux)
+cd rust && ./scripts/run-integration-tests.sh
+
+# Integration tests (WSL)
+wsl bash -c "source ~/.cargo/env && cd <PROJECT_ROOT>/rust && ./scripts/run-integration-tests.sh"
+```
+
+**Notes:**
+- ASan reduces performance 2-3x (only for testing)
+- Use single-threaded tests (`--test-threads=1`)
+- Scripts automatically configure ASan environment variables
+
 ## Code Style
 
 - Follow existing patterns in each module
