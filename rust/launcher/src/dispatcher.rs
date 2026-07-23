@@ -1,6 +1,6 @@
 use crate::{
-    cli::{print_help, CliError, HelpType, RunArgs},
-    qemu::{launch_qemu, QemuLaunchOpts},
+    cli::{CliError, HelpType, RunArgs, print_help},
+    qemu::{QemuLaunchOpts, launch_qemu},
     utils::find_required_tools,
 };
 use log::{error, info};

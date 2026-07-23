@@ -38,6 +38,21 @@
 use crate::sign::SignError;
 use crate::verify::VerifyError;
 use openssl::error::ErrorStack;
+use std::os::raw::{c_int, c_ulong};
+
+extern "C" {
+    fn ERR_peek_error() -> c_ulong;
+}
+
+const ERR_LIB_PEM: c_int = 9;
+const ERR_LIB_X509: c_int = 11;
+const ERR_LIB_ASN1: c_int = 13;
+const ERR_LIB_EC: c_int = 16;
+const ERR_LIB_ECDSA: c_int = 42;
+
+fn err_get_lib(errcode: c_ulong) -> c_int {
+    ((errcode >> 24) & 0xFF) as c_int
+}
 
 /// 业务错误枚举
 ///
@@ -118,6 +133,7 @@ pub(crate) enum BusinessError {
     /// - 私钥权限不足
     /// - 私钥格式错误
     /// - 私钥密码错误
+    #[allow(dead_code)]
     PrivateKeyUnavailable,
 
     /// 签名算法错误（result=12）
@@ -198,14 +214,10 @@ impl BusinessError {
 /// 将SignError转换为BusinessError，用于生成标准结果码。
 ///
 /// 映射逻辑：
-/// - SignError::OpenSslError → 通过map_openssl_error_string解析错误字符串
-///   - "certificate verify failed" / "unable to get issuer certificate" → CertificateChainInvalid
-///   - "certificate revoked" → CertificateRevoked
-///   - "signature" + "verification" → SignatureMismatch
-///   - "decode" / "parse" → FormatError
-///   - "no such file" / "permission denied" → CertificateLoadFailed
-///   - "private key" → PrivateKeyUnavailable
-///   - "algorithm" / "unsupported" → SigningAlgorithmError
+/// - SignError::OpenSslError → 通过ERR_peek_error获取错误码，根据错误库ID映射
+///   - ERR_LIB_PEM / ERR_LIB_ASN1 → FormatError（result=7）
+///   - ERR_LIB_X509 → CertificateLoadFailed（result=10）
+///   - ERR_LIB_EC / ERR_LIB_ECDSA → SigningAlgorithmError（result=12）
 ///   - 其他 → Other(10)
 ///
 /// # Arguments
@@ -215,7 +227,7 @@ impl BusinessError {
 /// 对应的BusinessError实例
 pub(crate) fn map_sign_error(err: &SignError) -> BusinessError {
     match err {
-        SignError::OpenSslError(e) => map_openssl_error_string(&e.to_string()),
+        SignError::OpenSslError(_) => map_openssl_error_code(),
     }
 }
 
@@ -224,15 +236,14 @@ pub(crate) fn map_sign_error(err: &SignError) -> BusinessError {
 /// 将VerifyError转换为BusinessError，用于生成标准结果码。
 ///
 /// 映射逻辑：
-/// - VerifyError::OpenSslError → 通过map_openssl_error_string解析错误字符串
+/// - VerifyError::OpenSslError → Other(99)（不应该到达这里，verify模块已完成错误分类）
 /// - VerifyError::CertificateChainInvalid → CertificateChainInvalid（result=3）
 /// - VerifyError::CertificateRevoked → CertificateRevoked（result=4）
 /// - VerifyError::SignatureMismatch → SignatureMismatch（result=5）
 /// - VerifyError::InvalidKeyUsage → InvalidKeyUsage（result=6）
 /// - VerifyError::FormatError → FormatError（result=7）
 ///
-/// 注意：VerifyError已在verify模块完成错误分类，此处仅做类型转换。
-/// OpenSSL错误的详细解析在map_openssl_error_string中完成。
+/// 注意：VerifyError已在verify模块通过X509错误码完成分类，此处仅做类型转换。
 ///
 /// # Arguments
 /// * `err` - 验签错误引用
@@ -241,7 +252,7 @@ pub(crate) fn map_sign_error(err: &SignError) -> BusinessError {
 /// 对应的BusinessError实例
 pub(crate) fn map_verify_error(err: &VerifyError) -> BusinessError {
     match err {
-        VerifyError::OpenSslError(s) => map_openssl_error_string(s),
+        VerifyError::OpenSslError(_) => BusinessError::Other(99),
         VerifyError::CertificateChainInvalid => BusinessError::CertificateChainInvalid,
         VerifyError::CertificateRevoked => BusinessError::CertificateRevoked,
         VerifyError::SignatureMismatch => BusinessError::SignatureMismatch,
@@ -255,82 +266,55 @@ pub(crate) fn map_verify_error(err: &VerifyError) -> BusinessError {
 /// 将OpenSSL ErrorStack转换为BusinessError。
 /// 主要用于签名错误映射（SignError::OpenSslError）。
 ///
+/// 映射OpenSSL错误栈为业务错误
+///
+/// 将OpenSSL ErrorStack转换为BusinessError。
+/// 主要用于签名错误映射（SignError::OpenSslError）。
+///
 /// 映射逻辑：
-/// 1. 将ErrorStack转换为字符串
-/// 2. 调用map_openssl_error_string解析错误类型
+/// 1. 通过ERR_peek_error获取错误码
+/// 2. 根据错误库ID映射到BusinessError
 ///
 /// # Arguments
-/// * `error` - OpenSSL错误栈引用
+/// * `_error` - OpenSSL错误栈引用（未使用，错误码通过ERR_peek_error获取）
 ///
 /// # Returns
 /// 对应的BusinessError实例
 #[allow(dead_code)]
-pub(crate) fn map_openssl_error(error: &ErrorStack) -> BusinessError {
-    map_openssl_error_string(&error.to_string())
+pub(crate) fn map_openssl_error(_error: &ErrorStack) -> BusinessError {
+    map_openssl_error_code()
 }
 
-/// 映射OpenSSL错误字符串为业务错误
+/// 映射OpenSSL错误码为业务错误
 ///
-/// 通过字符串匹配将OpenSSL错误分类为BusinessError。
-/// 错误字符串为小写匹配，不区分大小写。
+/// 通过ERR_peek_error获取错误码，根据错误库ID映射到BusinessError。
+/// 错误码是稳定的，不会因OpenSSL版本升级而变化。
 ///
-/// 匹配规则（按优先级顺序）：
-/// 1. "certificate verify failed" / "unable to get issuer certificate" → CertificateChainInvalid
-///    - 证书链验证失败
-///    - CA证书缺失或不可信
-///
-/// 2. "certificate revoked" → CertificateRevoked
-///    - 证书被CRL吊销
-///
-/// 3. "signature" && "verification" → SignatureMismatch
-///    - 签名验证失败
-///    - 数据被篡改或签名无效
-///
-/// 4. "decode" / "parse" → FormatError
-///    - 数据格式错误
-///    - DER/PEM编码解析失败
-///
-/// 5. "no such file" / "permission denied" → CertificateLoadFailed
-///    - 文件不存在
-///    - 权限不足
-///
-/// 6. "private key" → PrivateKeyUnavailable
-///    - 私钥相关错误
-///
-/// 7. "algorithm" / "unsupported" → SigningAlgorithmError
-///    - 算法不支持
-///    - 算法参数错误
-///
-/// 8. 其他 → Other(10)
-///    - 未分类错误，透传错误码10
-///
-/// # Arguments
-/// * `error_string` - OpenSSL错误字符串
+/// 映射规则：
+/// - ERR_LIB_PEM (9) / ERR_LIB_ASN1 (13) → FormatError（result=7）
+///   - PEM/ASN1格式错误
+/// - ERR_LIB_X509 (11) → CertificateLoadFailed（result=10）
+///   - X509证书错误
+/// - ERR_LIB_EC (16) / ERR_LIB_ECDSA (42) → SigningAlgorithmError（result=12）
+///   - ECC/ECDSA算法错误
+/// - 其他 → Other(10)
+///   - 未分类错误
 ///
 /// # Returns
 /// 对应的BusinessError实例
-fn map_openssl_error_string(error_string: &str) -> BusinessError {
-    let lower = error_string.to_lowercase();
-
-    if lower.contains("certificate verify failed")
-        || lower.contains("unable to get issuer certificate")
-    {
-        BusinessError::CertificateChainInvalid
-    } else if lower.contains("certificate revoked") {
-        BusinessError::CertificateRevoked
-    } else if lower.contains("signature") && lower.contains("verification") {
-        BusinessError::SignatureMismatch
-    } else if lower.contains("decode") || lower.contains("parse") {
-        BusinessError::FormatError
-    } else if lower.contains("no such file") || lower.contains("permission denied") {
-        BusinessError::CertificateLoadFailed
-    } else if lower.contains("private key") {
-        BusinessError::PrivateKeyUnavailable
-    } else if lower.contains("algorithm") || lower.contains("unsupported") {
-        BusinessError::SigningAlgorithmError
-    } else {
-        BusinessError::Other(10)
+fn map_openssl_error_code() -> BusinessError {
+    let error_code = unsafe { ERR_peek_error() };
+    if error_code != 0 {
+        let lib = err_get_lib(error_code);
+        return match lib {
+            ERR_LIB_PEM | ERR_LIB_ASN1 => BusinessError::FormatError,
+            ERR_LIB_X509 => BusinessError::CertificateLoadFailed,
+            ERR_LIB_EC | ERR_LIB_ECDSA => BusinessError::SigningAlgorithmError,
+            _ => BusinessError::Other(10),
+        };
     }
+
+    BusinessError::Other(10)
 }
 
 #[cfg(test)]
@@ -408,13 +392,13 @@ mod tests {
 
     /// 测试：map_verify_error映射OpenSSL错误
     ///
-    /// 场景：验签过程中发生OpenSSL错误（未知错误）
-    /// 预期：返回BusinessError::Other(10)
+    /// 场景：验签过程中发生OpenSSL错误（不应该到达这里）
+    /// 预期：返回BusinessError::Other(99)
     #[test]
     fn map_verify_error_maps_openssl_error() {
         let error_string = "some openssl error".to_string();
         let result = map_verify_error(&VerifyError::OpenSslError(error_string));
-        assert_eq!(result, BusinessError::Other(10));
+        assert_eq!(result, BusinessError::Other(99));
     }
 
     /// 测试：map_openssl_error处理空错误栈

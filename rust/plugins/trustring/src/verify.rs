@@ -19,11 +19,26 @@ use openssl::x509::X509;
 use openssl_sys::{
     stack_st_X509, CMS_ContentInfo, OPENSSL_STACK, X509 as X509_sys, X509_STORE, X509_STORE_CTX,
 };
+use std::cell::Cell;
 use std::os::raw::c_int;
 use thiserror::Error;
 
-/// OpenSSL错误码：证书已过期
+thread_local! {
+    static VERIFY_ERROR_CODE: Cell<c_int> = const { Cell::new(0) };
+}
+
+const X509_V_ERR_CERT_NOT_YET_VALID: c_int = 9;
 const X509_V_ERR_CERT_HAS_EXPIRED: c_int = 10;
+const X509_V_ERR_INVALID_PURPOSE: c_int = 26;
+
+const X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT: c_int = 2;
+const X509_V_ERR_CERT_SIGNATURE_FAILURE: c_int = 7;
+const X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT: c_int = 18;
+const X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN: c_int = 19;
+const X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY: c_int = 20;
+const X509_V_ERR_CERT_REVOKED: c_int = 23;
+const X509_V_ERR_CERT_UNTRUSTED: c_int = 27;
+const X509_V_ERR_CERT_REJECTED: c_int = 28;
 
 extern "C" {
     /// 获取CMS签名中的签名者证书列表
@@ -48,6 +63,23 @@ extern "C" {
     fn X509_STORE_CTX_get_error_depth(ctx: *const X509_STORE_CTX) -> c_int;
 }
 
+fn map_x509_error_to_verify_error(error_code: c_int) -> VerifyError {
+    match error_code {
+        X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT
+        | X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT
+        | X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN
+        | X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
+        | X509_V_ERR_CERT_UNTRUSTED
+        | X509_V_ERR_CERT_REJECTED => VerifyError::CertificateChainInvalid,
+        
+        X509_V_ERR_CERT_REVOKED => VerifyError::CertificateRevoked,
+        
+        X509_V_ERR_CERT_SIGNATURE_FAILURE => VerifyError::SignatureMismatch,
+        
+        _ => VerifyError::SignatureMismatch,
+    }
+}
+
 /// OpenSSL证书验证回调函数
 ///
 /// 业务规则：仅忽略签名方证书（leaf）的过期错误
@@ -61,8 +93,11 @@ extern "C" {
 unsafe extern "C" fn verify_callback(ok: c_int, ctx: *mut X509_STORE_CTX) -> c_int {
     if ok == 0 {
         let error = X509_STORE_CTX_get_error(ctx);
-        // EXPIRED: 仅对leaf（签名方）证书忽略
-        // CA/中间证书过期必须严格执行
+        
+        // 存储错误码到线程局部变量
+        VERIFY_ERROR_CODE.with(|cell| cell.set(error));
+        
+        // 仅对leaf证书（depth==0）忽略过期错误
         if error == X509_V_ERR_CERT_HAS_EXPIRED {
             let depth = X509_STORE_CTX_get_error_depth(ctx);
             if depth == 0 {
@@ -228,21 +263,12 @@ impl Verifier {
         let mut input = data.to_vec();
         input.extend_from_slice(signer_cert_id);
 
+        VERIFY_ERROR_CODE.with(|cell| cell.set(0));
+
         cms.verify(None, Some(store), Some(&input), None, CMSOptions::BINARY)
-            .map_err(|e| {
-                let err_str = e.to_string();
-                let lower = err_str.to_lowercase();
-                if lower.contains("certificate verify failed")
-                    || lower.contains("unable to get issuer certificate")
-                    || lower.contains("unable to get local issuer certificate")
-                    || lower.contains("self-signed certificate")
-                {
-                    VerifyError::CertificateChainInvalid
-                } else if lower.contains("certificate revoked") {
-                    VerifyError::CertificateRevoked
-                } else {
-                    VerifyError::SignatureMismatch
-                }
+            .map_err(|_| {
+                let error_code = VERIFY_ERROR_CODE.with(|cell| cell.get());
+                map_x509_error_to_verify_error(error_code)
             })?;
 
         Ok(())
