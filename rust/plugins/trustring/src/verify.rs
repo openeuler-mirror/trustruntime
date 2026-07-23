@@ -22,12 +22,8 @@ use openssl_sys::{
 use std::os::raw::c_int;
 use thiserror::Error;
 
-/// OpenSSL错误码：证书尚未生效
-const X509_V_ERR_CERT_NOT_YET_VALID: c_int = 9;
 /// OpenSSL错误码：证书已过期
 const X509_V_ERR_CERT_HAS_EXPIRED: c_int = 10;
-/// OpenSSL错误码：证书用途无效
-const X509_V_ERR_INVALID_PURPOSE: c_int = 26;
 
 extern "C" {
     /// 获取CMS签名中的签名者证书列表
@@ -48,24 +44,31 @@ extern "C" {
     );
     /// 获取X509验证上下文的错误码
     fn X509_STORE_CTX_get_error(ctx: *const X509_STORE_CTX) -> c_int;
+    /// 获取错误证书在证书链中的深度（0=leaf证书）
+    fn X509_STORE_CTX_get_error_depth(ctx: *const X509_STORE_CTX) -> c_int;
 }
 
 /// OpenSSL证书验证回调函数
 ///
-/// 业务规则：忽略签名方证书的过期、尚未生效和用途无效错误
-/// 详见 CONTEXT.md §证书类型 - 验签时签名方证书过期处理
+/// 业务规则：仅忽略签名方证书（leaf）的过期错误
 ///
-/// 原因：
-/// - 签名方证书过期不影响签名有效性（签名时证书有效即可）
-/// - 业务层仅记录warn日志，不影响验签结果
+/// 安全策略：
+/// - X509_V_ERR_CERT_HAS_EXPIRED：仅对depth==0（leaf证书）忽略，CA/中间证书过期严格拒绝
+/// - X509_V_ERR_CERT_NOT_YET_VALID：严格拒绝（证书尚未生效）
+/// - X509_V_ERR_INVALID_PURPOSE：严格拒绝（证书用途无效），由verify_signer_key_usage做精确匹配检查
+///
+/// 详见 CONTEXT.md §证书类型 - 验签时签名方证书过期处理
 unsafe extern "C" fn verify_callback(ok: c_int, ctx: *mut X509_STORE_CTX) -> c_int {
     if ok == 0 {
         let error = X509_STORE_CTX_get_error(ctx);
-        if error == X509_V_ERR_CERT_HAS_EXPIRED
-            || error == X509_V_ERR_CERT_NOT_YET_VALID
-            || error == X509_V_ERR_INVALID_PURPOSE
-        {
-            return 1;
+        // EXPIRED: 仅对leaf（签名方）证书忽略
+        // CA/中间证书过期必须严格执行
+        if error == X509_V_ERR_CERT_HAS_EXPIRED {
+            let depth = X509_STORE_CTX_get_error_depth(ctx);
+            if depth == 0 {
+                return 1; // leaf证书：签名时有效即可
+            }
+            return 0; // CA/中间证书过期：严格拒绝
         }
     }
     ok

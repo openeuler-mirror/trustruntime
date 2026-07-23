@@ -97,10 +97,10 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
   |   {"to-verify":{"data":"...", |
   |    "signed_data":"sign(data+A_id)","id":"A_id"},
   |    "to-sign":{"data":"xxx","id":"B_id"}}
-  |                               | 步骤1: 验签 — 验证 sign(data+A_id)
-  |                               |   用 ca_root.crt + cms.crl 验证签名方证书（仅验证签名有效性，不执行身份判定）
-  |                               |   验签时忽略对端证书过期/尚未生效的 OpenSSL 错误，视为验签通过（证书过期由 cert_checker 巡检 warn）
-  |                               |   验签失败 → 返回 result≥3（不执行签名步骤）
+|                               | 步骤1: 验签 — 验证 sign(data+A_id)
+|                               |   用 ca_root.crt + cms.crl 验证签名方证书（仅验证签名有效性，不执行身份判定）
+|                               |   验签时仅忽略签名方证书过期错误，CA证书过期和证书尚未生效时验签失败
+|                               |   验签失败 → 返回 result≥3（不执行签名步骤）
   |                               | 步骤2: 签名 — 计算 sign(data + B_id)
   |<-- type=0x13 -----------------|
   |   {"signed_data":"sign(data+B_id)","id":"B_id","result":0}
@@ -116,9 +116,9 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
   |-- type=0x14 ----------------->|
   |   {"to-verify":{"data":"...", |
   |    "signed_data":"sign(data+C_id)","id":"C_id"}}
-  |                               | 构建证书链: ca_root.crt，校验 CRL: cms.crl
-  |                               | 执行 CMS 验签，验证 sign(data+C_id)
-  |                               | 验签时忽略对端证书过期/尚未生效的 OpenSSL 错误，视为验签通过（证书过期由 cert_checker 巡检 warn）
+|                               | 构建证书链: ca_root.crt，校验 CRL: cms.crl
+|                               | 执行 CMS 验签，验证 sign(data+C_id)
+|                               | 验签时仅忽略签名方证书过期错误，CA证书过期和证书尚未生效时验签失败
 |                               | 验签通过后判断：
 |                               |   公钥相同 → result=2（优先级最高）
 |                               |   公钥不同 且 C_id == 本地证书id → result=0
