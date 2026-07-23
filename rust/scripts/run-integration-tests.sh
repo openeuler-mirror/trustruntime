@@ -20,7 +20,7 @@ done
 source ~/.cargo/env
 
 export TEST_CERT_DIR="$CERT_DIR"
-export TEST_BINARY_PATH="$PROJECT_ROOT/target/release/trustruntime"
+export TEST_BINARY_PATH="$PROJECT_ROOT/target/debug/trustruntime"
 
 check_vsock_loopback() {
     echo "Checking vsock_loopback module..."
@@ -41,14 +41,14 @@ if [ "$QUICK_MODE" = false ]; then
     echo "[1/4] Generating test certificates to $CERT_DIR..."
     if [ "$FORCE_CERTS" = true ] || [ ! -d "$CERT_DIR" ]; then
         cd "$PROJECT_ROOT/tools/cert-gen"
-        cargo run --release -- --output-dir "$CERT_DIR" --force
+        cargo run -- --output-dir "$CERT_DIR" --force
     else
         echo "  Certificates already exist at $CERT_DIR (use --force to regenerate)"
     fi
 
-    echo "[2/4] Building release binaries..."
+    echo "[2/4] Building debug binaries..."
     cd "$PROJECT_ROOT"
-    cargo build --release -p trustruntime
+    cargo build -p trustruntime
 
     echo "[3/4] Checking vsock_loopback module..."
     check_vsock_loopback
@@ -62,7 +62,7 @@ else
 fi
 
 cd "$PROJECT_ROOT"
-cargo test --release -p integration-tests -- --include-ignored --test-threads=1
+cargo test -p integration-tests -- --include-ignored --test-threads=1
 
 echo ""
 echo "All integration tests passed!"

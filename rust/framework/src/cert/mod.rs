@@ -17,8 +17,55 @@ use foreign_types_shared::ForeignType;
 use openssl::pkey::{PKey, Private};
 use openssl::x509::{X509Crl, X509};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+/// 允许的证书目录前缀（硬编码，防止配置篡改）
+#[cfg(not(debug_assertions))]
+const ALLOWED_CERT_DIRS: &[&str] = &["/etc/cert/"];
+
+/// 验证证书文件路径安全性
+///
+/// # 安全检查（Release构建）
+/// 1. 路径不能是symlink（防止Host通过9p注入恶意文件）
+/// 2. 规范路径必须在允许的目录内（防止路径遍历）
+///
+/// # Debug构建
+/// 跳过路径验证，仅用于测试环境
+fn validate_cert_path(path: &str) -> Result<PathBuf, CertLoadError> {
+    #[cfg(debug_assertions)]
+    {
+        Path::new(path)
+            .canonicalize()
+            .map_err(CertLoadError::IoError)
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let p = Path::new(path);
+
+        if p.is_symlink() {
+            return Err(CertLoadError::SecurityError("symlink not allowed".into()));
+        }
+
+        let canonical = p.canonicalize().map_err(CertLoadError::IoError)?;
+
+        let canonical_str = canonical
+            .to_str()
+            .ok_or_else(|| CertLoadError::SecurityError("invalid path encoding".into()))?;
+
+        if !ALLOWED_CERT_DIRS
+            .iter()
+            .any(|dir| canonical_str.starts_with(dir))
+        {
+            return Err(CertLoadError::SecurityError(
+                "path outside allowed dirs".into(),
+            ));
+        }
+
+        Ok(canonical)
+    }
+}
 
 /// 证书加载错误类型
 ///
@@ -35,6 +82,9 @@ pub enum CertLoadError {
     /// 格式错误：PEM和DER格式均解析失败
     #[error("invalid format: PEM and DER both failed")]
     InvalidFormat,
+    /// 安全错误：路径验证失败（symlink、路径遍历等）
+    #[error("security error: {0}")]
+    SecurityError(String),
 }
 
 /// 加载X.509证书
@@ -55,7 +105,8 @@ pub enum CertLoadError {
 /// let cert = load_x509("/path/to/cert.der")?;
 /// ```
 pub fn load_x509(path: &str) -> Result<X509, CertLoadError> {
-    let data = fs::read(Path::new(path))?;
+    let validated_path = validate_cert_path(path)?;
+    let data = fs::read(&validated_path)?;
     // ADR-0004: PEM/DER双格式支持 - 先尝试PEM，失败后尝试DER
     X509::from_pem(&data)
         .or_else(|_| X509::from_der(&data))
@@ -89,7 +140,8 @@ pub fn load_private_key(
     path: &str,
     password: Option<&str>,
 ) -> Result<PKey<Private>, CertLoadError> {
-    let data = fs::read(Path::new(path))?;
+    let validated_path = validate_cert_path(path)?;
+    let data = fs::read(&validated_path)?;
     match password {
         Some(pass) => {
             // 加密私钥：尝试PEM加密格式，失败后尝试PKCS8加密格式
@@ -123,7 +175,8 @@ pub fn load_private_key(
 /// let crl = load_crl("/path/to/crl.pem")?;
 /// ```
 pub fn load_crl(path: &str) -> Result<X509Crl, CertLoadError> {
-    let data = fs::read(Path::new(path))?;
+    let validated_path = validate_cert_path(path)?;
+    let data = fs::read(&validated_path)?;
     // ADR-0004: PEM/DER双格式支持 - 先尝试PEM，失败后尝试DER
     X509Crl::from_pem(&data)
         .or_else(|_| X509Crl::from_der(&data))
@@ -232,8 +285,16 @@ impl KeyUsageFlags {
 }
 
 const OID_MAPPINGS: &[(&str, &str, &str)] = &[
-    ("serverAuth", "TLS Web Server Authentication", "1.3.6.1.5.5.7.3.1"),
-    ("clientAuth", "TLS Web Client Authentication", "1.3.6.1.5.5.7.3.2"),
+    (
+        "serverAuth",
+        "TLS Web Server Authentication",
+        "1.3.6.1.5.5.7.3.1",
+    ),
+    (
+        "clientAuth",
+        "TLS Web Client Authentication",
+        "1.3.6.1.5.5.7.3.2",
+    ),
 ];
 
 fn get_oid_aliases(required_oid: &str) -> Vec<&str> {
@@ -255,16 +316,18 @@ fn get_oid_aliases(required_oid: &str) -> Vec<&str> {
 
 unsafe fn extract_eku_oids(eku: *mut std::ffi::c_void) -> Vec<String> {
     use std::ffi::CStr;
-    
+
     let stack = eku as *const openssl_sys::stack_st_ASN1_OBJECT;
     let num = openssl_sys::OPENSSL_sk_num(stack as *const _);
     let mut oids = Vec::with_capacity(num as usize);
 
     for i in 0..num {
-        let obj = openssl_sys::OPENSSL_sk_value(stack as *const _, i) as *mut openssl_sys::ASN1_OBJECT;
+        let obj =
+            openssl_sys::OPENSSL_sk_value(stack as *const _, i) as *mut openssl_sys::ASN1_OBJECT;
         if !obj.is_null() {
             let mut buf = [0u8; 256];
-            let len = openssl_sys::OBJ_obj2txt(buf.as_mut_ptr() as *mut i8, buf.len() as i32, obj, 0);
+            let len =
+                openssl_sys::OBJ_obj2txt(buf.as_mut_ptr() as *mut i8, buf.len() as i32, obj, 0);
             if len > 0 {
                 let oid = CStr::from_ptr(buf.as_ptr() as *const i8).to_string_lossy();
                 oids.push(oid.into_owned());
@@ -455,6 +518,7 @@ mod tests {
         let not_after = Asn1Time::days_from_now(365).unwrap();
         let mut builder = build_basic_cert_builder(&pkey, "Test Cert", 1, &not_before, &not_after);
 
+        // 添加SKI扩展（SHA-1哈希，20字节）
         let context = builder.x509v3_context(None, None);
         let ski = SubjectKeyIdentifier::new().build(&context).unwrap();
         builder.append_extension(ski).unwrap();
@@ -466,6 +530,7 @@ mod tests {
     /// 生成测试用的已过期证书（ECC-256，2001年过期）
     fn generate_expired_cert() -> (X509, PKey<Private>) {
         let pkey = generate_ec_key_pair();
+        // 设置已过期的时间范围（2000-2001年）
         let not_before = Asn1Time::from_unix(946684800).unwrap();
         let not_after = Asn1Time::from_unix(1000000000).unwrap();
         let mut builder =
@@ -478,6 +543,7 @@ mod tests {
     /// 生成测试用的尚未生效证书（ECC-256，365天后生效）
     fn generate_not_yet_valid_cert() -> (X509, PKey<Private>) {
         let pkey = generate_ec_key_pair();
+        // 设置尚未生效的时间范围（365天后生效，3650天后过期）
         let not_before = Asn1Time::days_from_now(365).unwrap();
         let not_after = Asn1Time::days_from_now(3650).unwrap();
         let mut builder =
@@ -817,5 +883,55 @@ mod tests {
         let (cert, _) = generate_test_cert();
         let result = check_key_usage_contains(&cert, KeyUsageFlags::DIGITAL_SIGNATURE);
         assert!(result.is_err());
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn reject_symlink_path() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let temp_dir = std::env::temp_dir().join("framework_cert_symlink");
+            let _ = fs::remove_dir_all(&temp_dir);
+            fs::create_dir_all(&temp_dir).unwrap();
+
+            let (cert, _) = generate_test_cert();
+            let real_path = temp_dir.join("real.crt");
+            fs::write(&real_path, cert.to_pem().unwrap()).unwrap();
+
+            let symlink_path = temp_dir.join("link.crt");
+            symlink(&real_path, &symlink_path).unwrap();
+
+            let result = validate_cert_path(symlink_path.to_str().unwrap());
+            assert!(matches!(
+                result.unwrap_err(),
+                CertLoadError::SecurityError(_)
+            ));
+
+            fs::remove_dir_all(&temp_dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn reject_path_outside_allowed_dirs() {
+        let result = validate_cert_path("/nonexistent/outside/path.crt");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn accept_valid_path_in_allowed_dir() {
+        let temp_dir = std::env::temp_dir().join("framework_cert_valid");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let (cert, _) = generate_test_cert();
+        let path = temp_dir.join("test.crt");
+        fs::write(&path, cert.to_pem().unwrap()).unwrap();
+
+        let result = load_x509(path.to_str().unwrap());
+        assert!(result.is_ok());
+
+        fs::remove_dir_all(&temp_dir).unwrap();
     }
 }

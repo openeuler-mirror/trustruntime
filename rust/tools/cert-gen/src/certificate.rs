@@ -7,7 +7,9 @@ use openssl::x509::extension::{
     AuthorityKeyIdentifier, BasicConstraints, CrlNumber, ExtendedKeyUsage, KeyUsage,
     SubjectKeyIdentifier,
 };
-use openssl::x509::{X509Builder, X509CrlBuilder, X509Extension, X509NameBuilder, X509RevokedBuilder, X509};
+use openssl::x509::{
+    X509Builder, X509CrlBuilder, X509Extension, X509NameBuilder, X509RevokedBuilder, X509,
+};
 use std::fs;
 use std::path::Path;
 
@@ -145,19 +147,28 @@ pub fn create_cert_with_usage(
     let pkey = PKey::from_ec_key(key.clone()).expect("Failed to create PKey");
 
     let mut name = X509NameBuilder::new().expect("Failed to create name builder");
-    name.append_entry_by_text("CN", cn).expect("Failed to append CN");
+    name.append_entry_by_text("CN", cn)
+        .expect("Failed to append CN");
     let name = name.build();
 
     let mut builder = X509Builder::new().expect("Failed to create builder");
     builder.set_version(2).expect("Failed to set version");
-    builder.set_subject_name(&name).expect("Failed to set subject");
-    builder.set_issuer_name(ca_cert.subject_name()).expect("Failed to set issuer");
+    builder
+        .set_subject_name(&name)
+        .expect("Failed to set subject");
+    builder
+        .set_issuer_name(ca_cert.subject_name())
+        .expect("Failed to set issuer");
     builder.set_pubkey(&pkey).expect("Failed to set pubkey");
 
     let not_before = Asn1Time::days_from_now(0).expect("Failed to create not_before");
     let not_after = Asn1Time::days_from_now(3650).expect("Failed to create not_after");
-    builder.set_not_before(&not_before).expect("Failed to set not_before");
-    builder.set_not_after(&not_after).expect("Failed to set not_after");
+    builder
+        .set_not_before(&not_before)
+        .expect("Failed to set not_before");
+    builder
+        .set_not_after(&not_after)
+        .expect("Failed to set not_after");
 
     let serial = BigNum::from_u32(rand_serial()).expect("Failed to create serial");
     builder
@@ -176,7 +187,9 @@ pub fn create_cert_with_usage(
 
     add_key_identifiers(&mut builder, ca_cert);
 
-    builder.sign(ca_pkey, MessageDigest::sha256()).expect("Failed to sign cert");
+    builder
+        .sign(ca_pkey, MessageDigest::sha256())
+        .expect("Failed to sign cert");
     let cert = builder.build();
     let cert_id = get_subject_key_id(&cert);
 

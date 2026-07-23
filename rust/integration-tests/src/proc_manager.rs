@@ -230,7 +230,11 @@ impl ProcessManager {
 
     fn copy_file(&self, src: &Path, dst: &str, desc: &str) -> Result<(), ProcessError> {
         eprintln!("DEBUG: Copying {} from {} to {}", desc, src.display(), dst);
-        self.run_sudo_command("cp", &[&src.to_string_lossy(), dst], &format!("copy {}", desc))
+        self.run_sudo_command(
+            "cp",
+            &[&src.to_string_lossy(), dst],
+            &format!("copy {}", desc),
+        )
     }
 
     fn ensure_cert_dirs(&self) -> Result<(), ProcessError> {
@@ -240,14 +244,26 @@ impl ProcessManager {
                 self.run_sudo_command("rm", &["-rf", dir], &format!("remove {}", dir))?;
             }
             self.run_sudo_command("mkdir", &["-p", dir], &format!("create {}", dir))?;
-            self.run_sudo_command("chmod", &["755", dir], &format!("set permissions for {}", dir))?;
+            self.run_sudo_command(
+                "chmod",
+                &["755", dir],
+                &format!("set permissions for {}", dir),
+            )?;
         }
         Ok(())
     }
 
     fn copy_tls_certs(&self, config: &NodeConfig) -> Result<(), ProcessError> {
-        self.copy_file(&config.tls_cert_path, "/etc/cert/server/certificate.crt", "TLS cert")?;
-        self.copy_file(&config.tls_key_path, "/etc/cert/server/private.key", "TLS key")?;
+        self.copy_file(
+            &config.tls_cert_path,
+            "/etc/cert/server/certificate.crt",
+            "TLS cert",
+        )?;
+        self.copy_file(
+            &config.tls_key_path,
+            "/etc/cert/server/private.key",
+            "TLS key",
+        )?;
         self.copy_file(
             &self.cert_base_path.join("tls/ca.crt"),
             "/etc/cert/server/ca_root.crt",
@@ -257,7 +273,11 @@ impl ProcessManager {
     }
 
     fn copy_cms_certs(&self, config: &NodeConfig) -> Result<(), ProcessError> {
-        self.copy_file(&config.cms_cert_path, "/etc/cert/cms/signer.crt", "CMS cert")?;
+        self.copy_file(
+            &config.cms_cert_path,
+            "/etc/cert/cms/signer.crt",
+            "CMS cert",
+        )?;
         self.copy_file(&config.cms_key_path, "/etc/cert/cms/signer.key", "CMS key")?;
         self.copy_file(
             &self.cert_base_path.join("cms/ca.crt"),
@@ -282,20 +302,25 @@ impl ProcessManager {
         )
         .map_err(|e| ProcessError::ConfigError(e.to_string()))?;
 
-        let group =
-            EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)
-                .map_err(|e| ProcessError::ConfigError(format!("Failed to create EC group: {}", e)))?;
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)
+            .map_err(|e| ProcessError::ConfigError(format!("Failed to create EC group: {}", e)))?;
         let temp_ca_key = EcKey::generate(&group)
             .map_err(|e| ProcessError::ConfigError(format!("Failed to generate EC key: {}", e)))?;
         let temp_ca_pkey = PKey::from_ec_key(temp_ca_key)
             .map_err(|e| ProcessError::ConfigError(format!("Failed to create PKey: {}", e)))?;
 
-        let empty_crl = Self::generate_empty_crl(&ca_cert, &temp_ca_pkey)
-            .map_err(|e| ProcessError::ConfigError(format!("Failed to generate empty CRL: {}", e)))?;
+        let empty_crl = Self::generate_empty_crl(&ca_cert, &temp_ca_pkey).map_err(|e| {
+            ProcessError::ConfigError(format!("Failed to generate empty CRL: {}", e))
+        })?;
 
         let temp_crl_path = format!("/tmp/{}_empty_crl.pem", desc.to_lowercase());
-        fs::write(&temp_crl_path, empty_crl).map_err(|e| ProcessError::ConfigError(e.to_string()))?;
-        self.run_sudo_command("cp", &[&temp_crl_path, dst], &format!("copy empty {} CRL", desc))?;
+        fs::write(&temp_crl_path, empty_crl)
+            .map_err(|e| ProcessError::ConfigError(e.to_string()))?;
+        self.run_sudo_command(
+            "cp",
+            &[&temp_crl_path, dst],
+            &format!("copy empty {} CRL", desc),
+        )?;
         fs::remove_file(&temp_crl_path).ok();
 
         Ok(())
@@ -329,15 +354,18 @@ impl ProcessManager {
             )
             .map_err(|e| ProcessError::ConfigError(e.to_string()))?;
 
-            let empty_crl = Self::generate_empty_crl(&cms_ca_cert, &cms_ca_pkey)
-                .map_err(|e| {
-                    ProcessError::ConfigError(format!("Failed to generate empty CRL: {}", e))
-                })?;
+            let empty_crl = Self::generate_empty_crl(&cms_ca_cert, &cms_ca_pkey).map_err(|e| {
+                ProcessError::ConfigError(format!("Failed to generate empty CRL: {}", e))
+            })?;
 
             let temp_crl_path = "/tmp/cms_empty_crl.pem";
             fs::write(temp_crl_path, empty_crl)
                 .map_err(|e| ProcessError::ConfigError(e.to_string()))?;
-            self.run_sudo_command("cp", &[temp_crl_path, "/etc/cert/cms/cms.crl"], "copy empty CMS CRL")?;
+            self.run_sudo_command(
+                "cp",
+                &[temp_crl_path, "/etc/cert/cms/cms.crl"],
+                "copy empty CMS CRL",
+            )?;
             fs::remove_file(temp_crl_path).ok();
         }
         Ok(())
@@ -374,12 +402,17 @@ impl ProcessManager {
         Ok(())
     }
 
-    fn build_aki_extension(ca_cert: &openssl::x509::X509) -> Result<openssl::x509::X509Extension, ProcessError> {
+    fn build_aki_extension(
+        ca_cert: &openssl::x509::X509,
+    ) -> Result<openssl::x509::X509Extension, ProcessError> {
         use openssl::x509::extension::AuthorityKeyIdentifier;
         use openssl::x509::X509Builder;
 
         let mut temp_builder = wrap_err!(X509Builder::new(), "Failed to create X509 builder");
-        wrap_err!(temp_builder.set_subject_name(ca_cert.subject_name()), "Failed to set subject name");
+        wrap_err!(
+            temp_builder.set_subject_name(ca_cert.subject_name()),
+            "Failed to set subject name"
+        );
         let context = temp_builder.x509v3_context(Some(ca_cert), None);
         AuthorityKeyIdentifier::new()
             .keyid(true)
@@ -398,22 +431,37 @@ impl ProcessManager {
         use openssl::x509::X509CrlBuilder;
 
         let mut crl_builder = wrap_err!(X509CrlBuilder::new(), "Failed to create CRL builder");
-        wrap_err!(crl_builder.set_issuer_name(ca_cert.subject_name()), "Failed to set issuer name");
+        wrap_err!(
+            crl_builder.set_issuer_name(ca_cert.subject_name()),
+            "Failed to set issuer name"
+        );
 
         let not_before = wrap_err!(Asn1Time::days_from_now(0), "Failed to create time");
         let not_after = wrap_err!(Asn1Time::days_from_now(3650), "Failed to create time");
-        wrap_err!(crl_builder.set_last_update(&not_before), "Failed to set last update");
-        wrap_err!(crl_builder.set_next_update(&not_after), "Failed to set next update");
+        wrap_err!(
+            crl_builder.set_last_update(&not_before),
+            "Failed to set last update"
+        );
+        wrap_err!(
+            crl_builder.set_next_update(&not_after),
+            "Failed to set next update"
+        );
 
         let bn = wrap_err!(BigNum::from_u32(1), "Failed to create BN");
         let crl_number = wrap_err!(CrlNumber::new(bn), "Failed to create CRL number");
         let crl_number_ext = wrap_err!(crl_number.build(), "Failed to build CRL number");
-        wrap_err!(crl_builder.append_extension(crl_number_ext), "Failed to append CRL number");
+        wrap_err!(
+            crl_builder.append_extension(crl_number_ext),
+            "Failed to append CRL number"
+        );
 
         let aki = Self::build_aki_extension(ca_cert)?;
         wrap_err!(crl_builder.append_extension(aki), "Failed to append AKI");
 
-        wrap_err!(crl_builder.sign(ca_pkey, MessageDigest::sha256()), "Failed to sign CRL");
+        wrap_err!(
+            crl_builder.sign(ca_pkey, MessageDigest::sha256()),
+            "Failed to sign CRL"
+        );
         let crl = wrap_err!(crl_builder.build(), "Failed to build CRL");
         crl.to_pem()
             .map_err(|e| ProcessError::ConfigError(format!("Failed to encode CRL: {}", e)))

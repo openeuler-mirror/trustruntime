@@ -70,7 +70,7 @@ impl TestPaths {
     ///
     /// 默认值：
     /// - cert_base: `$HOME/test-certs` 或 `TEST_CERT_DIR` 环境变量
-    /// - binary_path: `target/release/trustruntime` 或 `TEST_BINARY_PATH` 环境变量
+    /// - binary_path: `target/debug/trustruntime` 或 `TEST_BINARY_PATH` 环境变量
     pub fn new() -> Self {
         let cert_base = std::env::var("TEST_CERT_DIR")
             .map(PathBuf::from)
@@ -81,7 +81,7 @@ impl TestPaths {
 
         let binary_path = std::env::var("TEST_BINARY_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("target/release/trustruntime"));
+            .unwrap_or_else(|_| PathBuf::from("target/debug/trustruntime"));
 
         Self {
             cert_base,

@@ -4,14 +4,32 @@ use super::error::VsockError;
 use openssl::ssl::{SslAcceptor, SslMethod, SslVerifyMode};
 use std::time::Duration;
 
+/// TLS配置参数
+///
+/// 封装TLS服务端所需的证书和密钥路径
 pub struct TlsConfig {
+    /// 服务端证书路径（PEM格式）
     pub cert_path: String,
+    /// 服务端私钥路径（PEM格式）
     pub key_path: String,
+    /// 私钥密码（可选）
     pub key_password: Option<String>,
+    /// CA根证书路径（用于客户端证书验证）
     pub ca_cert_path: String,
+    /// CRL吊销列表路径（可选）
     pub crl_path: Option<String>,
 }
 
+/// 配置TLS安全参数
+///
+/// 架构决策（ADR-0004）：
+/// - 仅允许TLS 1.2和TLS 1.3
+/// - 强密码套件（AES-256/128-GCM, CHACHA20-POLY1305）
+/// - 前向保密（ECDHE密钥交换）
+/// - 禁用重协商和Session Ticket
+///
+/// # Returns
+/// * `Ok(SslAcceptorBuilder)` - TLS配置构建器
 pub fn configure_tls_builder() -> Result<openssl::ssl::SslAcceptorBuilder, VsockError> {
     let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
 
@@ -37,7 +55,6 @@ pub fn load_tls_certificates(
     let cert = crate::cert::load_x509(&tls_config.cert_path)
         .map_err(|e| VsockError::TlsConfigError(e.to_string()))?;
 
-    // 验证通信证书KeyUsage：必须包含digitalSignature和keyEncipherment
     crate::cert::check_key_usage_contains(
         &cert,
         crate::cert::KeyUsageFlags::DIGITAL_SIGNATURE
@@ -45,7 +62,6 @@ pub fn load_tls_certificates(
     )
     .map_err(|e| VsockError::TlsConfigError(e.to_string()))?;
 
-    // 验证通信证书ExtendedKeyUsage：必须包含serverAuth
     crate::cert::check_extended_key_usage(&cert, "serverAuth")
         .map_err(|e| VsockError::TlsConfigError(e.to_string()))?;
 
