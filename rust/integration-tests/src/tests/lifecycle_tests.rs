@@ -55,7 +55,7 @@ fn l01_normal_startup_shutdown() {
 #[test]
 fn l03_config_missing_exit() {
     let binary_path = std::env::var("TEST_BINARY_PATH")
-        .unwrap_or_else(|_| "target/release/trustruntime".to_string());
+        .unwrap_or_else(|_| "target/debug/trustruntime".to_string());
 
     if !std::path::Path::new(&binary_path).exists() {
         return;  // Skip test if binary not found
@@ -82,7 +82,7 @@ fn l03_config_missing_exit() {
 #[test]
 fn l04_invalid_config_format_exit() {
     let binary_path = std::env::var("TEST_BINARY_PATH")
-        .unwrap_or_else(|_| "target/release/trustruntime".to_string());
+        .unwrap_or_else(|_| "target/debug/trustruntime".to_string());
 
     if !std::path::Path::new(&binary_path).exists() {
         return;  // Skip test if binary not found
@@ -112,7 +112,7 @@ fn l04_invalid_config_format_exit() {
 #[test]
 fn l05_missing_argument_exit() {
     let binary_path = std::env::var("TEST_BINARY_PATH")
-        .unwrap_or_else(|_| "target/release/trustruntime".to_string());
+        .unwrap_or_else(|_| "target/debug/trustruntime".to_string());
 
     if !std::path::Path::new(&binary_path).exists() {
         return;  // Skip test if binary not found

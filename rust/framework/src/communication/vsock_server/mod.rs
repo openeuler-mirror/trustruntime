@@ -48,12 +48,34 @@ use tokio::sync::Semaphore;
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
 
+/// vsock传输层实现
+///
+/// 实现TransportLayer trait，提供基于vsock的TLS安全传输层
+///
+/// 核心组件：
+/// - ssl_acceptor: TLS服务端接收器（OpenSSL）
+/// - semaphore: 并发连接限制信号量（MAX_CONCURRENT_CONNECTIONS个许可）
+/// - handlers: 消息处理器映射（msg_type -> DataHandler）
+/// - shutdown_signal: 优雅关闭信号
+/// - listener_handle: 监听线程句柄（用于优雅关闭）
 pub struct VsockTransport {
+    /// TLS服务端接收器
+    /// 用于执行TLS握手和建立安全连接
     ssl_acceptor: Arc<SslAcceptor>,
+    /// 并发连接限制信号量
+    /// 数量由配置项max_connections决定（默认MAX_CONCURRENT_CONNECTIONS）
     semaphore: Arc<Semaphore>,
+    /// 消息处理器映射
+    /// Key: 消息类型（msg_type）
+    /// Value: 业务处理器（DataHandler trait对象）
     handlers: Arc<RwLock<HashMap<u32, Box<dyn DataHandler>>>>,
+    /// vsock监听端口
     port: u32,
+    /// 优雅关闭信号
+    /// 设置为true时，监听线程停止接收新连接
     shutdown_signal: Arc<AtomicBool>,
+    /// 监听任务句柄
+    /// 用于在stop()时等待任务优雅退出
     listener_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 

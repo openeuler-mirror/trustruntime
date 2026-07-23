@@ -23,7 +23,7 @@ use openssl::x509::X509;
 /// 输出：证书目录结构
 fn generate_test_certs(cert_dir: &PathBuf) {
     let cert_gen = std::env::var("CERT_GEN_PATH")
-        .unwrap_or_else(|_| "../../../target/release/cert-gen".to_string());
+        .unwrap_or_else(|_| "../../../target/debug/cert-gen".to_string());
 
     println!("Using cert-gen at: {}", cert_gen);
     println!("Generating certs to: {}", cert_dir.display());
@@ -136,7 +136,7 @@ fn debug_tls_chain_verification() {
     // Start server
     println!("\n=== Step 5: Start server process ===");
     let binary_path = std::env::var("TEST_BINARY_PATH")
-        .unwrap_or_else(|_| "../target/release/trustruntime".to_string());
+        .unwrap_or_else(|_| "../target/debug/trustruntime".to_string());
 
     let config_content = format!(r#"
 [vsock]
