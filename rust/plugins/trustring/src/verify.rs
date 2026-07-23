@@ -50,6 +50,8 @@ extern "C" {
         st: *const OPENSSL_STACK,
         i: ::std::os::raw::c_int,
     ) -> *mut ::std::os::raw::c_void;
+    /// 释放OpenSSL栈（不释放栈中元素）
+    fn OPENSSL_sk_free(st: *mut OPENSSL_STACK);
     /// 增加X509证书的引用计数
     fn X509_up_ref(x: *mut X509_sys);
     /// 设置X509存储的验证回调函数
@@ -61,8 +63,6 @@ extern "C" {
     fn X509_STORE_CTX_get_error(ctx: *const X509_STORE_CTX) -> c_int;
     /// 获取错误证书在证书链中的深度（0=leaf证书）
     fn X509_STORE_CTX_get_error_depth(ctx: *const X509_STORE_CTX) -> c_int;
-    /// 添加CRL到X509存储
-    fn X509_STORE_add_crl(store: *mut X509_STORE, crl: *mut openssl_sys::X509_CRL) -> c_int;
 }
 
 fn map_x509_error_to_verify_error(error_code: c_int) -> VerifyError {
@@ -236,15 +236,6 @@ impl Verifier {
         let mut store_builder = X509StoreBuilder::new()?;
         store_builder.add_cert(self.ca_cert.clone())?;
 
-        if let Some(crl) = &self.crl {
-            let result = unsafe { X509_STORE_add_crl(store_builder.as_ptr(), crl.as_ptr()) };
-            if result != 1 {
-                return Err(VerifyError::OpenSslError(
-                    "Failed to add CRL to store".to_string(),
-                ));
-            }
-        }
-
         let store = store_builder.build();
 
         unsafe {
@@ -347,12 +338,13 @@ impl Verifier {
             let stack = certs_stack as *const OPENSSL_STACK;
             let num = OPENSSL_sk_num(stack);
 
-            let mut certs_vec = Vec::new();
+            let mut certs_vec = Vec::with_capacity(num as usize);
             for i in 0..num {
                 let x509_ptr = OPENSSL_sk_value(stack, i) as *mut X509_sys;
-                X509_up_ref(x509_ptr);
                 certs_vec.push(X509::from_ptr(x509_ptr));
             }
+
+            OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
 
             certs_vec
         };
