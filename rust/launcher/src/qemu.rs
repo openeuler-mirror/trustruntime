@@ -1,6 +1,6 @@
 use crate::{
     cli::{PortForwardValue, VirtiofsBind, VolumeValue},
-    utils::{create_vm_work_dir, ExecutablePaths},
+    utils::{ExecutablePaths, create_vm_work_dir},
 };
 use anyhow::{Context, Result};
 use log::{error, info, warn};

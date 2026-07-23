@@ -432,18 +432,38 @@ pub fn print_help(help_type: &HelpType) {
             println!("  --kernel <path>             Path to kernel image (e.g., ./Image)");
             println!("  --payload <path>            Path to payload image (e.g., abc.img)");
             println!("  --app-conf <path>           Path to app config file (e.g., launch.conf)");
-            println!("  --volume <hostdir:guestdir> (Optional) Shared directory for vm (e.g., /root/workspace/:/root/app/)");
-            println!("  --virtiofs <host:guest>     (Optional) VirtioFS mapping (supports multiple instances)");
-            println!("                              Example: --virtiofs xxx:xxx --virtiofs yyy:yyy");
-            println!("  --port-forward <spec>       (Optional) Port forwarding spec (supports multiple instances)");
+            println!(
+                "  --volume <hostdir:guestdir> (Optional) Shared directory for vm (e.g., /root/workspace/:/root/app/)"
+            );
+            println!(
+                "  --virtiofs <host:guest>     (Optional) VirtioFS mapping (supports multiple instances)"
+            );
+            println!(
+                "                              Example: --virtiofs xxx:xxx --virtiofs yyy:yyy"
+            );
+            println!(
+                "  --port-forward <spec>       (Optional) Port forwarding spec (supports multiple instances)"
+            );
             println!("                              Format: [hostip:]hostport:guestport");
-            println!("                              Example: --port-forward 8080:80 --port-forward 192.168.1.1:9090:90");
-            println!("  --qemu-args <quoted-args>   (Optional) Extra QEMU arguments (use quotes for spaces)");
+            println!(
+                "                              Example: --port-forward 8080:80 --port-forward 192.168.1.1:9090:90"
+            );
+            println!(
+                "  --qemu-args <quoted-args>   (Optional) Extra QEMU arguments (use quotes for spaces)"
+            );
             println!("                              Example: --qemu-args=\"--arg1=c1 --arg2=c2\"");
-            println!("  --mem <num>                 (Optional) Memory size in MB (positive integer, e.g., 2048)");
-            println!("  --smp <num>                 (Optional) Number of CPU cores (integer ≥1, e.g., 2)");
-            println!("  --cid <num>                 (Optional) CID for vhost-vsock (integer ≥3, e.g., 3)");
-            println!("  --runtime <string>          (Optional) Runtime type (e.g., qemu, default: qemu)");
+            println!(
+                "  --mem <num>                 (Optional) Memory size in MB (positive integer, e.g., 2048)"
+            );
+            println!(
+                "  --smp <num>                 (Optional) Number of CPU cores (integer ≥1, e.g., 2)"
+            );
+            println!(
+                "  --cid <num>                 (Optional) CID for vhost-vsock (integer ≥3, e.g., 3)"
+            );
+            println!(
+                "  --runtime <string>          (Optional) Runtime type (e.g., qemu, default: qemu)"
+            );
         }
     }
 }

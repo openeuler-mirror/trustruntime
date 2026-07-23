@@ -169,7 +169,7 @@ pub(crate) fn map_sign_error(err: &SignError) -> BusinessError;
 /// 将 VerifyError 映射为 BusinessError
 pub(crate) fn map_verify_error(err: &VerifyError) -> BusinessError;
 
-/// 将 OpenSSL ErrorStack 映射为 BusinessError（基于错误消息字符串匹配）
+/// 将 OpenSSL ErrorStack 映射为 BusinessError（基于错误码映射）
 pub(crate) fn map_openssl_error(error: &openssl::error::ErrorStack) -> BusinessError;
 ```
 
@@ -315,10 +315,10 @@ Verifier::verify() 内部判定逻辑：
 |------|--------|
 | SignError → BusinessError 映射 | 每个变体正确映射 |
 | VerifyError → BusinessError 映射 | 每个变体正确映射 |
-| OpenSSL ErrorStack 字符串匹配 | 常见错误消息正确映射 |
-| 未知 OpenSSL 错误 | 映射为 Other(10) |
+| OpenSSL 错误码映射 | 常见错误库ID正确映射 |
+| 未知 OpenSSL 错误 | 签名映射为 Other(10)，验签映射为 Other(99) |
 
 ### mock 策略
 
 - sign/verify: 使用 OpenSSL 编程生成 ECC-256 自签证书链（CA → signer），生成测试用 CRL
-- error_code_mapper: 构造各类 ErrorStack 验证映射逻辑
+- error_code_mapper: 构造各类错误码验证映射逻辑（验签使用X509错误码，签名使用错误库ID）

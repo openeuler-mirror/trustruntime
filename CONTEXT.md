@@ -129,7 +129,7 @@
 - **verify**: CMS验签实现 + 证书链校验 + CRL校验
 - **cert-loader**: 签名/验签证书加载与管理
 - **handler**: vsock type回调注册与业务路由（原设计文档中称 plugin-cms，现统一为 trustring）
-- **error_code_mapper**: OpenSSL ErrorStack → 业务result code 0-9 映射层
+- **error_code_mapper**: OpenSSL错误码 → 业务result code映射层（验签使用X509错误码，签名使用错误库ID）
 
 ## 配置文件
 

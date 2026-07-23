@@ -5,7 +5,7 @@ mod logger;
 mod qemu;
 mod utils;
 
-use crate::cli::{print_help, SubCommand};
+use crate::cli::{SubCommand, print_help};
 use log::info;
 use std::error::Error;
 use std::process;
