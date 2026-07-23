@@ -62,9 +62,10 @@ fn check_param_exists(opt_str: Option<String>, arg_name: &str) -> Result<PathBuf
     Ok(path)
 }
 
-fn config_custom(
-    config_path: &PathBuf,
-) -> Result<(PathBuf, PathBuf, u32, PathBuf, u32), Box<dyn Error>> {
+type ConfigResult = (PathBuf, PathBuf, u32, PathBuf, u32);
+type AnalyzeResult = (PathBuf, PathBuf, Option<PathBuf>, u32, u32);
+
+fn config_custom(config_path: &PathBuf) -> Result<ConfigResult, Box<dyn Error>> {
     let content = fs::read_to_string(config_path)?;
     let config: LauncherConfig = serde_json::from_str(&content)?;
     validate_config(&config)?;
@@ -79,9 +80,7 @@ fn config_custom(
     ))
 }
 
-fn analyze_required_args(
-    cli_args: &RunArgs,
-) -> Result<(PathBuf, PathBuf, Option<PathBuf>, u32, u32), Box<dyn Error>> {
+fn analyze_required_args(cli_args: &RunArgs) -> Result<AnalyzeResult, Box<dyn Error>> {
     match &cli_args.app_conf {
         Some(conf) => {
             info!("--app-conf is exists, using conf file");
@@ -152,13 +151,7 @@ pub fn run(args: &RunArgs) -> Result<(), Box<dyn Error>> {
         .as_ref()
         .ok_or(CliError::MissingValue("--runtime".to_string()))?;
     match runtime.as_str() {
-        "qemu" => {
-            return dispatch_to_qemu(args);
-        }
-        _ => {
-            return Err(
-                CliError::UnknownOption(format!("Unsupported runtime: {}", runtime)).into(),
-            );
-        }
+        "qemu" => dispatch_to_qemu(args),
+        _ => Err(CliError::UnknownOption(format!("Unsupported runtime: {}", runtime)).into()),
     }
 }

@@ -518,7 +518,8 @@ fn b09_verify_expired_ca_cert() {
     let signer_id = extract_cert_id_from_pem(&signer_pem);
     let signer_id_b64 = general_purpose::STANDARD.encode(&signer_id);
 
-    let signed_der = sign_with_openssl_directly(&signer_pem, &signer_key_pem, b"test data", &signer_id);
+    let signed_der =
+        sign_with_openssl_directly(&signer_pem, &signer_key_pem, b"test data", &signer_id);
     let signed_b64 = general_purpose::STANDARD.encode(&signed_der);
 
     let ctx = PluginTestContext::new(&ca_path, &signer_path, &signer_key_path, None)
