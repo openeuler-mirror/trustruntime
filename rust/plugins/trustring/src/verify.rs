@@ -27,9 +27,7 @@ thread_local! {
     static VERIFY_ERROR_CODE: Cell<c_int> = const { Cell::new(0) };
 }
 
-const X509_V_ERR_CERT_NOT_YET_VALID: c_int = 9;
 const X509_V_ERR_CERT_HAS_EXPIRED: c_int = 10;
-const X509_V_ERR_INVALID_PURPOSE: c_int = 26;
 
 const X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT: c_int = 2;
 const X509_V_ERR_CERT_SIGNATURE_FAILURE: c_int = 7;
@@ -43,6 +41,8 @@ const X509_V_ERR_CERT_REJECTED: c_int = 28;
 extern "C" {
     /// 获取CMS签名中的签名者证书列表
     fn CMS_get0_signers(cms: *mut CMS_ContentInfo) -> *mut stack_st_X509;
+    /// 获取CMS签名中的所有证书
+    fn CMS_get1_certs(cms: *mut CMS_ContentInfo) -> *mut stack_st_X509;
     /// 获取OpenSSL栈的元素数量
     fn OPENSSL_sk_num(st: *const OPENSSL_STACK) -> ::std::os::raw::c_int;
     /// 获取OpenSSL栈中指定索引的元素
@@ -61,6 +61,8 @@ extern "C" {
     fn X509_STORE_CTX_get_error(ctx: *const X509_STORE_CTX) -> c_int;
     /// 获取错误证书在证书链中的深度（0=leaf证书）
     fn X509_STORE_CTX_get_error_depth(ctx: *const X509_STORE_CTX) -> c_int;
+    /// 添加CRL到X509存储
+    fn X509_STORE_add_crl(store: *mut X509_STORE, crl: *mut openssl_sys::X509_CRL) -> c_int;
 }
 
 fn map_x509_error_to_verify_error(error_code: c_int) -> VerifyError {
@@ -71,11 +73,11 @@ fn map_x509_error_to_verify_error(error_code: c_int) -> VerifyError {
         | X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
         | X509_V_ERR_CERT_UNTRUSTED
         | X509_V_ERR_CERT_REJECTED => VerifyError::CertificateChainInvalid,
-        
+
         X509_V_ERR_CERT_REVOKED => VerifyError::CertificateRevoked,
-        
+
         X509_V_ERR_CERT_SIGNATURE_FAILURE => VerifyError::SignatureMismatch,
-        
+
         _ => VerifyError::SignatureMismatch,
     }
 }
@@ -93,10 +95,10 @@ fn map_x509_error_to_verify_error(error_code: c_int) -> VerifyError {
 unsafe extern "C" fn verify_callback(ok: c_int, ctx: *mut X509_STORE_CTX) -> c_int {
     if ok == 0 {
         let error = X509_STORE_CTX_get_error(ctx);
-        
+
         // 存储错误码到线程局部变量
         VERIFY_ERROR_CODE.with(|cell| cell.set(error));
-        
+
         // 仅对leaf证书（depth==0）忽略过期错误
         if error == X509_V_ERR_CERT_HAS_EXPIRED {
             let depth = X509_STORE_CTX_get_error_depth(ctx);
@@ -233,6 +235,16 @@ impl Verifier {
     fn build_cert_store(&self) -> Result<openssl::x509::store::X509Store, VerifyError> {
         let mut store_builder = X509StoreBuilder::new()?;
         store_builder.add_cert(self.ca_cert.clone())?;
+
+        if let Some(crl) = &self.crl {
+            let result = unsafe { X509_STORE_add_crl(store_builder.as_ptr(), crl.as_ptr()) };
+            if result != 1 {
+                return Err(VerifyError::OpenSslError(
+                    "Failed to add CRL to store".to_string(),
+                ));
+            }
+        }
+
         let store = store_builder.build();
 
         unsafe {
@@ -305,38 +317,7 @@ impl Verifier {
         }
     }
 
-    /// 检查签名者证书是否被CRL吊销
-    ///
-    /// # Arguments
-    /// * `cms` - CMS签名数据
-    ///
-    /// # Returns
-    /// * `Ok(())` - 未被吊销或无CRL配置
-    /// * `Err(VerifyError::CertificateRevoked)` - 证书被吊销
-    fn check_crl_revocation(&self, cms: &CmsContentInfo) -> Result<(), VerifyError> {
-        let crl = match &self.crl {
-            Some(crl) => crl,
-            None => return Ok(()),
-        };
-
-        let signer_cert = match Self::extract_signer_cert(cms) {
-            Some(cert) => cert,
-            None => return Ok(()),
-        };
-
-        if let Some(revoked_stack) = crl.get_revoked() {
-            for revoked in revoked_stack.iter() {
-                if revoked.serial_number() == signer_cert.serial_number() {
-                    return Err(VerifyError::CertificateRevoked);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     fn verify_signer_key_usage(cert: &X509) -> Result<(), VerifyError> {
-        // 签名证书KeyUsage必须仅包含digitalSignature（精确匹配）
         let actual_flags = match trustruntime_framework::cert::extract_key_usage_flags(cert) {
             Ok(flags) => flags,
             Err(_) => return Err(VerifyError::InvalidKeyUsage),
@@ -344,6 +325,46 @@ impl Verifier {
 
         if actual_flags != trustruntime_framework::cert::KeyUsageFlags::DIGITAL_SIGNATURE {
             return Err(VerifyError::InvalidKeyUsage);
+        }
+
+        Ok(())
+    }
+
+    fn check_crl_revocation(&self, cms: &CmsContentInfo) -> Result<(), VerifyError> {
+        let crl = match &self.crl {
+            Some(crl) => crl,
+            None => return Ok(()),
+        };
+
+        let certs = unsafe {
+            let cms_ptr = cms.as_ptr();
+            let certs_stack = CMS_get1_certs(cms_ptr);
+
+            if certs_stack.is_null() {
+                return Ok(());
+            }
+
+            let stack = certs_stack as *const OPENSSL_STACK;
+            let num = OPENSSL_sk_num(stack);
+
+            let mut certs_vec = Vec::new();
+            for i in 0..num {
+                let x509_ptr = OPENSSL_sk_value(stack, i) as *mut X509_sys;
+                X509_up_ref(x509_ptr);
+                certs_vec.push(X509::from_ptr(x509_ptr));
+            }
+
+            certs_vec
+        };
+
+        if let Some(revoked_stack) = crl.get_revoked() {
+            for cert in &certs {
+                for revoked in revoked_stack.iter() {
+                    if revoked.serial_number() == cert.serial_number() {
+                        return Err(VerifyError::CertificateRevoked);
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -480,7 +501,8 @@ impl Verifier {
         let signer_cert = Self::extract_signer_cert(&cms).ok_or(VerifyError::FormatError)?;
         Self::verify_signer_key_usage(&signer_cert)?;
 
-        self.check_crl_revocation(&cms)
+        self.check_crl_revocation(&cms)?;
+        Ok(())
     }
 }
 
