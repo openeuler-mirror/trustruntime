@@ -8,17 +8,18 @@
 //! - 未生效证书包生成
 //! - 已吊销证书包生成
 //! - 自签名证书生成
+//! - 过期CA证书包生成
 //!
 //! 所有证书使用 ECC-256 曲线（X9_62_PRIME256V1），与生产环境一致。
 
 use openssl::asn1::Asn1Time;
 use openssl::bn::BigNum;
-use openssl::ec::EcGroup;
+use openssl::ec::{EcGroup, EcKey};
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
 use openssl::pkey::PKey;
-use openssl::x509::extension::{AuthorityKeyIdentifier, SubjectKeyIdentifier};
-use openssl::x509::{X509Builder, X509NameBuilder};
+use openssl::x509::extension::{AuthorityKeyIdentifier, BasicConstraints, SubjectKeyIdentifier};
+use openssl::x509::{X509, X509Builder, X509NameBuilder};
 
 use cert_gen::certificate::{
     create_ca_cert, create_cert_with_usage, create_expired_cert, create_not_yet_valid_cert,
@@ -466,5 +467,119 @@ pub fn generate_comm_cert_missing_eku() -> CertBundle {
         valid_pkey.private_key_to_pem_pkcs8().unwrap(),
         test_cert.to_pem().unwrap(),
         test_pkey.private_key_to_pem_pkcs8().unwrap(),
+    )
+}
+
+/// 构建过期CA证书（内部函数）
+fn build_expired_ca_cert(group: &EcGroup) -> (X509, PKey<openssl::pkey::Private>) {
+    let ca_key = EcKey::generate(group).unwrap();
+    let ca_pkey = PKey::from_ec_key(ca_key).unwrap();
+
+    let mut ca_name = X509NameBuilder::new().unwrap();
+    ca_name.append_entry_by_text("CN", "Expired CA").unwrap();
+    let ca_name = ca_name.build();
+
+    let mut ca_builder = X509Builder::new().unwrap();
+    ca_builder.set_version(2).unwrap();
+    ca_builder.set_subject_name(&ca_name).unwrap();
+    ca_builder.set_issuer_name(&ca_name).unwrap();
+    ca_builder.set_pubkey(&ca_pkey).unwrap();
+
+    let ca_not_before = Asn1Time::from_str("20000101000000Z").unwrap();
+    let ca_not_after = Asn1Time::from_str("20100101000000Z").unwrap();
+    ca_builder.set_not_before(&ca_not_before).unwrap();
+    ca_builder.set_not_after(&ca_not_after).unwrap();
+
+    let ca_serial = BigNum::from_u32(1).unwrap();
+    ca_builder
+        .set_serial_number(&ca_serial.to_asn1_integer().unwrap())
+        .unwrap();
+
+    let ca_bc = BasicConstraints::new().critical().ca().build().unwrap();
+    ca_builder.append_extension(ca_bc).unwrap();
+
+    let ca_context = ca_builder.x509v3_context(None, None);
+    let ca_ski = SubjectKeyIdentifier::new().build(&ca_context).unwrap();
+    ca_builder.append_extension(ca_ski).unwrap();
+
+    ca_builder.sign(&ca_pkey, MessageDigest::sha256()).unwrap();
+    let ca_cert = ca_builder.build();
+
+    (ca_cert, ca_pkey)
+}
+
+/// 构建签名者证书（内部函数）
+fn build_signer_cert_for_ca(
+    group: &EcGroup,
+    ca_cert: &X509,
+    ca_pkey: &PKey<openssl::pkey::Private>,
+) -> (X509, PKey<openssl::pkey::Private>) {
+    let signer_key = EcKey::generate(group).unwrap();
+    let signer_pkey = PKey::from_ec_key(signer_key).unwrap();
+
+    let mut signer_name = X509NameBuilder::new().unwrap();
+    signer_name
+        .append_entry_by_text("CN", "Valid Signer")
+        .unwrap();
+    let signer_name = signer_name.build();
+
+    let mut signer_builder = X509Builder::new().unwrap();
+    signer_builder.set_version(2).unwrap();
+    signer_builder.set_subject_name(&signer_name).unwrap();
+    signer_builder.set_issuer_name(ca_cert.subject_name()).unwrap();
+    signer_builder.set_pubkey(&signer_pkey).unwrap();
+
+    let signer_not_before = Asn1Time::days_from_now(0).unwrap();
+    let signer_not_after = Asn1Time::days_from_now(3650).unwrap();
+    signer_builder.set_not_before(&signer_not_before).unwrap();
+    signer_builder.set_not_after(&signer_not_after).unwrap();
+
+    let signer_serial = BigNum::from_u32(2).unwrap();
+    signer_builder
+        .set_serial_number(&signer_serial.to_asn1_integer().unwrap())
+        .unwrap();
+
+    use openssl::x509::extension::KeyUsage;
+    let mut ku_builder = KeyUsage::new();
+    ku_builder.digital_signature();
+    let ku = ku_builder.build().unwrap();
+    signer_builder.append_extension(ku).unwrap();
+
+    let signer_context = signer_builder.x509v3_context(Some(ca_cert), None);
+    let signer_ski = SubjectKeyIdentifier::new().build(&signer_context).unwrap();
+    let signer_aki = AuthorityKeyIdentifier::new()
+        .keyid(true)
+        .build(&signer_context)
+        .unwrap();
+    signer_builder.append_extension(signer_ski).unwrap();
+    signer_builder.append_extension(signer_aki).unwrap();
+
+    signer_builder.sign(ca_pkey, MessageDigest::sha256()).unwrap();
+    let signer_cert = signer_builder.build();
+
+    (signer_cert, signer_pkey)
+}
+
+/// 生成过期CA证书包
+///
+/// 用于测试场景 B09（过期CA证书验签失败）。
+/// 生成：
+/// - 过期CA证书（2000-01-01至2010-01-01）
+/// - 有效签名者证书（由过期CA签发，有效期10年）
+///
+/// # Returns
+/// 元组包含：
+/// - 过期CA证书PEM
+/// - 签名者证书PEM
+/// - 签名者私钥PEM（PKCS8格式）
+pub fn generate_expired_ca_cert() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let group = get_group();
+    let (ca_cert, ca_pkey) = build_expired_ca_cert(&group);
+    let (signer_cert, signer_pkey) = build_signer_cert_for_ca(&group, &ca_cert, &ca_pkey);
+
+    (
+        ca_cert.to_pem().unwrap(),
+        signer_cert.to_pem().unwrap(),
+        signer_pkey.private_key_to_pem_pkcs8().unwrap(),
     )
 }

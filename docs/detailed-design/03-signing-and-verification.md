@@ -227,7 +227,7 @@ handler                     Verifier                  Signer
 Verifier::verify() 内部判定逻辑：
 
 1. CMS 验签（证书链 + CRL + 签名匹配）
-   ↓ 失败 → 若为对端证书过期/尚未生效错误，忽略并视为验签通过
+   ↓ 失败 → 若为签名方证书过期错误，忽略并视为验签通过
    ↓ 其他失败 → 返回 VerifyError（由 error_code_mapper 映射为 result≥3）
 
 2. 验签通过，从 CMS signed_data 提取签名方实际证书的公钥
@@ -261,7 +261,8 @@ Verifier::verify() 内部判定逻辑：
 | 证书加载失败 | OpenSslError（加载阶段） | CertificateLoadFailed | 7 |
 | 私钥不可用 | OpenSslError（签名阶段） | PrivateKeyUnavailable | 8 |
 | 签名算法错误 | OpenSslError（算法阶段） | SigningAlgorithmError | 9 |
-| 签名方证书过期/尚未生效 | — | — | 忽略该 OpenSSL 错误，视为验签通过（证书过期由 cert_checker 巡检 warn） |
+| 签名方证书过期 | — | — | 忽略该 OpenSSL 错误，视为验签通过（证书过期由 cert_checker 巡检 warn） |
+| CA证书过期/证书尚未生效 | — | — | 验签失败，返回 result≥3 |
 
 ---
 
@@ -304,7 +305,8 @@ Verifier::verify() 内部判定逻辑：
 | 证书链无效（非 CA 签发） | VerifyError::CertificateChainInvalid |
 | CRL 吊销 | VerifyError::CertificateRevoked |
 | signed_data 格式错误 | VerifyError::FormatError |
-| 签名方证书过期/尚未生效 | 忽略 OpenSSL 过期错误，验签仍通过（证书过期由 cert_checker 巡检） |
+| 签名方证书过期 | 忽略 OpenSSL 过期错误，验签仍通过（证书过期由 cert_checker 巡检） |
+| CA证书过期/证书尚未生效 | 验签失败，返回 VerifyError |
 | CRL 未配置 | 跳过 CRL 校验，验签正常执行 |
 
 ### error_code_mapper 必须覆盖的场景

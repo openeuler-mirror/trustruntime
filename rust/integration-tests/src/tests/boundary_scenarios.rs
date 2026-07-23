@@ -1,19 +1,20 @@
-//! 边界场景测试模块（B01-B07）
+//! 边界场景测试模块（B01-B09）
 //!
 //! 测试范围：
-//! - B01-B02: 过期证书场景（签名、验签）
+//! - B01-B02: 过期签名者证书场景（签名、验签）
 //! - B03-B04: 数据边界（空数据、特殊字符）
 //! - B05: Base64解码边界
-//! - B06: 尚未生效证书
+//! - B06: 尚未生效证书验签失败
 //! - B07: 无KeyUsage扩展证书
 //! - B08: CRL吊销证书验签
+//! - B09: 过期CA证书验签失败
 //!
 //! 重点验证：证书时间有效性、数据边界、证书扩展字段
 
 use base64::{engine::general_purpose, Engine as _};
 use integration_tests::test_cert_gen::{
-    extract_cert_id_from_pem, generate_expired_signer_cert, generate_not_yet_valid_signer_cert,
-    generate_revoked_signer_cert,
+    extract_cert_id_from_pem, generate_expired_ca_cert, generate_expired_signer_cert,
+    generate_not_yet_valid_signer_cert, generate_revoked_signer_cert,
 };
 use integration_tests::test_crl_gen::generate_crl_for_cert;
 use integration_tests::test_helpers::{
@@ -230,8 +231,8 @@ fn b05_invalid_base64_in_id() {
 ///
 /// 测试场景：验证由未来生效证书生成的签名
 ///
-/// 预期结果：验签返回result=1（其他节点签名）
-/// 说明：忽略签名方证书尚未生效错误，正常验签并返回身份判断结果
+/// 预期结果：验签返回result=5（签名不匹配）
+/// 说明：证书尚未生效时验签必须失败，防止伪造"未来签名"攻击
 ///
 /// 测试依赖：无（插件API测试）
 #[test]
@@ -272,7 +273,7 @@ fn b06_verify_not_yet_valid_cert() {
     assert!(result.is_some());
 
     let resp: serde_json::Value = serde_json::from_slice(&result.unwrap()).unwrap();
-    assert_eq!(resp["result"], 1);
+    assert_eq!(resp["result"], 5);
 }
 
 /// B07: 无KeyUsage扩展证书验签
@@ -490,4 +491,43 @@ fn b08_verify_revoked_cert_with_crl() {
 
     let resp: serde_json::Value = serde_json::from_slice(&result.unwrap()).unwrap();
     assert_eq!(resp["result"], 4);
+}
+
+/// B09: 过期CA证书验签
+///
+/// 测试场景：验证由过期CA证书签发的签名者证书生成的签名
+///
+/// 预期结果：验签返回result=5（签名不匹配）
+/// 说明：CA证书过期时验签必须失败，维护信任链有效性
+///
+/// 测试依赖：无（插件API测试）
+#[test]
+fn b09_verify_expired_ca_cert() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let (expired_ca_pem, signer_pem, signer_key_pem) = generate_expired_ca_cert();
+
+    let ca_path = temp_dir.path().join("ca.crt");
+    let signer_path = temp_dir.path().join("signer.crt");
+    let signer_key_path = temp_dir.path().join("signer.key");
+
+    fs::write(&ca_path, &expired_ca_pem).unwrap();
+    fs::write(&signer_path, &signer_pem).unwrap();
+    fs::write(&signer_key_path, &signer_key_pem).unwrap();
+
+    let signer_id = extract_cert_id_from_pem(&signer_pem);
+    let signer_id_b64 = general_purpose::STANDARD.encode(&signer_id);
+
+    let signed_der = sign_with_openssl_directly(&signer_pem, &signer_key_pem, b"test data", &signer_id);
+    let signed_b64 = general_purpose::STANDARD.encode(&signed_der);
+
+    let ctx = PluginTestContext::new(&ca_path, &signer_path, &signer_key_path, None)
+        .expect("Failed to create plugin context");
+
+    let verify_req = build_verify_request("test data", &signed_b64, &signer_id_b64);
+    let result = ctx.verify(&verify_req);
+    assert!(result.is_some());
+
+    let resp: serde_json::Value = serde_json::from_slice(&result.unwrap()).unwrap();
+    assert_eq!(resp["result"], 5);
 }
