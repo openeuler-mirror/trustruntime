@@ -39,9 +39,10 @@ pub fn handle_connection_blocking(
                 }
             },
             Err(error_code) => {
-                if error_code == ERROR_CONNECTION_CLOSED {
-                    break;
+                if error_code != ERROR_CONNECTION_CLOSED {
+                    log::warn!("Connection error: {}", error_code);
                 }
+                break;
             }
         }
     }
