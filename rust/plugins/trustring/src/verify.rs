@@ -298,12 +298,14 @@ impl Verifier {
             let num = OPENSSL_sk_num(stack);
 
             if num == 0 {
+                OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
                 return None;
             }
 
             let x509_ptr = OPENSSL_sk_value(stack, 0) as *mut X509_sys;
             X509_up_ref(x509_ptr);
 
+            OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
             Some(X509::from_ptr(x509_ptr))
         }
     }
