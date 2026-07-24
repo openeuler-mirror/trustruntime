@@ -98,6 +98,7 @@ fn find_executable(bin_name: &str) -> Option<PathBuf> {
     None
 }
 
+#[allow(clippy::incompatible_msrv)]
 fn check_unshare() -> Result<(), Box<dyn Error>> {
     let unshare_output = match Command::new("unshare").arg("-r").arg("id").output() {
         Ok(out) => out,
@@ -129,8 +130,8 @@ fn check_unshare() -> Result<(), Box<dyn Error>> {
 }
 
 pub fn find_required_tools() -> Result<ExecutablePaths, Box<dyn Error>> {
-    let qemu_path = find_executable("qemu-system-aarch64")
-        .ok_or(format!("qemu-system-aarch64 not found in $PATH"))?;
+    let qemu_path =
+        find_executable("qemu-system-aarch64").ok_or("qemu-system-aarch64 not found in $PATH")?;
 
     let virtiofsd_path = match find_executable("virtiofsd") {
         Some(p) => {

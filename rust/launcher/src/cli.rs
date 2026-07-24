@@ -16,7 +16,7 @@ pub enum HelpType {
 
 #[derive(Debug, Clone)]
 pub enum SubCommand {
-    Run(RunArgs),
+    Run(Box<RunArgs>),
     Help(HelpType),
 }
 
@@ -406,7 +406,7 @@ fn parse_run_args(mut iter: Box<dyn Iterator<Item = String>>) -> Result<SubComma
             _ => return Err(CliError::UnknownOption(arg)),
         }
     }
-    Ok(SubCommand::Run(args))
+    Ok(SubCommand::Run(Box::new(args)))
 }
 
 pub fn print_help(help_type: &HelpType) {

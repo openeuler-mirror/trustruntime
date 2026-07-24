@@ -19,7 +19,7 @@ use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
 use openssl::pkey::PKey;
 use openssl::x509::extension::{AuthorityKeyIdentifier, BasicConstraints, SubjectKeyIdentifier};
-use openssl::x509::{X509, X509Builder, X509NameBuilder};
+use openssl::x509::{X509Builder, X509NameBuilder, X509};
 
 use cert_gen::certificate::{
     create_ca_cert, create_cert_with_usage, create_expired_cert, create_not_yet_valid_cert,
@@ -526,7 +526,9 @@ fn build_signer_cert_for_ca(
     let mut signer_builder = X509Builder::new().unwrap();
     signer_builder.set_version(2).unwrap();
     signer_builder.set_subject_name(&signer_name).unwrap();
-    signer_builder.set_issuer_name(ca_cert.subject_name()).unwrap();
+    signer_builder
+        .set_issuer_name(ca_cert.subject_name())
+        .unwrap();
     signer_builder.set_pubkey(&signer_pkey).unwrap();
 
     let signer_not_before = Asn1Time::days_from_now(0).unwrap();
@@ -554,7 +556,9 @@ fn build_signer_cert_for_ca(
     signer_builder.append_extension(signer_ski).unwrap();
     signer_builder.append_extension(signer_aki).unwrap();
 
-    signer_builder.sign(ca_pkey, MessageDigest::sha256()).unwrap();
+    signer_builder
+        .sign(ca_pkey, MessageDigest::sha256())
+        .unwrap();
     let signer_cert = signer_builder.build();
 
     (signer_cert, signer_pkey)

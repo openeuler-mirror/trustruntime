@@ -20,6 +20,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+extern "C" {
+    fn ASN1_BIT_STRING_free(a: *mut openssl_sys::ASN1_BIT_STRING);
+    fn ASN1_OBJECT_free(a: *mut openssl_sys::ASN1_OBJECT);
+    fn OPENSSL_sk_pop_free(
+        st: *mut openssl_sys::OPENSSL_STACK,
+        free_func: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
+    );
+}
+
+unsafe extern "C" fn asn1_object_free_wrapper(ptr: *mut std::ffi::c_void) {
+    ASN1_OBJECT_free(ptr as *mut openssl_sys::ASN1_OBJECT);
+}
+
 /// 允许的证书目录前缀（硬编码，防止配置篡改）
 #[cfg(not(debug_assertions))]
 const ALLOWED_CERT_DIRS: &[&str] = &["/etc/cert/"];
@@ -352,20 +365,23 @@ pub fn extract_key_usage_flags(cert: &X509) -> Result<u32, CertLoadError> {
         return Err(CertLoadError::InvalidFormat);
     }
 
-    let usage_bytes = unsafe {
+    let result = unsafe {
         let bit_string = ku as *const openssl_sys::ASN1_BIT_STRING;
         let data = openssl_sys::ASN1_STRING_get0_data(bit_string as *const _);
         let length = openssl_sys::ASN1_STRING_length(bit_string as *const _) as usize;
-        std::slice::from_raw_parts(data, length)
+        let usage_bytes = std::slice::from_raw_parts(data, length);
+
+        if usage_bytes.is_empty() {
+            ASN1_BIT_STRING_free(ku as *mut _);
+            return Err(CertLoadError::InvalidFormat);
+        }
+
+        let flags = usage_bytes[0] as u32;
+        ASN1_BIT_STRING_free(ku as *mut _);
+        Ok(flags)
     };
 
-    if usage_bytes.is_empty() {
-        return Err(CertLoadError::InvalidFormat);
-    }
-
-    let actual_flags = usage_bytes[0] as u32;
-
-    Ok(actual_flags)
+    result
 }
 
 /// 检查证书是否包含指定的KeyUsage位（包含匹配）
@@ -456,11 +472,20 @@ pub fn check_extended_key_usage(cert: &X509, required_oid: &str) -> Result<(), C
     let aliases = get_oid_aliases(required_oid);
     let eku_oids = unsafe { extract_eku_oids(eku) };
 
-    if eku_oids.iter().any(|oid| aliases.contains(&oid.as_str())) {
+    let result = if eku_oids.iter().any(|oid| aliases.contains(&oid.as_str())) {
         Ok(())
     } else {
         Err(CertLoadError::InvalidFormat)
+    };
+
+    unsafe {
+        OPENSSL_sk_pop_free(
+            eku as *mut openssl_sys::OPENSSL_STACK,
+            Some(asn1_object_free_wrapper),
+        );
     }
+
+    result
 }
 
 #[cfg(test)]

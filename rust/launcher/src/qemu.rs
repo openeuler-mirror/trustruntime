@@ -110,7 +110,7 @@ fn configure_basic_qemu_command(qemu_cmd: &mut Command, qemu_launch_opts: &QemuL
         .args(["-smp", &format!("{smp_cores}")])
         .args(["-append", "rdinit=init console=ttyAMA0 rodata=full nosoftlockup rcupdate.rcu_cpu_stall_timeout=3000 ubfabric_addr=0x30200FF000"])
         .args(["-nographic"])
-        .args(["-object", &format!("rme-guest,id=rme0,measurement-algorithm=sha512,hisi-cca-enable=off"),])
+        .args(["-object", "rme-guest,id=rme0,measurement-algorithm=sha512,hisi-cca-enable=off"])
         .args(["-device", &format!("vhost-vsock-pci,guest-cid={cid}")]);
 }
 
@@ -192,7 +192,7 @@ async fn configure_virtiofsd(
 
     for (i, vol) in qemu_launch_opts.virtiofs_vols.iter().enumerate() {
         if let Some(virtiofsd_path) = &tool_paths.virtiofsd_path {
-            let virtiofsd_child = launch_virtiofsd(&virtiofsd_path, run_dir, vol)
+            let virtiofsd_child = launch_virtiofsd(virtiofsd_path, run_dir, vol)
                 .await
                 .map_err(|e| format!("Failed to launch virtiofsd_path for {vol}: {}", e))?;
             virtiofsd_handles.push(virtiofsd_child);
@@ -263,18 +263,18 @@ async fn configure_qemu_all(
 ) -> Result<(), Box<dyn Error>> {
     let run_dir = create_vm_work_dir()?;
     let cert_dir = qemu_launch_opts.cert_dir.clone();
-    configure_basic_qemu_command(qemu_cmd, &qemu_launch_opts);
-    configure_kernel_and_payload(qemu_cmd, &qemu_launch_opts);
+    configure_basic_qemu_command(qemu_cmd, qemu_launch_opts);
+    configure_kernel_and_payload(qemu_cmd, qemu_launch_opts);
     configure_virtio_9p_single(qemu_cmd, &run_dir, "ccashare".to_string(), 0).await?;
 
     if let Some(cert_dir_path) = &cert_dir {
         configure_virtio_9p_single(qemu_cmd, cert_dir_path, "certshare".to_string(), 1).await?;
     }
-    configure_9p_volumes(qemu_cmd, &qemu_launch_opts, &run_dir).await?;
-    configure_port_forwarding(qemu_cmd, &qemu_launch_opts);
+    configure_9p_volumes(qemu_cmd, qemu_launch_opts, &run_dir).await?;
+    configure_port_forwarding(qemu_cmd, qemu_launch_opts);
     let _virtiofsd_handles =
-        configure_virtiofsd(qemu_cmd, &tool_paths, &run_dir, &qemu_launch_opts).await?;
-    configure_custom_qemu_args(qemu_cmd, &qemu_launch_opts);
+        configure_virtiofsd(qemu_cmd, tool_paths, &run_dir, qemu_launch_opts).await?;
+    configure_custom_qemu_args(qemu_cmd, qemu_launch_opts);
     Ok(())
 }
 

@@ -215,7 +215,7 @@ impl ProcessManager {
     fn run_sudo_command(&self, cmd: &str, args: &[&str], desc: &str) -> Result<(), ProcessError> {
         eprintln!("DEBUG: {}", desc);
         let status = Command::new("sudo")
-            .args(std::iter::once(cmd).chain(args.iter().map(|s| *s)))
+            .args(std::iter::once(cmd).chain(args.iter().copied()))
             .status()
             .map_err(|e| ProcessError::ConfigError(format!("Failed to {}: {}", desc, e)))?;
         if !status.success() {
