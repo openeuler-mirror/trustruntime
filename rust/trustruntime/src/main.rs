@@ -107,7 +107,9 @@ async fn check_certificates(
 
     if let Some(_expired) = comm_expired {
         log::error!("Communication certificate has expired");
-        daemon.notify_status("Communication certificate has expired").ok();
+        daemon
+            .notify_status("Communication certificate has expired")
+            .ok();
         daemon.notify_ready().ok();
 
         let signal_handler = SignalHandler::new();

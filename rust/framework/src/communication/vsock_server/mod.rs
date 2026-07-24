@@ -128,7 +128,13 @@ impl VsockTransport {
 #[async_trait]
 impl TransportLayer for VsockTransport {
     fn register_handler(&self, msg_type: u32, handler: Box<dyn DataHandler>) {
-        let mut handlers = self.handlers.write().unwrap();
+        let mut handlers = match self.handlers.write() {
+            Ok(guard) => guard,
+            Err(_) => {
+                log::error!("handlers lock poisoned");
+                return;
+            }
+        };
         if handlers.contains_key(&msg_type) {
             log::warn!(
                 "Handler for msg_type 0x{:02X} already registered, will be overwritten",
@@ -171,7 +177,14 @@ impl TransportLayer for VsockTransport {
             ssl_acceptor,
         ));
 
-        *self.listener_handle.lock().unwrap() = Some(task_handle);
+        let mut handle = match self.listener_handle.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                log::error!("listener_handle lock poisoned");
+                return Err(TransportError::StartFailed("lock poisoned".to_string()));
+            }
+        };
+        *handle = Some(task_handle);
 
         Ok(())
     }
@@ -186,7 +199,13 @@ impl TransportLayer for VsockTransport {
         self.shutdown_signal.store(true, Ordering::SeqCst);
         log::info!("vsock shutdown signal sent");
 
-        let handle = self.listener_handle.lock().unwrap().take();
+        let handle = match self.listener_handle.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(_) => {
+                log::error!("listener_handle lock poisoned");
+                return Err(TransportError::StopFailed("lock poisoned".to_string()));
+            }
+        };
 
         if let Some(handle) = handle {
             let result = tokio::time::timeout(Duration::from_secs(5), handle).await;

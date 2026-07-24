@@ -11,45 +11,46 @@
 
 ```mermaid
 graph TB
-    subgraph "机密计算虚机 (Confidential VM)"
-        subgraph "TrustRuntime Service"
-            MAIN[main.rs<br/>进程入口]
+    classDef framework fill:#e3f2fd,stroke:#1976d2
+    classDef trustring fill:#fff8e1,stroke:#f57c00
+    classDef system fill:#f3e5f5,stroke:#7b1fa2
+    classDef filesystem fill:#e8f5e9,stroke:#388e3c
 
-            subgraph "Framework Layer"
-                CORE[core<br/>进程管理]
-                CONFIG[config<br/>配置解析]
-                LOG[logger<br/>日志系统]
-                PM[plugin_manager<br/>插件管理]
-                TR[transport<br/>传输层抽象]
-                COMM[communication<br/>通信层]
-                MSG[message<br/>报文处理]
-                CERT[cert<br/>证书工具]
-            end
+    subgraph CVM["机密计算虚机 (Confidential VM)"]
+        subgraph TRS["TrustRuntime Service"]
+            MAIN["main.rs - 进程入口"]
 
-            subgraph "Trustring Plugin"
-                HANDLER[handler<br/>业务路由]
-                SIGN[sign<br/>CMS签名]
-                VERIFY[verify<br/>CMS验签]
-                CERTLD[cert_loader<br/>证书加载]
-                ERRMAP[error_code_mapper<br/>错误码映射]
-            end
+            CORE["core - 进程管理"]:::framework
+            CONFIG["config - 配置解析"]:::framework
+            LOG["logger - 日志系统"]:::framework
+            PM["plugin_manager - 插件管理"]:::framework
+            TR["transport - 传输层抽象"]:::framework
+            COMM["communication - 通信层"]:::framework
+            MSG["message - 报文处理"]:::framework
+            CERT["cert - 证书工具"]:::framework
+
+            HANDLER["handler - 业务路由"]:::trustring
+            SIGN["sign - CMS签名"]:::trustring
+            VERIFY["verify - CMS验签"]:::trustring
+            CERTLD["cert_loader - 证书加载"]:::trustring
+            ERRMAP["error_code_mapper - 错误码映射"]:::trustring
         end
 
-        subgraph "系统依赖"
-            OPENSSL[OpenSSL<br/>TLS/CMS]
-            SYSTEMD[systemd<br/>服务管理]
-            VSOCK[vsock<br/>虚拟机通信]
+        subgraph SYS["系统依赖"]
+            OPENSSL["OpenSSL - TLS/CMS"]:::system
+            SYSTEMD["systemd - 服务管理"]:::system
+            VSOCK["vsock - 虚拟机通信"]:::system
         end
 
-        subgraph "文件系统"
-            CERTS[/etc/cert/cms/<br/>证书目录]
-            CFG[/etc/trustruntime/<br/>配置目录]
-            LOGDIR[/var/log/trustruntime/<br/>日志目录]
+        subgraph FS["文件系统"]
+            CERTS["/etc/cert/cms/"]:::filesystem
+            CFG["/etc/trustruntime/"]:::filesystem
+            LOGDIR["/var/log/trustruntime/"]:::filesystem
         end
     end
 
-    subgraph "外部客户端"
-        CLIENT[Client Application<br/>业务应用]
+    subgraph EXT["外部客户端"]
+        CLIENT["Client Application - 业务应用"]
     end
 
     MAIN --> CORE

@@ -64,7 +64,11 @@ pub fn handle_connection_blocking(
                     ssl_stream.write_all(&resp.serialize()).ok();
                 }
                 Err(error_code) => {
-                    log::warn!("Handler returned error: msg_type 0x{:02X}, error_code 0x{:02X}", msg.header.msg_type, error_code);
+                    log::warn!(
+                        "Handler returned error: msg_type 0x{:02X}, error_code 0x{:02X}",
+                        msg.header.msg_type,
+                        error_code
+                    );
                     send_error_response(
                         &mut ssl_stream,
                         msg.header.seq,
@@ -116,7 +120,11 @@ fn read_message(
     ]);
 
     if version != PROTOCOL_VERSION {
-        log::warn!("Protocol version mismatch: expected 0x{:08X}, got 0x{:08X}", PROTOCOL_VERSION, version);
+        log::warn!(
+            "Protocol version mismatch: expected 0x{:08X}, got 0x{:08X}",
+            PROTOCOL_VERSION,
+            version
+        );
         send_error_response(ssl_stream, seq, version, ERROR_PROTOCOL);
         return Err(ERROR_PROTOCOL);
     }
@@ -136,13 +144,14 @@ fn read_message(
         return Err(ERROR_PROTOCOL);
     }
 
-    if VsockMessage::parse(&full_buf).is_err() {
-        log::warn!("Message parse failed");
-        send_error_response(ssl_stream, seq, version, ERROR_PROTOCOL);
-        return Err(ERROR_PROTOCOL);
+    match VsockMessage::parse(&full_buf) {
+        Ok(msg) => Ok(msg),
+        Err(_) => {
+            log::warn!("Message parse failed");
+            send_error_response(ssl_stream, seq, version, ERROR_PROTOCOL);
+            Err(ERROR_PROTOCOL)
+        }
     }
-
-    Ok(VsockMessage::parse(&full_buf).unwrap())
 }
 
 /// 处理消息并调用业务处理器
@@ -163,7 +172,13 @@ fn process_message(
     msg: &VsockMessage,
     handlers: &Arc<RwLock<HashMap<u32, Box<dyn DataHandler>>>>,
 ) -> Result<Vec<u8>, u32> {
-    let handlers_guard = handlers.read().unwrap();
+    let handlers_guard = match handlers.read() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log::error!("handlers lock poisoned");
+            return Err(ERROR_HANDLER_PANIC);
+        }
+    };
     match handlers_guard.get(&msg.header.msg_type) {
         Some(handler) => {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

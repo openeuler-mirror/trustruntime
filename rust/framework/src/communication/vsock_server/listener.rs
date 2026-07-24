@@ -56,13 +56,15 @@ pub async fn listener_loop_async(
     log::info!("vsock listener task started (backlog=128)");
 
     while !shutdown_signal.load(Ordering::SeqCst) {
-        let listener_clone = listener.try_clone().ok();
-        if listener_clone.is_none() {
-            log::error!("Failed to clone listener");
-            break;
-        }
+        let listener_clone = match listener.try_clone() {
+            Ok(l) => l,
+            Err(e) => {
+                log::error!("Failed to clone listener: {}", e);
+                break;
+            }
+        };
 
-        let result = tokio::task::spawn_blocking(move || listener_clone.unwrap().accept()).await;
+        let result = tokio::task::spawn_blocking(move || listener_clone.accept()).await;
 
         match result {
             Ok(Ok((stream, addr))) => {
