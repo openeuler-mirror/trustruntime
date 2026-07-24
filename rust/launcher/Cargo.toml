@@ -2,7 +2,7 @@
 name = "trt-launcher"
 version.workspace = true
 edition = "2024"
-license = "Proprietary"
+license.workspace = true
 description = "TrustRuntime VM Launcher for CCA confidential computing"
 
 [[bin]]

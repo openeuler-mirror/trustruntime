@@ -2,6 +2,7 @@
 name = "cms-test-cli"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 integration-tests = { path = "../../integration-tests" }

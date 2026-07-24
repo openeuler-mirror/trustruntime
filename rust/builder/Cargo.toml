@@ -2,7 +2,7 @@
 name = "trt-builder"
 version.workspace = true
 edition.workspace = true
-license = "Proprietary"
+license.workspace = true
 description = "TrustRuntime VM Image Builder (packaging only)"
 
 [package.metadata.generate-rpm]
