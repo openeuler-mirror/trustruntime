@@ -115,16 +115,14 @@ fn read_message(
         return Err(ERROR_MESSAGE_TOO_LONG);
     }
 
-    let mut body_buf = vec![0u8; len as usize];
-    if len > 0 && ssl_stream.read_exact(&mut body_buf).is_err() {
+    let mut full_buf = vec![0u8; HEADER_SIZE + len as usize];
+    full_buf[..HEADER_SIZE].copy_from_slice(&header_buf);
+
+    if len > 0 && ssl_stream.read_exact(&mut full_buf[HEADER_SIZE..]).is_err() {
         log::warn!("Failed to read message body");
         send_error_response(ssl_stream, seq, version, ERROR_PROTOCOL);
         return Err(ERROR_PROTOCOL);
     }
-
-    let mut full_buf = Vec::with_capacity(HEADER_SIZE + len as usize);
-    full_buf.extend_from_slice(&header_buf);
-    full_buf.extend_from_slice(&body_buf);
 
     if VsockMessage::parse(&full_buf).is_err() {
         log::warn!("Message parse failed");
