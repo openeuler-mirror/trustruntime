@@ -1,4 +1,15 @@
 //! 监听循环相关
+//!
+//! 职责：
+//! - 接受新vsock连接
+//! - 并发连接限流（信号量）
+//! - TLS握手
+//!
+//! 架构决策：
+//! - TransportLayer抽象解耦通信层与插件框架层（ADR-0005）
+//! - 并发连接限制防止资源耗尽（AGENTS.md §性能配置）
+//!
+//! 依赖：connection模块、transport模块
 
 use super::connection::handle_connection_blocking;
 use crate::transport::DataHandler;
@@ -9,6 +20,19 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use tokio::sync::Semaphore;
 
+/// vsock监听循环（异步）
+///
+/// # 流程
+/// 1. 接受新连接（带1秒超时，避免阻塞关闭信号检查）
+/// 2. 为每个连接创建独立任务（spawn_connection_task）
+/// 3. 收到关闭信号后退出循环
+///
+/// # Arguments
+/// * `listener` - vsock监听器
+/// * `handlers` - 消息处理器映射
+/// * `semaphore` - 并发连接限制信号量
+/// * `shutdown_signal` - 优雅关闭信号
+/// * `ssl_acceptor` - TLS服务端接收器
 #[cfg(target_os = "linux")]
 pub async fn listener_loop_async(
     listener: vsock::VsockListener,
@@ -56,6 +80,18 @@ pub async fn listener_loop_async(
     log::info!("vsock listener task stopped");
 }
 
+/// 为新连接创建处理任务
+///
+/// # 流程
+/// 1. 获取信号量许可（限制并发连接数）
+/// 2. 执行TLS握手（阻塞操作，使用spawn_blocking）
+/// 3. 调用handle_connection_blocking处理连接
+///
+/// # Arguments
+/// * `stream` - vsock流
+/// * `handlers` - 消息处理器映射
+/// * `semaphore` - 并发连接限制信号量
+/// * `ssl_acceptor` - TLS服务端接收器
 #[cfg(target_os = "linux")]
 fn spawn_connection_task(
     stream: vsock::VsockStream,

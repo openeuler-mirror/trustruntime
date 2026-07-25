@@ -1,4 +1,14 @@
 //! 连接处理相关
+//!
+//! 职责：
+//! - 处理单个vsock连接的完整生命周期
+//! - 消息读取、解析、分发、响应
+//!
+//! 架构决策：
+//! - TransportLayer抽象解耦通信层与插件框架层（ADR-0005）
+//! - 统一OpenSSL处理TLS和CMS（ADR-0004）
+//!
+//! 依赖：error模块、message模块、transport模块
 
 use super::error::*;
 use crate::message::VsockMessage;
@@ -7,6 +17,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 
+/// 处理单个vsock连接的生命周期
+///
+/// 阻塞式处理连接上的所有消息，直到连接关闭或发生错误
+///
+/// # 流程
+/// 1. 循环读取消息（read_message）
+/// 2. 分发到业务处理器（process_message）
+/// 3. 发送响应或错误
+/// 4. 连接关闭或错误时退出循环
+///
+/// # Arguments
+/// * `ssl_stream` - TLS加密的vsock流
+/// * `handlers` - 消息处理器映射（msg_type -> DataHandler）
 #[cfg(target_os = "linux")]
 pub fn handle_connection_blocking(
     mut ssl_stream: openssl::ssl::SslStream<vsock::VsockStream>,
@@ -39,9 +62,10 @@ pub fn handle_connection_blocking(
                 }
             },
             Err(error_code) => {
-                if error_code == ERROR_CONNECTION_CLOSED {
-                    break;
+                if error_code != ERROR_CONNECTION_CLOSED {
+                    log::warn!("Connection error: {}", error_code);
                 }
+                break;
             }
         }
     }
@@ -49,6 +73,16 @@ pub fn handle_connection_blocking(
     log::debug!("Connection closed");
 }
 
+/// 从TLS流中读取一条完整消息
+///
+/// # Returns
+/// - `Ok(VsockMessage)` - 成功解析的消息
+/// - `Err(ERROR_CONNECTION_CLOSED)` - 连接已关闭
+/// - `Err(ERROR_PROTOCOL)` - 协议错误（版本不匹配、解析失败、读取失败）
+/// - `Err(ERROR_MESSAGE_TOO_LONG)` - 消息超过10KB限制
+///
+/// # 内存分配
+/// 优化为2次分配：栈上header_buf + 堆上full_buf
 #[cfg(target_os = "linux")]
 fn read_message(
     ssl_stream: &mut openssl::ssl::SslStream<vsock::VsockStream>,
@@ -81,16 +115,14 @@ fn read_message(
         return Err(ERROR_MESSAGE_TOO_LONG);
     }
 
-    let mut body_buf = vec![0u8; len as usize];
-    if len > 0 && ssl_stream.read_exact(&mut body_buf).is_err() {
+    let mut full_buf = vec![0u8; HEADER_SIZE + len as usize];
+    full_buf[..HEADER_SIZE].copy_from_slice(&header_buf);
+
+    if len > 0 && ssl_stream.read_exact(&mut full_buf[HEADER_SIZE..]).is_err() {
         log::warn!("Failed to read message body");
         send_error_response(ssl_stream, seq, version, ERROR_PROTOCOL);
         return Err(ERROR_PROTOCOL);
     }
-
-    let mut full_buf = Vec::with_capacity(HEADER_SIZE + len as usize);
-    full_buf.extend_from_slice(&header_buf);
-    full_buf.extend_from_slice(&body_buf);
 
     if VsockMessage::parse(&full_buf).is_err() {
         log::warn!("Message parse failed");
@@ -101,6 +133,19 @@ fn read_message(
     Ok(VsockMessage::parse(&full_buf).unwrap())
 }
 
+/// 处理消息并调用业务处理器
+///
+/// # Arguments
+/// * `msg` - 待处理的消息
+/// * `handlers` - 消息处理器映射
+///
+/// # Returns
+/// - `Ok(Vec<u8>)` - 处理成功，返回响应数据
+/// - `Err(ERROR_PROTOCOL)` - 处理器不存在或返回None
+/// - `Err(ERROR_HANDLER_PANIC)` - 处理器panic
+///
+/// # 错误处理
+/// 使用catch_unwind捕获处理器panic，防止影响其他连接
 #[cfg(target_os = "linux")]
 fn process_message(
     msg: &VsockMessage,
@@ -132,6 +177,13 @@ fn process_message(
     }
 }
 
+/// 发送错误响应给客户端
+///
+/// # Arguments
+/// * `ssl_stream` - TLS加密的vsock流
+/// * `seq` - 消息序列号
+/// * `version` - 协议版本
+/// * `error_type` - 错误类型码
 #[cfg(target_os = "linux")]
 fn send_error_response(
     ssl_stream: &mut openssl::ssl::SslStream<vsock::VsockStream>,
@@ -144,6 +196,15 @@ fn send_error_response(
     ssl_stream.write_all(&err.serialize()).ok();
 }
 
+/// 创建错误响应消息
+///
+/// # Arguments
+/// * `seq` - 消息序列号
+/// * `version` - 协议版本
+/// * `error_type` - 错误类型码
+///
+/// # Returns
+/// 错误响应消息（data字段为空）
 pub fn create_error_response(seq: u32, version: u32, error_type: u32) -> VsockMessage {
     VsockMessage::new(seq, version, error_type, vec![])
 }
