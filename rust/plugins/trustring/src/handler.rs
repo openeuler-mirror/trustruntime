@@ -264,7 +264,10 @@ impl DataHandler for SignHandler {
             Ok(der) => der,
             Err(e) => {
                 let error = map_sign_error(&e);
-                log::error!("Sign request failed: msg_type 0x10, result_code {}", error.to_result_code());
+                log::error!(
+                    "Sign request failed: msg_type 0x10, result_code {}",
+                    error.to_result_code()
+                );
                 return build_sign_error_response(error);
             }
         };
@@ -333,7 +336,10 @@ impl VerifySignHandler {
             .verify_signature_only(&signed_der, data_bytes, &signer_id)
             .map_err(|e| {
                 let error = map_verify_error(&e);
-                log::error!("Verify stage failed: msg_type 0x12, result_code {}", error.to_result_code());
+                log::error!(
+                    "Verify stage failed: msg_type 0x12, result_code {}",
+                    error.to_result_code()
+                );
                 build_verify_sign_error_response(error)
             })?;
 
@@ -362,7 +368,10 @@ impl VerifySignHandler {
             .sign_with_id(to_sign.data.as_bytes(), &external_id)
             .map_err(|e| {
                 let error = map_sign_error(&e);
-                log::error!("Sign stage failed: msg_type 0x12, result_code {}", error.to_result_code());
+                log::error!(
+                    "Sign stage failed: msg_type 0x12, result_code {}",
+                    error.to_result_code()
+                );
                 build_verify_sign_error_response(error)
             })?;
 
@@ -473,7 +482,10 @@ impl DataHandler for VerifyHandler {
             Ok(VerifyOutcome::IdentityConflict) => 2,
             Err(e) => {
                 let error = map_verify_error(&e);
-                log::error!("Verify request failed: msg_type 0x14, result_code {}", error.to_result_code());
+                log::error!(
+                    "Verify request failed: msg_type 0x14, result_code {}",
+                    error.to_result_code()
+                );
                 return build_verify_error_response(error);
             }
         };
@@ -481,7 +493,10 @@ impl DataHandler for VerifyHandler {
         let resp = VerifyResponse {
             result: result_code,
         };
-        log::info!("Verify request succeeded: msg_type 0x14, result {}", result_code);
+        log::info!(
+            "Verify request succeeded: msg_type 0x14, result {}",
+            result_code
+        );
         serde_json::to_vec(&resp).ok()
     }
 }

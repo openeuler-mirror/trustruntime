@@ -100,8 +100,6 @@ fn map_x509_error_to_verify_error(error_code: c_int) -> VerifyError {
 ///
 /// 安全策略：
 /// - X509_V_ERR_CERT_HAS_EXPIRED：仅对depth==0（leaf证书）忽略，CA/中间证书过期严格拒绝
-/// - X509_V_ERR_CERT_NOT_YET_VALID：严格拒绝（证书尚未生效）
-/// - X509_V_ERR_INVALID_PURPOSE：严格拒绝（证书用途无效），由verify_signer_key_usage做精确匹配检查
 ///
 /// 详见 CONTEXT.md §证书类型 - 验签时签名方证书过期处理
 unsafe extern "C" fn verify_callback(ok: c_int, ctx: *mut X509_STORE_CTX) -> c_int {

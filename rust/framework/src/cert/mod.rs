@@ -242,6 +242,29 @@ pub fn extract_subject_key_id(cert: &X509) -> Result<Vec<u8>, CertLoadError> {
 /// - 比较证书的not_after时间戳与当前时间
 /// - not_after < 当前时间 → 证书已过期
 ///
+/// 获取当前时间
+///
+/// 辅助函数，用于统一处理时间获取失败的情况。
+///
+/// # Returns
+/// * `Some(Asn1Time)` - 成功获取当前时间
+/// * `None` - 获取失败（记录错误日志）
+fn get_current_time() -> Option<openssl::asn1::Asn1Time> {
+    match openssl::asn1::Asn1Time::days_from_now(0) {
+        Ok(now) => Some(now),
+        Err(_) => {
+            log::error!("Failed to get current time");
+            None
+        }
+    }
+}
+
+/// 检测证书是否已过期
+///
+/// 算法说明：
+/// - 比较证书的not_after时间戳与当前时间
+/// - not_after < 当前时间 → 证书已过期
+///
 /// # Arguments
 /// * `cert` - OpenSSL X509证书对象
 ///
@@ -257,8 +280,10 @@ pub fn extract_subject_key_id(cert: &X509) -> Result<Vec<u8>, CertLoadError> {
 /// }
 /// ```
 pub fn is_expired(cert: &X509) -> bool {
-    // 过期检测：not_after < 当前时间
-    cert.not_after() < openssl::asn1::Asn1Time::days_from_now(0).unwrap()
+    match get_current_time() {
+        Some(now) => cert.not_after() < now,
+        None => true,
+    }
 }
 
 /// 检测证书是否尚未生效
@@ -282,8 +307,10 @@ pub fn is_expired(cert: &X509) -> bool {
 /// }
 /// ```
 pub fn is_not_yet_valid(cert: &X509) -> bool {
-    // 未生效检测：not_before > 当前时间
-    cert.not_before() > openssl::asn1::Asn1Time::days_from_now(0).unwrap()
+    match get_current_time() {
+        Some(now) => cert.not_before() > now,
+        None => true,
+    }
 }
 
 /// KeyUsage 标志位
