@@ -26,6 +26,7 @@ Replace `<PROJECT_ROOT>` with actual WSL path (e.g., `/mnt/e/your_name/trustrunt
 | `--force` | Regenerate certificates |
 | `--quick` | Skip cert generation and build |
 | `--cert-dir <path>` | Custom certificate directory |
+| `--asan` | Enable ASan (requires nightly Rust) |
 
 ## Manual Steps
 

@@ -22,6 +22,7 @@ cd ../scripts && ./run-integration-tests.sh
 选项：
 - `--force`: 强制重新生成证书
 - `--quick`: 跳过证书生成和编译（仅运行测试）
+- `--asan`: 启用 ASan 内存检测（需 nightly Rust）
 
 ## 手动运行
 
