@@ -44,14 +44,6 @@ port = 12345
 path = "/tmp/test.log"
 max_file_size = 10
 max_roll_count = 10
-
-[certificate]
-signer_cert = "/tmp/signer.crt"
-signer_key = "/tmp/signer.key"
-ca_root_cert = "/tmp/ca.crt"
-comm_cert = "/tmp/comm.crt"
-comm_key = "/tmp/comm.key"
-comm_ca_root = "/tmp/comm_ca.crt"
 "#;
 
     let config = AppConfig::from_toml(config_content).expect("Failed to parse config");
@@ -76,14 +68,6 @@ port = 12345
 path = "/tmp/test.log"
 max_file_size = 10
 max_roll_count = 10
-
-[certificate]
-signer_cert = "/tmp/signer.crt"
-signer_key = "/tmp/signer.key"
-ca_root_cert = "/tmp/ca.crt"
-comm_cert = "/tmp/comm.crt"
-comm_key = "/tmp/comm.key"
-comm_ca_root = "/tmp/comm_ca.crt"
 
 [cert_check]
 interval_hours = 48

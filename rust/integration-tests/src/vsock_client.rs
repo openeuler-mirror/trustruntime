@@ -102,7 +102,7 @@ pub struct SignResponse {
 /// # 字段说明
 /// - `to_verify`: 待验证数据（原始数据、签名数据、证书ID）
 /// - `to_sign`: 待签名数据（新数据、期望的证书ID）
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct VerifySignRequest {
     #[serde(rename = "to-verify")]
     pub to_verify: ToVerify,
@@ -111,7 +111,7 @@ pub struct VerifySignRequest {
 }
 
 /// 待验证数据
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct ToVerify {
     /// 原始数据
     pub data: String,
@@ -122,7 +122,7 @@ pub struct ToVerify {
 }
 
 /// 待签名数据（带指定ID）
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct ToSignWithId {
     /// 待签名数据
     pub data: String,

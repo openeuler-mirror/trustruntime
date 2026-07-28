@@ -26,7 +26,7 @@ use crate::stats::{ConcurrentResult, PerfResult, Reporter, SecurityTestResult};
 use crate::testers::{
     ConcurrentTester, InteractiveTester, PerformanceTester, ProtocolSecurityTester, ScenarioRunner,
 };
-use integration_tests::vsock_client::{ToSignWithId, ToVerify, VerifySignRequest, VsockClient};
+use integration_tests::vsock_client::VsockClient;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -126,10 +126,7 @@ impl CommandRouter {
                 signed_data,
                 id,
             } => self.handle_verify(data, signed_data, id),
-            Command::VerifySign {
-                verify_json,
-                sign_json,
-            } => self.handle_verify_sign(verify_json, sign_json),
+            Command::VerifySign { request } => self.handle_verify_sign(request),
             Command::Raw { msg_type, body } => self.handle_raw(msg_type, body),
 
             // 性能测试
@@ -184,6 +181,7 @@ impl CommandRouter {
             Some(c) => match c.as_str() {
                 "connect" => HELP_CONNECT.to_string(),
                 "sign" => HELP_SIGN.to_string(),
+                "verify-sign" => HELP_VERIFY_SIGN.to_string(),
                 "perf" => HELP_PERF.to_string(),
                 "concurrent" => HELP_CONCURRENT.to_string(),
                 "security" => HELP_SECURITY.to_string(),
@@ -311,40 +309,16 @@ impl CommandRouter {
     /// 先验证第一个签名，再对第二个数据签名。
     ///
     /// # 参数
-    /// - `verify_json`: 验签参数 JSON
-    /// - `sign_json`: 签名参数 JSON
+    /// - `request`: 验签+签名请求结构体
     fn handle_verify_sign(
         &self,
-        verify_json: String,
-        sign_json: String,
+        request: integration_tests::vsock_client::VerifySignRequest,
     ) -> Result<ExecuteResult, CommandError> {
         let client = self.get_client()?;
         let tester = InteractiveTester::new(client);
 
-        // 解析 JSON 参数
-        let verify_part: serde_json::Value = serde_json::from_str(&verify_json)
-            .map_err(|e| CommandError::ParseError(e.to_string()))?;
-        let sign_part: serde_json::Value = serde_json::from_str(&sign_json)
-            .map_err(|e| CommandError::ParseError(e.to_string()))?;
-
-        // 构建请求
-        let req = VerifySignRequest {
-            to_verify: ToVerify {
-                data: verify_part["data"].as_str().unwrap_or("").to_string(),
-                signed_data: verify_part["signed_data"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string(),
-                id: verify_part["id"].as_str().unwrap_or("").to_string(),
-            },
-            to_sign: ToSignWithId {
-                data: sign_part["data"].as_str().unwrap_or("").to_string(),
-                id: sign_part["id"].as_str().unwrap_or("").to_string(),
-            },
-        };
-
         let resp = tester
-            .verify_and_sign(req)
+            .verify_and_sign(request)
             .map_err(|e| CommandError::TestError(e.to_string()))?;
         Ok(ExecuteResult::Output(Reporter::format_response(&resp)))
     }
@@ -638,7 +612,7 @@ Commands:
 
   sign <data>                          Sign data (0x10)
   verify <data> <signed_data> <id>     Verify signature (0x14)
-  verify-sign <verify_json> <sign_json>  Verify and sign (0x12)
+  verify-sign <json>                     Verify and sign (0x12)
   raw <type> <json_body>               Send raw request
 
   perf sign --count <n> [--data <text>]  Performance test (sign)
@@ -694,6 +668,47 @@ Response:
   signed_data: Base64-encoded CMS signature
   id: Base64-encoded certificate Subject Key ID
   result: 0 (success) or error code";
+
+/// verify-sign 命令帮助文本
+const HELP_VERIFY_SIGN: &str = "verify-sign <json>
+
+Call verify-and-sign interface (0x12).
+First verify the signature, then sign new data.
+
+JSON format:
+  {
+    \"to-verify\": {
+      \"data\": \"<original_data>\",
+      \"signed_data\": \"<Base64_signature>\",
+      \"id\": \"<Base64_cert_id>\"
+    },
+    \"to-sign\": {
+      \"data\": \"<new_data>\",
+      \"id\": \"<Base64_cert_id>\"
+    }
+  }
+
+Arguments:
+  json    Complete request in JSON format
+
+Example:
+  # Step 1: Get signed_data and id from sign command
+  sign \"hello\"
+  # Output: {\"signed_data\":\"MIIC...\",\"id\":\"ABC123...\",\"result\":0}
+
+  # Step 2: Use the output in verify-sign
+  verify-sign '{\"to-verify\":{\"data\":\"hello\",\"signed_data\":\"MIIC...\",\"id\":\"ABC123...\"},\"to-sign\":{\"data\":\"world\",\"id\":\"ABC123...\"}}'
+
+Response:
+  signed_data: Base64-encoded new CMS signature
+  id: Base64-encoded certificate Subject Key ID (same as to-sign.id)
+  result: 0 (success) or error code
+
+Note:
+  - to-verify.signed_data must be a valid signature from sign or verify-sign command
+  - to-verify.id must match the certificate ID that signed the data
+  - to-verify.data must match the original data used for signing
+  - to-sign.id is usually the same as to-verify.id";
 
 /// perf 命令帮助文本
 const HELP_PERF: &str = "perf sign --count <n> [--data <text>] [--interval <ms>]

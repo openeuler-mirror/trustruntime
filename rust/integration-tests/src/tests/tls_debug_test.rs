@@ -56,9 +56,9 @@ fn generate_test_certs(cert_dir: &PathBuf) {
 /// 用途：将服务器证书和CA证书合并为链文件
 /// 返回：服务器证书、密钥、CA证书、链文件、客户端证书路径
 fn find_cert_files(cert_dir: &PathBuf) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
-    let server_cert = cert_dir.join("tls/server/node-a/node.crt");
-    let server_key = cert_dir.join("tls/server/node-a/node.key");
-    let ca_cert = cert_dir.join("tls/ca.crt");
+    let server_cert = cert_dir.join("tls/server/node-a/certificate.crt");
+    let server_key = cert_dir.join("tls/server/node-a/private.key");
+    let ca_cert = cert_dir.join("tls/ca/ca.crt");
     let chain_file = cert_dir.join("tls/server/node-a/node-chain.crt");
 
     // Copy server cert + CA cert to chain file
@@ -69,7 +69,7 @@ fn find_cert_files(cert_dir: &PathBuf) -> (PathBuf, PathBuf, PathBuf, PathBuf, P
     chain.extend_from_slice(&ca_pem);
     std::fs::write(&chain_file, &chain).expect("Failed to write chain file");
 
-    (server_cert, server_key, ca_cert, chain_file, cert_dir.join("tls/client/node-a/node.crt"))
+    (server_cert, server_key, ca_cert, chain_file, cert_dir.join("tls/ubse/node-a/server.pem"))
 }
 
 /// TLS证书链验证调试测试

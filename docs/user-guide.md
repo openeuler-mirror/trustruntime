@@ -129,11 +129,11 @@ ca_root_cert = "/etc/cert/cms/ca_root.crt"     # CA 根证书（必填）
 cms_crl = "/etc/cert/cms/cms.crl"              # CRL（可选）
 
 # --- 通信证书（TLS）---
-comm_cert = "/etc/cert/cms/communication/certificate.crt"  # 通信证书（必填）
-comm_key = "/etc/cert/cms/communication/private.key"       # 通信私钥（必填）
-comm_key_pwd = "/etc/cert/cms/communication/key_pwd.txt"   # 私钥密码（可选）
-comm_ca_root = "/etc/cert/cms/communication/ca_root.crt"  # CA 根证书（必填）
-comm_crl = "/etc/cert/cms/communication/cert.crl"          # CRL（可选）
+comm_cert = "/etc/cert/server/certificate.crt"  # 通信证书（必填）
+comm_key = "/etc/cert/server/private.key"       # 通信私钥（必填）
+comm_key_pwd = "/etc/cert/server/key_pwd.txt"   # 私钥密码（可选）
+comm_ca_root = "/etc/cert/server/ca_root.crt"  # CA 根证书（必填）
+comm_crl = "/etc/cert/server/cert.crl"          # CRL（可选）
 ```
 
 ### 4.3 证书配置
@@ -142,7 +142,7 @@ comm_crl = "/etc/cert/cms/communication/cert.crl"          # CRL（可选）
 
 | 证书类型 | 用途 | 路径 |
 |----------|------|------|
-| 通信证书（TLS） | TLS 双向认证 | `/etc/cert/cms/communication/` |
+| 通信证书（TLS） | TLS 双向认证 | `/etc/cert/server/` |
 | 签名证书（CMS） | CMS 签名验签 | `/etc/cert/cms/` |
 
 #### 证书格式
@@ -177,9 +177,9 @@ max_roll_count = 10
 signer_cert = "/etc/cert/cms/signer.crt"
 signer_key = "/etc/cert/cms/signer.key"
 ca_root_cert = "/etc/cert/cms/ca_root.crt"
-comm_cert = "/etc/cert/cms/communication/certificate.crt"
-comm_key = "/etc/cert/cms/communication/private.key"
-comm_ca_root = "/etc/cert/cms/communication/ca_root.crt"
+comm_cert = "/etc/cert/server/certificate.crt"
+comm_key = "/etc/cert/server/private.key"
+comm_ca_root = "/etc/cert/server/ca_root.crt"
 ```
 
 ---
@@ -341,9 +341,9 @@ stat /etc/trustruntime/agent.toml
 ls -la /etc/cert/cms/signer.crt
 ls -la /etc/cert/cms/signer.key
 ls -la /etc/cert/cms/ca_root.crt
-ls -la /etc/cert/cms/communication/certificate.crt
-ls -la /etc/cert/cms/communication/private.key
-ls -la /etc/cert/cms/communication/ca_root.crt
+ls -la /etc/cert/server/certificate.crt
+ls -la /etc/cert/server/private.key
+ls -la /etc/cert/server/ca_root.crt
 ```
 
 #### 检查日志
@@ -389,18 +389,18 @@ vsock 是虚拟机内部通信，通常不受防火墙限制。
 
 ```bash
 # 检查证书有效期
-openssl x509 -in /etc/cert/cms/communication/certificate.crt -noout -dates
+openssl x509 -in /etc/cert/server/certificate.crt -noout -dates
 
 # 检查证书链
-openssl verify -CAfile /etc/cert/cms/communication/ca_root.crt \
-  /etc/cert/cms/communication/certificate.crt
+openssl verify -CAfile /etc/cert/server/ca_root.crt \
+  /etc/cert/server/certificate.crt
 ```
 
 #### 检查 CRL
 
 ```bash
 # 检查 CRL 格式
-openssl crl -in /etc/cert/cms/communication/cert.crl -noout -text
+openssl crl -in /etc/cert/server/cert.crl -noout -text
 ```
 
 ### 6.4 签名/验签失败

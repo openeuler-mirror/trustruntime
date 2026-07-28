@@ -70,11 +70,11 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
 
 | 文件 | 路径 | 用途 | 必选 |
 |------|------|------|------|
-| 通信证书 | `/etc/cert/cms/communication/certificate.crt` | TLS 服务端证书 | 是 |
-| 通信私钥 | `/etc/cert/cms/communication/private.key` | TLS 服务端私钥 | 是 |
-| 私钥密码 | `/etc/cert/cms/communication/key_pwd.txt` | 加密私钥的密码文件 | 否 |
-| 通信 CA 根证书 | `/etc/cert/cms/communication/ca_root.crt` | TLS 客户端证书验证 CA | 是 |
-| 通信 CRL | `/etc/cert/cms/communication/cert.crl` | 通信证书吊销列表 | 否 |
+| 通信证书 | `/etc/cert/server/certificate.crt` | TLS 服务端证书 | 是 |
+| 通信私钥 | `/etc/cert/server/private.key` | TLS 服务端私钥 | 是 |
+| 私钥密码 | `/etc/cert/server/key_pwd.txt` | 加密私钥的密码文件 | 否 |
+| 通信 CA 根证书 | `/etc/cert/server/ca_root.crt` | TLS 客户端证书验证 CA | 是 |
+| 通信 CRL | `/etc/cert/server/cert.crl` | 通信证书吊销列表 | 否 |
 
 ---
 

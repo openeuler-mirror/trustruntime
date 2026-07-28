@@ -50,10 +50,9 @@ pub enum Command {
         signed_data: String,
         id: String,
     },
-    /// 验签+签名：verify-sign <verify_json> <sign_json>
+    /// 验签+签名：verify-sign <json>
     VerifySign {
-        verify_json: String,
-        sign_json: String,
+        request: integration_tests::vsock_client::VerifySignRequest,
     },
     /// 原始请求：raw <type> <json_body>
     Raw {
@@ -288,21 +287,18 @@ fn parse_verify(args: &[String]) -> Result<Command, ParseError> {
 
 /// 解析 verify-sign 命令
 ///
-/// 格式：verify-sign <verify_json> <sign_json>
+/// 格式：verify-sign <json>
 fn parse_verify_sign(args: &[String]) -> Result<Command, ParseError> {
-    let verify_json = args
+    let json = args
         .first()
-        .ok_or_else(|| ParseError::MissingArgument("verify_json".to_string()))?
-        .to_string();
-    let sign_json = args
-        .get(1)
-        .ok_or_else(|| ParseError::MissingArgument("sign_json".to_string()))?
+        .ok_or_else(|| ParseError::MissingArgument("json".to_string()))?
         .to_string();
 
-    Ok(Command::VerifySign {
-        verify_json,
-        sign_json,
-    })
+    let request: integration_tests::vsock_client::VerifySignRequest =
+        serde_json::from_str(&json)
+            .map_err(|e| ParseError::InvalidArgument(format!("Invalid JSON: {}", e)))?;
+
+    Ok(Command::VerifySign { request })
 }
 
 /// 解析 raw 命令

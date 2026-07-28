@@ -57,7 +57,7 @@ systemctl status trustruntime
 
 ```bash
 ls -la /etc/cert/cms/cms.crl
-ls -la /etc/cert/cms/communication/cert.crl
+ls -la /etc/cert/server/cert.crl
 ```
 
 2. 检查 CRL 格式
@@ -149,15 +149,15 @@ journalctl -u trustruntime -n 50
 
 ```bash
 # 检查服务端证书有效期
-openssl x509 -in /etc/cert/cms/communication/certificate.crt -noout -dates
+openssl x509 -in /etc/cert/server/certificate.crt -noout -dates
 
 # 检查证书链
-openssl verify -CAfile /etc/cert/cms/communication/ca_root.crt \
-  /etc/cert/cms/communication/certificate.crt
+openssl verify -CAfile /etc/cert/server/ca_root.crt \
+  /etc/cert/server/certificate.crt
 
 # 检查 CRL
-openssl crl -in /etc/cert/cms/communication/cert.crl -CAfile \
-  /etc/cert/cms/communication/ca_root.crt -noout
+openssl crl -in /etc/cert/server/cert.crl -CAfile \
+  /etc/cert/server/ca_root.crt -noout
 ```
 
 ---

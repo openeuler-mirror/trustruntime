@@ -56,13 +56,13 @@ pub const CMS_CA_CERT: &str = "cms/ca.crt";
 pub const CMS_CRL: &str = "cms/cms.crl";
 
 /// TLS CA证书相对路径
-pub const TLS_CA_CERT: &str = "tls/ca.crt";
+pub const TLS_CA_CERT: &str = "tls/ca/ca.crt";
 
 /// TLS客户端证书相对路径
-pub const TLS_CLIENT_CERT: &str = "tls/client/client.crt";
+pub const TLS_CLIENT_CERT: &str = "tls/ubse/node-a/server.pem";
 
 /// TLS客户端私钥相对路径
-pub const TLS_CLIENT_KEY: &str = "tls/client/client.key";
+pub const TLS_CLIENT_KEY: &str = "tls/ubse/node-a/server_key.pem";
 
 /// 构造节点CMS签名证书路径
 ///
@@ -92,9 +92,9 @@ pub fn node_cms_key_path(node: &str) -> String {
 /// * `node` - 节点名称
 ///
 /// # Returns
-/// 相对路径字符串，如 "tls/server/node1/node.crt"
+/// 相对路径字符串，如 "tls/server/node-a/certificate.crt"
 pub fn node_tls_cert_path(node: &str) -> String {
-    format!("tls/server/{}/node.crt", node)
+    format!("tls/server/{}/certificate.crt", node)
 }
 
 /// 构造节点TLS私钥路径
@@ -103,7 +103,7 @@ pub fn node_tls_cert_path(node: &str) -> String {
 /// * `node` - 节点名称
 ///
 /// # Returns
-/// 相对路径字符串，如 "tls/server/node1/node.key"
+/// 相对路径字符串，如 "tls/server/node-a/private.key"
 pub fn node_tls_key_path(node: &str) -> String {
-    format!("tls/server/{}/node.key", node)
+    format!("tls/server/{}/private.key", node)
 }
