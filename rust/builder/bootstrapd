@@ -56,14 +56,23 @@ cp -f /tmp/share/communication/certificate.crt      /sysroot/etc/cert/communicat
 cp -f /tmp/share/communication/private.key          /sysroot/etc/cert/communication/private.key
 cp -f /tmp/share/communication/key_pwd.txt          /sysroot/etc/cert/communication/key_pwd.txt
 cp -f /tmp/share/communication/communication.crl    /sysroot/etc/cert/communication/communication.crl
+mkdir -p /sysroot/etc/cert/server/
+cp -f /tmp/share/server/ca_root.crt      /sysroot/etc/cert/server/ca_root.crt
+cp -f /tmp/share/server/certificate.crt  /sysroot/etc/cert/server/certificate.crt
+cp -f /tmp/share/server/private.key      /sysroot/etc/cert/server/private.key
+cp -f /tmp/share/server/key_pwd.txt      /sysroot/etc/cert/server/key_pwd.txt
+cp -f /tmp/share/server/cert.crl         /sysroot/etc/cert/server/cert.crl
 
-/sbin/busybox chmod 550 /sysroot/etc/cert
-/sbin/busybox chmod 550 /sysroot/etc/cert/cms
-/sbin/busybox chmod 440 /sysroot/etc/cert/cms/*
+/sbin/busybox chmod 755 /sysroot/etc/cert
+/sbin/busybox chmod 500 /sysroot/etc/cert/cms
+/sbin/busybox chmod 400 /sysroot/etc/cert/cms/*
 /sbin/busybox chmod 550 /sysroot/etc/cert/communication
 /sbin/busybox chmod 440 /sysroot/etc/cert/communication/*
+/sbin/busybox chmod 500 /sysroot/etc/cert/server
+/sbin/busybox chmod 400 /sysroot/etc/cert/server/*
 
-/sbin/busybox chown -R 1202:1202 /sysroot/etc/cert/
+/sbin/busybox chown -R 0:0 /sysroot/etc/cert/
+/sbin/busybox chown -R 1202:1202 /sysroot/etc/communication/
 
 umount /tmp/share
 

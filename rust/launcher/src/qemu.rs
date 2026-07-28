@@ -352,3 +352,408 @@ pub async fn launch_qemu(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{PortForwardValue, VirtiofsBind, VolumeValue};
+    use crate::utils::{create_vm_work_dir, ExecutablePaths};
+    use mockrs::mock;
+    use std::net::Ipv4Addr;
+    use std::path::PathBuf;
+
+    fn default_qemu_opts() -> QemuLaunchOpts {
+        QemuLaunchOpts {
+            virtiofs_vols: vec![],
+            published_ports: vec![],
+            image_path: PathBuf::from("/path/to/kernel"),
+            qemu_args: None,
+            payload: Some(PathBuf::from("/path/to/payload")),
+            cert_dir: None,
+            vol_9p_paths: vec![],
+            mem: 2176,
+            smp: 2,
+            cid: 3,
+        }
+    }
+
+    fn default_tool_paths() -> ExecutablePaths {
+        ExecutablePaths {
+            qemu_path: PathBuf::from("/usr/bin/qemu-system-aarch64"),
+            virtiofsd_path: None,
+        }
+    }
+
+    #[test]
+    fn command_as_string_simple() {
+        let mut cmd = Command::new("qemu-system-aarch64");
+        cmd.arg("-m").arg("2048");
+        let result = command_as_string(&cmd);
+        assert!(result.contains("qemu-system-aarch64"));
+        assert!(result.contains("-m"));
+        assert!(result.contains("2048"));
+    }
+
+    #[test]
+    fn escape_arg_simple() {
+        assert_eq!(escape_arg("simple"), "simple");
+    }
+
+    #[test]
+    fn escape_arg_spaces() {
+        let result = escape_arg("arg with spaces");
+        assert!(result.starts_with('"'));
+        assert!(result.ends_with('"'));
+    }
+
+    #[test]
+    fn escape_arg_backslash() {
+        let result = escape_arg("path\\file");
+        assert!(result.contains("\\\\"));
+    }
+
+    #[test]
+    fn escape_arg_quote() {
+        let result = escape_arg("arg\"value");
+        assert!(result.contains("\\\""));
+    }
+
+    #[test]
+    fn escape_arg_dollar() {
+        let result = escape_arg("$var");
+        assert!(result.starts_with('"'));
+    }
+
+    #[test]
+    fn test_configure_basic_qemu_command() {
+        let opts = default_qemu_opts();
+        let mut cmd = Command::new("qemu-system-aarch64");
+        configure_basic_qemu_command(&mut cmd, &opts);
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("-machine"));
+        assert!(cmd_str.contains("size=2176M"));
+        assert!(cmd_str.contains("-smp 2"));
+        assert!(cmd_str.contains("guest-cid=3"));
+    }
+
+    #[test]
+    fn configure_kernel_payload_with() {
+        let opts = default_qemu_opts();
+        let mut cmd = Command::new("qemu-system-aarch64");
+        configure_kernel_and_payload(&mut cmd, &opts);
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("-kernel"));
+        assert!(cmd_str.contains("-initrd"));
+        assert!(cmd_str.contains("/path/to/payload"));
+    }
+
+    #[test]
+    fn configure_kernel_payload_without() {
+        let mut opts = default_qemu_opts();
+        opts.payload = None;
+        let mut cmd = Command::new("qemu-system-aarch64");
+        configure_kernel_and_payload(&mut cmd, &opts);
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("-initrd"));
+        assert!(cmd_str.contains("/mnt/out-br/images/rootfs.cpio"));
+    }
+
+    #[tokio::test]
+    async fn configure_virtio_9p_dir_exists() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let opts = default_qemu_opts();
+        let mut cmd = Command::new("qemu-system-aarch64");
+        configure_basic_qemu_command(&mut cmd, &opts);
+
+        let result = configure_virtio_9p_single(
+            &mut cmd,
+            &PathBuf::from(dir.path()),
+            "testtag".to_string(),
+            0,
+        )
+        .await;
+        assert!(result.is_ok());
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("-fsdev"));
+        assert!(cmd_str.contains("testtag"));
+    }
+
+    #[tokio::test]
+    async fn configure_virtio_9p_not_exists() {
+        let mut cmd = Command::new("qemu-system-aarch64");
+        let result = configure_virtio_9p_single(
+            &mut cmd,
+            &PathBuf::from("/nonexistent/path"),
+            "tag".to_string(),
+            0,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn configure_virtio_9p_not_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("not_a_dir.txt");
+        std::fs::write(&file_path, "data").unwrap();
+
+        let mut cmd = Command::new("qemu-system-aarch64");
+        let result = configure_virtio_9p_single(
+            &mut cmd,
+            &PathBuf::from(&file_path),
+            "tag".to_string(),
+            0,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn configure_port_forward_single() {
+        let mut opts = default_qemu_opts();
+        opts.published_ports = vec![PortForwardValue {
+            host_ip: Ipv4Addr::new(0, 0, 0, 0),
+            host_port: 8080,
+            guest_port: 80,
+        }];
+        let mut cmd = Command::new("qemu-system-aarch64");
+        configure_port_forwarding(&mut cmd, &opts);
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("hostfwd"));
+        assert!(cmd_str.contains("8080"));
+        assert!(cmd_str.contains("net0"));
+    }
+
+    #[test]
+    fn configure_port_forward_multiple() {
+        let mut opts = default_qemu_opts();
+        opts.published_ports = vec![
+            PortForwardValue {
+                host_ip: Ipv4Addr::new(0, 0, 0, 0),
+                host_port: 8080,
+                guest_port: 80,
+            },
+            PortForwardValue {
+                host_ip: Ipv4Addr::new(192, 168, 1, 1),
+                host_port: 9090,
+                guest_port: 90,
+            },
+        ];
+        let mut cmd = Command::new("qemu-system-aarch64");
+        configure_port_forwarding(&mut cmd, &opts);
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("8080"));
+        assert!(cmd_str.contains("9090"));
+    }
+
+    #[test]
+    fn configure_custom_args_none() {
+        let opts = default_qemu_opts();
+        let mut cmd = Command::new("qemu-system-aarch64");
+        configure_custom_qemu_args(&mut cmd, &opts);
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.starts_with("qemu-system-aarch64"));
+    }
+
+    #[test]
+    fn configure_custom_args_valid() {
+        let mut opts = default_qemu_opts();
+        opts.qemu_args = Some("--extra-arg1 --extra-arg2".to_string());
+        let mut cmd = Command::new("qemu-system-aarch64");
+        configure_custom_qemu_args(&mut cmd, &opts);
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("--extra-arg1"));
+        assert!(cmd_str.contains("--extra-arg2"));
+    }
+
+    #[test]
+    fn configure_custom_args_empty() {
+        let mut opts = default_qemu_opts();
+        opts.qemu_args = Some("   ".to_string());
+        let mut cmd = Command::new("qemu-system-aarch64");
+        configure_custom_qemu_args(&mut cmd, &opts);
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.starts_with("qemu-system-aarch64"));
+    }
+
+    #[tokio::test]
+    async fn configure_virtiofsd_no_virtiofsd_path() {
+        let mut opts = default_qemu_opts();
+        opts.virtiofs_vols = vec![VirtiofsBind {
+            host_path: "/host/path".to_string(),
+            guest_path: "/guest/path".to_string(),
+        }];
+
+        let tool_paths = ExecutablePaths {
+            qemu_path: PathBuf::from("/usr/bin/qemu-system-aarch64"),
+            virtiofsd_path: None,
+        };
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut cmd = Command::new("qemu-system-aarch64");
+
+        let result = configure_virtiofsd(&mut cmd, &tool_paths, dir.path(), &opts).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn configure_virtiofsd_empty_vols() {
+        let opts = default_qemu_opts();
+        let tool_paths = ExecutablePaths {
+            qemu_path: PathBuf::from("/usr/bin/qemu-system-aarch64"),
+            virtiofsd_path: Some(PathBuf::from("/usr/bin/virtiofsd")),
+        };
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut cmd = Command::new("qemu-system-aarch64");
+
+        let result = configure_virtiofsd(&mut cmd, &tool_paths, dir.path(), &opts).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn configure_9p_volumes_with_dirs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host_dir1 = dir.path().join("host1");
+        std::fs::create_dir(&host_dir1).unwrap();
+
+        let mut opts = default_qemu_opts();
+        opts.vol_9p_paths = vec![VolumeValue {
+            host_dir: host_dir1.to_string_lossy().to_string(),
+            guest_dir: "/guest1".to_string(),
+        }];
+
+        let mut cmd = Command::new("qemu-system-aarch64");
+        configure_basic_qemu_command(&mut cmd, &opts);
+
+        let result = configure_9p_volumes(&mut cmd, &opts, dir.path()).await;
+        assert!(result.is_ok());
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("-fsdev"));
+        assert!(cmd_str.contains("usrshare0"));
+
+        let fstab_path = dir.path().join("fstab");
+        assert!(fstab_path.exists());
+    }
+
+    #[tokio::test]
+    async fn configure_9p_volumes_with_multiple_dirs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host_dir1 = dir.path().join("host1");
+        let host_dir2 = dir.path().join("host2");
+        std::fs::create_dir(&host_dir1).unwrap();
+        std::fs::create_dir(&host_dir2).unwrap();
+
+        let mut opts = default_qemu_opts();
+        opts.vol_9p_paths = vec![
+            VolumeValue {
+                host_dir: host_dir1.to_string_lossy().to_string(),
+                guest_dir: "/guest1".to_string(),
+            },
+            VolumeValue {
+                host_dir: host_dir2.to_string_lossy().to_string(),
+                guest_dir: "/guest2".to_string(),
+            },
+        ];
+
+        let mut cmd = Command::new("qemu-system-aarch64");
+        configure_basic_qemu_command(&mut cmd, &opts);
+
+        let result = configure_9p_volumes(&mut cmd, &opts, dir.path()).await;
+        assert!(result.is_ok());
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("usrshare0"));
+        assert!(cmd_str.contains("usrshare1"));
+    }
+
+    #[tokio::test]
+    async fn configure_9p_volumes_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let opts = default_qemu_opts();
+        let mut cmd = Command::new("qemu-system-aarch64");
+
+        let result = configure_9p_volumes(&mut cmd, &opts, dir.path()).await;
+        assert!(result.is_ok());
+
+        let fstab_path = dir.path().join("fstab");
+        assert!(fstab_path.exists());
+        let content = std::fs::read_to_string(&fstab_path).unwrap();
+        assert!(content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn configure_qemu_all_direct() {
+        let opts = default_qemu_opts();
+        let tool_paths = default_tool_paths();
+
+        let mut cmd = Command::new("qemu-system-aarch64");
+        let result = configure_qemu_all(&mut cmd, &opts, &tool_paths).await;
+        assert!(result.is_ok());
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("-machine"));
+        assert!(cmd_str.contains("-kernel"));
+        assert!(cmd_str.contains("-initrd"));
+        assert!(cmd_str.contains("ccashare"));
+    }
+
+    #[tokio::test]
+    async fn configure_qemu_all_with_cert_dir_direct() {
+        let cert_dir = tempfile::TempDir::new().unwrap();
+        let mut opts = default_qemu_opts();
+        opts.cert_dir = Some(PathBuf::from(cert_dir.path()));
+
+        let tool_paths = default_tool_paths();
+
+        let mut cmd = Command::new("qemu-system-aarch64");
+        let result = configure_qemu_all(&mut cmd, &opts, &tool_paths).await;
+        assert!(result.is_ok());
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("certshare"));
+    }
+
+    #[tokio::test]
+    #[cfg(not(feature = "coverage"))]
+    async fn configure_qemu_all_mocked_create_vm_dir() {
+        fn mock_create_vm_dir() -> Result<PathBuf, Box<dyn Error>> {
+            Ok(std::env::temp_dir())
+        }
+
+        let opts = default_qemu_opts();
+        let tool_paths = default_tool_paths();
+
+        let _m1 = mock!(create_vm_work_dir, mock_create_vm_dir);
+
+        let mut cmd = Command::new("qemu-system-aarch64");
+        let result = configure_qemu_all(&mut cmd, &opts, &tool_paths).await;
+        assert!(result.is_ok());
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("-machine"));
+        assert!(cmd_str.contains("-kernel"));
+        assert!(cmd_str.contains("-initrd"));
+        assert!(cmd_str.contains("ccashare"));
+    }
+
+    #[tokio::test]
+    #[cfg(not(feature = "coverage"))]
+    async fn configure_qemu_all_with_cert_dir_mocked() {
+        fn mock_create_vm_dir() -> Result<PathBuf, Box<dyn Error>> {
+            Ok(std::env::temp_dir())
+        }
+
+        let cert_dir = tempfile::TempDir::new().unwrap();
+        let mut opts = default_qemu_opts();
+        opts.cert_dir = Some(PathBuf::from(cert_dir.path()));
+
+        let tool_paths = default_tool_paths();
+
+        let _m1 = mock!(create_vm_work_dir, mock_create_vm_dir);
+
+        let mut cmd = Command::new("qemu-system-aarch64");
+        let result = configure_qemu_all(&mut cmd, &opts, &tool_paths).await;
+        assert!(result.is_ok());
+        let cmd_str = command_as_string(&cmd);
+        assert!(cmd_str.contains("certshare"));
+    }
+}
