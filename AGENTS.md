@@ -35,7 +35,18 @@ See `.opencode/skills/wsl-cargo/SKILL.md` for WSL-specific command patterns.
 - Tests use OpenSSL to generate temporary ECC-256 certificates
 - Test fixtures are generated programmatically, not committed
 
-### AddressSanitizer (ASan) Testing
+### Integration Testing
+
+**Run integration tests (default, no ASan):**
+```bash
+# Linux
+cd rust && ./scripts/run-integration-tests.sh
+
+# WSL
+wsl bash -c "source ~/.cargo/env && cd <PROJECT_ROOT>/rust && ./scripts/run-integration-tests.sh"
+```
+
+### AddressSanitizer (ASan) Testing (Optional)
 
 ASan detects memory leaks, buffer overflows, and double-free issues.
 
@@ -50,11 +61,11 @@ cd rust && ./scripts/run-asan-test.sh
 # Unit tests (WSL)
 wsl bash -c "source ~/.cargo/env && cd <PROJECT_ROOT>/rust && ./scripts/run-asan-test.sh"
 
-# Integration tests (Linux)
-cd rust && ./scripts/run-integration-tests.sh
+# Integration tests with ASan (Linux)
+cd rust && ./scripts/run-integration-tests.sh --asan
 
-# Integration tests (WSL)
-wsl bash -c "source ~/.cargo/env && cd <PROJECT_ROOT>/rust && ./scripts/run-integration-tests.sh"
+# Integration tests with ASan (WSL)
+wsl bash -c "source ~/.cargo/env && cd <PROJECT_ROOT>/rust && ./scripts/run-integration-tests.sh --asan"
 ```
 
 **Notes:**

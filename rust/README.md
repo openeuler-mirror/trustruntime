@@ -46,7 +46,8 @@ cd scripts && ./run-integration-tests.sh
 
 | 脚本 | 用途 | 证书路径（默认） |
 |------|------|----------|
-| `run-integration-tests.sh` | 完整集成测试流程（推荐） | `$HOME/test-certs` |
+| `run-integration-tests.sh` | 集成测试（默认无ASan） | `$HOME/test-certs` |
+| `run-asan-test.sh` | ASan单元测试（需nightly） | - |
 
 ### run-integration-tests.sh（推荐）
 
@@ -76,6 +77,7 @@ cd scripts
 - `--force`: 强制重新生成证书
 - `--quick`: 跳过证书生成和编译（仅运行测试）
 - `--cert-dir <path>`: 指定证书目录（默认 `$HOME/test-certs`）
+- `--asan`: 启用 ASan 内存检测（需 nightly Rust）
 
 ## 依赖
 

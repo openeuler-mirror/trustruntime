@@ -429,6 +429,9 @@ cargo test -p trustring
 # 集成测试（推荐使用脚本）
 cd rust/scripts
 ./run-integration-tests.sh
+
+# ASan 集成测试（可选，需 nightly）
+./run-integration-tests.sh --asan
 ```
 
 ### 5.5 测试原则

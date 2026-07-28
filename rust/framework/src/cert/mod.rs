@@ -29,6 +29,7 @@ use foreign_types_shared::ForeignType;
 use openssl::pkey::{PKey, Private};
 use openssl::x509::{X509Crl, X509};
 use std::fs;
+use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -379,9 +380,9 @@ unsafe fn extract_eku_oids(eku: *mut std::ffi::c_void) -> Vec<String> {
         if !obj.is_null() {
             let mut buf = [0u8; 256];
             let len =
-                openssl_sys::OBJ_obj2txt(buf.as_mut_ptr() as *mut i8, buf.len() as i32, obj, 0);
+                openssl_sys::OBJ_obj2txt(buf.as_mut_ptr() as *mut c_char, buf.len() as i32, obj, 0);
             if len > 0 {
-                let oid = CStr::from_ptr(buf.as_ptr() as *const i8).to_string_lossy();
+                let oid = CStr::from_ptr(buf.as_ptr() as *const c_char).to_string_lossy();
                 oids.push(oid.into_owned());
             }
         }
