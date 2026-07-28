@@ -23,7 +23,8 @@
 //! - 原始请求：发送原始协议消息进行底层测试
 
 use integration_tests::vsock_client::{
-    RawResponse, SignResponse, VerifyResponse, VerifySignRequest, VerifySignResponse, VsockClient,
+    RawResponse, SignRequest, SignResponse, VerifyRequest, VerifyResponse, VerifySignRequest,
+    VerifySignResponse, VsockClient,
 };
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -91,6 +92,22 @@ impl InteractiveTester {
             .map_err(|e| TestError::Vsock(e.to_string()))
     }
 
+    /// 执行签名操作（使用请求结构体）
+    ///
+    /// 对输入数据进行CMS签名。
+    ///
+    /// # 参数
+    ///
+    /// * `req` - 签名请求结构体
+    ///
+    /// # 返回
+    ///
+    /// 成功返回签名响应，失败返回TestError
+    pub fn sign_with_request(&self, req: SignRequest) -> Result<SignResponse, TestError> {
+        let data = req.to_sign.data;
+        self.sign(&data)
+    }
+
     /// 执行验证操作
     ///
     /// 验证签名数据的完整性和签名者身份。
@@ -119,6 +136,24 @@ impl InteractiveTester {
         client
             .verify(data, signed_data, id)
             .map_err(|e| TestError::Vsock(e.to_string()))
+    }
+
+    /// 执行验证操作（使用请求结构体）
+    ///
+    /// 验证签名数据的完整性和签名者身份。
+    ///
+    /// # 参数
+    ///
+    /// * `req` - 验签请求结构体
+    ///
+    /// # 返回
+    ///
+    /// 成功返回验证响应，失败返回TestError
+    pub fn verify_with_request(&self, req: VerifyRequest) -> Result<VerifyResponse, TestError> {
+        let data = req.to_verify.data;
+        let signed_data = req.to_verify.signed_data;
+        let id = req.to_verify.id;
+        self.verify(&data, &signed_data, &id)
     }
 
     /// 执行验证并签名操作

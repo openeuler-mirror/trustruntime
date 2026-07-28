@@ -32,6 +32,7 @@ CMS签名验签服务已实现完整的集成测试覆盖（正常场景、异�
 
 - **复用优先**：复用 `integration-tests` 的 `VsockClient`、`test_cert_gen`、`test_helpers`、`ProcessManager`
 - **交互式优先**：主界面为 REPL 模式，支持单次 CLI 执行作为补充
+- **自动化测试支持**：通过 `--command` 选项支持命令行单次执行，适合 CI/CD 集成和脚本化测试
 - **基础指标优先**：性能测试输出总数、成功数、平均响应时间、吞吐量(QPS)
 - **安全测试全覆盖**：覆盖协议层、证书层、TLS层三类安全攻击场景
 
@@ -92,10 +93,48 @@ Connected to vsock://1:12346
 
 | 命令 | 参数 | 接口类型 | 说明 |
 |------|------|----------|------|
-| `sign` | `<data>` | 0x10 | 调用签名接口 |
-| `verify` | `<data> <signed_data> <id>` | 0x14 | 调用验签接口 |
-| `verify-sign` | `<verify-json> <sign-json>` | 0x12 | 调用验签+签名接口 |
+| `sign` | `<json>` | 0x10 | 调用签名接口，JSON格式见下方说明 |
+| `verify` | `<json>` | 0x14 | 调用验签接口，JSON格式见下方说明 |
+| `verify-sign` | `<json>` | 0x12 | 调用验签+签名接口，JSON格式见下方说明 |
 | `raw` | `<type> <json-body>` | — | 发送原始请求 |
+
+**sign JSON格式：**
+
+```json
+{
+  "to-sign": {
+    "data": "<待签名数据>"
+  }
+}
+```
+
+**verify JSON格式：**
+
+```json
+{
+  "to-verify": {
+    "data": "<原始数据>",
+    "signed_data": "<Base64签名>",
+    "id": "<Base64证书ID>"
+  }
+}
+```
+
+**verify-sign JSON格式：**
+
+```json
+{
+  "to-verify": {
+    "data": "<原始数据>",
+    "signed_data": "<Base64签名>",
+    "id": "<Base64证书ID>"
+  },
+  "to-sign": {
+    "data": "<新数据>",
+    "id": "<Base64证书ID>"
+  }
+}
+```
 
 ### 3.3 性能测试命令
 
@@ -194,9 +233,9 @@ pub enum Command {
     Status,
 
     // 手工交互
-    Sign { data: String },
-    Verify { data: String, signed_data: String, id: String },
-    VerifySign { verify_json: String, sign_json: String },
+    Sign { request: integration_tests::vsock_client::SignRequest },
+    Verify { request: integration_tests::vsock_client::VerifyRequest },
+    VerifySign { request: integration_tests::vsock_client::VerifySignRequest },
     Raw { msg_type: u32, body: String },
 
     // 性能测试
@@ -441,6 +480,8 @@ toml.workspace = true
 
 ### 6.2 执行方式
 
+#### 方式1：交互式REPL模式（默认）
+
 ```bash
 # 准备配置文件
 cp rust/tools/cms-test-cli/config.example.toml my-config.toml
@@ -453,9 +494,39 @@ wsl bash -c "source ~/.cargo/env && cd rust && cargo run -p cms-test-cli -- --co
 cargo run -p cms-test-cli -- --config /path/to/config.toml
 ```
 
+#### 方式2：命令行单次执行模式
+
+```bash
+# 签名
+JSON='{"to-sign":{"data":"hello"}}'
+cargo run -p cms-test-cli -- --config my-config.toml --command "sign '$JSON'"
+
+# 验签
+JSON='{"to-verify":{"data":"hello","signed_data":"MIIC...","id":"ABC123..."}}'
+cargo run -p cms-test-cli -- --config my-config.toml --command "verify '$JSON'"
+
+# 验签+签名
+JSON='{"to-verify":{"data":"hello","signed_data":"MIIC...","id":"ABC123..."},"to-sign":{"data":"world","id":"ABC123..."}}'
+cargo run -p cms-test-cli -- --config my-config.toml --command "verify-sign '$JSON'"
+
+# 性能测试
+cargo run -p cms-test-cli -- --config my-config.toml --command 'perf sign --count 100'
+
+# 场景测试
+cargo run -p cms-test-cli -- --config my-config.toml --command 'scenario two-node'
+```
+
+**特性：**
+- 使用变量存储 JSON，避免手动转义
+- 命令格式与REPL命令格式完全一致
+- 执行失败返回非零退出码（成功返回0，失败返回1）
+- 适合CI/CD集成和脚本化测试
+
 ---
 
 ## 8. 使用示例
+
+### 8.1 交互式REPL模式示例
 
 ```
 cms-test-cli v0.1.0
@@ -464,7 +535,8 @@ Type 'help' for available commands.
 > connect
 Connected to vsock://1:12345
 
-> sign "hello world"
+> JSON='{"to-sign":{"data":"hello world"}}'
+> sign '$JSON'
 {"signed_data": "MIIM...", "id": "abc123...", "result": 0}
 
 > perf sign --count 100
@@ -481,6 +553,33 @@ TLS layer: 3/3 passed
 Total: 11/11 tests passed
 ```
 
+### 8.2 命令行单次执行模式示例
+
+```bash
+# 签名
+$ JSON='{"to-sign":{"data":"hello"}}'
+$ cargo run -p cms-test-cli -- --config my-config.toml --command "sign '$JSON'"
+{"signed_data":"MIIC...","id":"ABC123...","result":0}
+
+# 验签
+$ JSON='{"to-verify":{"data":"hello","signed_data":"MIIC...","id":"ABC123..."}}'
+$ cargo run -p cms-test-cli -- --config my-config.toml --command "verify '$JSON'"
+{"result":0}
+
+# 验签+签名
+$ JSON='{"to-verify":{"data":"hello","signed_data":"MIIC...","id":"ABC123..."},"to-sign":{"data":"world","id":"ABC123..."}}'
+$ cargo run -p cms-test-cli -- --config my-config.toml --command "verify-sign '$JSON'"
+{"signed_data":"MIIC...","id":"ABC123...","result":0}
+
+# 性能测试
+$ cargo run -p cms-test-cli -- --config my-config.toml --command 'perf sign --count 100'
+Total: 100, Success: 100, Avg: 12.5ms, QPS: 80.0
+
+# 场景测试
+$ cargo run -p cms-test-cli -- --config my-config.toml --command 'scenario two-node'
+Scenario N01 passed: 2 nodes, 4 operations
+```
+
 ---
 
 ## 修订历史
@@ -489,3 +588,4 @@ Total: 11/11 tests passed
 |------|------|----------|
 | V1.0 | 2026-06-27 | 初始版本 |
 | V1.1 | 2026-07-15 | 配置管理重构：采用TOML配置文件，解耦cert-gen目录结构依赖 |
+| V1.2 | 2026-07-29 | 添加命令行单次执行模式（--command选项），支持自动化测试能力；更新verify-sign命令格式 |

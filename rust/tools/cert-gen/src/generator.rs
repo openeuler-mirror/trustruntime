@@ -178,6 +178,7 @@ pub fn generate_tls_certificates(output_path: &Path, group: &EcGroup) {
     generate_test_client_certs(&tls_dir, group, &ca_cert, &ca_pkey, key_password);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_cert_files(
     dir: &Path,
     cert: &X509,

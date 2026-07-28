@@ -120,12 +120,8 @@ impl CommandRouter {
             Command::Status => self.handle_status(),
 
             // 核心操作
-            Command::Sign { data } => self.handle_sign(data),
-            Command::Verify {
-                data,
-                signed_data,
-                id,
-            } => self.handle_verify(data, signed_data, id),
+            Command::Sign { request } => self.handle_sign(request),
+            Command::Verify { request } => self.handle_verify(request),
             Command::VerifySign { request } => self.handle_verify_sign(request),
             Command::Raw { msg_type, body } => self.handle_raw(msg_type, body),
 
@@ -181,6 +177,7 @@ impl CommandRouter {
             Some(c) => match c.as_str() {
                 "connect" => HELP_CONNECT.to_string(),
                 "sign" => HELP_SIGN.to_string(),
+                "verify" => HELP_VERIFY.to_string(),
                 "verify-sign" => HELP_VERIFY_SIGN.to_string(),
                 "perf" => HELP_PERF.to_string(),
                 "concurrent" => HELP_CONCURRENT.to_string(),
@@ -272,13 +269,35 @@ impl CommandRouter {
         )))
     }
 
-    fn handle_sign(&self, data: String) -> Result<ExecuteResult, CommandError> {
+    /// 执行测试操作
+    ///
+    /// # 参数
+    /// - `test_fn`: 测试函数，接受 InteractiveTester 并返回结果
+    ///
+    /// # 返回
+    /// 执行结果
+    fn execute_test<F, R>(&self, test_fn: F) -> Result<ExecuteResult, CommandError>
+    where
+        F: FnOnce(InteractiveTester) -> Result<R, crate::testers::TestError>,
+        R: serde::Serialize,
+    {
         let client = self.get_client()?;
         let tester = InteractiveTester::new(client);
-        let resp = tester
-            .sign(&data)
-            .map_err(|e| CommandError::TestError(e.to_string()))?;
+        let resp = test_fn(tester).map_err(|e| CommandError::TestError(e.to_string()))?;
         Ok(ExecuteResult::Output(Reporter::format_response(&resp)))
+    }
+
+    /// 处理 sign 命令
+    ///
+    /// 调用 CMS 签名接口（消息类型 0x10）。
+    ///
+    /// # 参数
+    /// - `request`: 签名请求结构体
+    fn handle_sign(
+        &self,
+        request: integration_tests::vsock_client::SignRequest,
+    ) -> Result<ExecuteResult, CommandError> {
+        self.execute_test(|tester| tester.sign_with_request(request))
     }
 
     /// 处理 verify 命令
@@ -286,21 +305,12 @@ impl CommandRouter {
     /// 调用 CMS 验签接口（消息类型 0x14）。
     ///
     /// # 参数
-    /// - `data`: 原始数据
-    /// - `signed_data`: 签名数据（Base64）
-    /// - `id`: 证书 ID（Base64）
+    /// - `request`: 验签请求结构体
     fn handle_verify(
         &self,
-        data: String,
-        signed_data: String,
-        id: String,
+        request: integration_tests::vsock_client::VerifyRequest,
     ) -> Result<ExecuteResult, CommandError> {
-        let client = self.get_client()?;
-        let tester = InteractiveTester::new(client);
-        let resp = tester
-            .verify(&data, &signed_data, &id)
-            .map_err(|e| CommandError::TestError(e.to_string()))?;
-        Ok(ExecuteResult::Output(Reporter::format_response(&resp)))
+        self.execute_test(|tester| tester.verify_with_request(request))
     }
 
     /// 处理 verify-sign 命令
@@ -314,13 +324,7 @@ impl CommandRouter {
         &self,
         request: integration_tests::vsock_client::VerifySignRequest,
     ) -> Result<ExecuteResult, CommandError> {
-        let client = self.get_client()?;
-        let tester = InteractiveTester::new(client);
-
-        let resp = tester
-            .verify_and_sign(request)
-            .map_err(|e| CommandError::TestError(e.to_string()))?;
-        Ok(ExecuteResult::Output(Reporter::format_response(&resp)))
+        self.execute_test(|tester| tester.verify_and_sign(request))
     }
 
     /// 处理 raw 命令
@@ -610,9 +614,9 @@ Commands:
   disconnect                           Disconnect from server
   status                               Show connection status
 
-  sign <data>                          Sign data (0x10)
-  verify <data> <signed_data> <id>     Verify signature (0x14)
-  verify-sign <json>                     Verify and sign (0x12)
+sign <json>                           Sign data (0x10)
+verify <json>                         Verify signature (0x14)
+verify-sign <json>                     Verify and sign (0x12)
   raw <type> <json_body>               Send raw request
 
   perf sign --count <n> [--data <text>]  Performance test (sign)
@@ -654,19 +658,62 @@ Example:
   connect 12345     # Override port";
 
 /// sign 命令帮助文本
-const HELP_SIGN: &str = "sign <data>
+const HELP_SIGN: &str = "sign <json>
 
 Call signing interface (0x10).
 
+JSON format:
+  {
+    \"to-sign\": {
+      \"data\": \"<data_to_sign>\"
+    }
+  }
+
 Arguments:
-  data    Data to sign (string)
+  json    Complete request in JSON format
 
 Example:
-  sign \"hello world\"
+  # Define JSON variable
+  JSON='{\"to-sign\":{\"data\":\"hello world\"}}'
+
+  # Execute sign command
+  sign '$JSON'
 
 Response:
   signed_data: Base64-encoded CMS signature
   id: Base64-encoded certificate Subject Key ID
+  result: 0 (success) or error code";
+
+/// verify 命令帮助文本
+const HELP_VERIFY: &str = "verify <json>
+
+Call verify interface (0x14).
+
+JSON format:
+  {
+    \"to-verify\": {
+      \"data\": \"<original_data>\",
+      \"signed_data\": \"<Base64_signature>\",
+      \"id\": \"<Base64_cert_id>\"
+    }
+  }
+
+Arguments:
+  json    Complete request in JSON format
+
+Example:
+  # Step 1: Define JSON variable
+  JSON='{\"to-sign\":{\"data\":\"hello\"}}'
+
+  # Step 2: Execute sign command
+  sign '$JSON'
+  # Output: {\"signed_data\":\"MIIC...\",\"id\":\"ABC123...\",\"result\":0}
+
+  # Step 3: Use the output in verify
+  JSON='{\"to-verify\":{\"data\":\"hello\",\"signed_data\":\"MIIC...\",\"id\":\"ABC123...\"}}'
+  verify '$JSON'
+
+Response:
   result: 0 (success) or error code";
 
 /// verify-sign 命令帮助文本
@@ -692,12 +739,14 @@ Arguments:
   json    Complete request in JSON format
 
 Example:
-  # Step 1: Get signed_data and id from sign command
-  sign \"hello\"
+  # Step 1: Define JSON variable for sign
+  JSON='{\"to-sign\":{\"data\":\"hello\"}}'
+  sign '$JSON'
   # Output: {\"signed_data\":\"MIIC...\",\"id\":\"ABC123...\",\"result\":0}
 
-  # Step 2: Use the output in verify-sign
-  verify-sign '{\"to-verify\":{\"data\":\"hello\",\"signed_data\":\"MIIC...\",\"id\":\"ABC123...\"},\"to-sign\":{\"data\":\"world\",\"id\":\"ABC123...\"}}'
+  # Step 2: Define JSON variable for verify-sign
+  JSON='{\"to-verify\":{\"data\":\"hello\",\"signed_data\":\"MIIC...\",\"id\":\"ABC123...\"},\"to-sign\":{\"data\":\"world\",\"id\":\"ABC123...\"}}'
+  verify-sign '$JSON'
 
 Response:
   signed_data: Base64-encoded new CMS signature
@@ -705,6 +754,7 @@ Response:
   result: 0 (success) or error code
 
 Note:
+  - Use variable to store JSON, avoid manual escaping
   - to-verify.signed_data must be a valid signature from sign or verify-sign command
   - to-verify.id must match the certificate ID that signed the data
   - to-verify.data must match the original data used for signing

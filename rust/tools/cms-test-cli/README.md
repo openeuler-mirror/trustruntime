@@ -30,11 +30,51 @@ cp rust/tools/cms-test-cli/config.example.toml my-config.toml
 # 编辑 my-config.toml，设置正确的证书路径
 ```
 
-### 2. 启动测试工具
+### 2. 使用方式
+
+#### 方式1：交互式REPL模式（默认）
 
 ```bash
 wsl bash -c "source ~/.cargo/env && cd rust && cargo run -p cms-test-cli -- --config /path/to/my-config.toml"
 ```
+
+进入交互式命令行界面，手动输入命令执行测试。
+
+#### 方式2：命令行单次执行模式
+
+```bash
+wsl bash -c "source ~/.cargo/env && cd rust && cargo run -p cms-test-cli -- --config /path/to/my-config.toml --command '<command>'"
+```
+
+执行单条命令后退出，适合脚本化测试和CI/CD集成。
+
+**示例：**
+
+```bash
+# 签名
+JSON='{"to-sign":{"data":"hello"}}'
+cargo run -p cms-test-cli -- --config my-config.toml --command "sign '$JSON'"
+
+# 验签
+JSON='{"to-verify":{"data":"hello","signed_data":"MIIC...","id":"ABC123..."}}'
+cargo run -p cms-test-cli -- --config my-config.toml --command "verify '$JSON'"
+
+# 验签+签名
+JSON='{"to-verify":{"data":"hello","signed_data":"MIIC...","id":"ABC123..."},"to-sign":{"data":"world","id":"ABC123..."}}'
+cargo run -p cms-test-cli -- --config my-config.toml --command "verify-sign '$JSON'"
+
+# 性能测试
+cargo run -p cms-test-cli -- --config my-config.toml --command 'perf sign --count 100'
+
+# 场景测试
+cargo run -p cms-test-cli -- --config my-config.toml --command 'scenario two-node'
+```
+
+**注意事项：**
+- 使用变量存储 JSON，避免手动转义
+- 命令需要用双引号包裹，变量用单引号包裹
+- 执行失败时返回非零退出码（成功返回0，失败返回1）
+- 命令格式与REPL命令格式完全一致
 
 ## 配置文件格式
 
@@ -70,10 +110,47 @@ status                               # 显示连接状态
 ### 手工交互测试
 
 ```
-sign <data>                          # 签名接口 (0x10)
-verify <data> <signed_data> <id>     # 验签接口 (0x14)
-verify-sign <json>                   # 验签+签名接口 (0x12)
-raw <type> <json-body>               # 发送原始请求
+sign <json>                           # 签名接口 (0x10)
+verify <json>                         # 验签接口 (0x14)
+verify-sign <json>                    # 验签+签名接口 (0x12)
+raw <type> <json-body>                # 发送原始请求
+```
+
+**JSON 格式说明：**
+
+**sign 命令：**
+```json
+{
+  "to-sign": {
+    "data": "<待签名数据>"
+  }
+}
+```
+
+**verify 命令：**
+```json
+{
+  "to-verify": {
+    "data": "<原始数据>",
+    "signed_data": "<Base64签名>",
+    "id": "<Base64证书ID>"
+  }
+}
+```
+
+**verify-sign 命令：**
+```json
+{
+  "to-verify": {
+    "data": "<原始数据>",
+    "signed_data": "<Base64签名>",
+    "id": "<Base64证书ID>"
+  },
+  "to-sign": {
+    "data": "<新数据>",
+    "id": "<Base64证书ID>"
+  }
+}
 ```
 
 ### 性能测试
@@ -133,7 +210,8 @@ Type 'help' for available commands.
 > connect
 Connected to vsock://1:12345
 
-> sign "hello world"
+> JSON='{"to-sign":{"data":"hello world"}}'
+> sign '$JSON'
 Response:
 {
   "signed_data": "MIIM...",
@@ -141,13 +219,15 @@ Response:
   "result": 0
 }
 
-> verify "hello world" "MIIM..." "abc123..."
+> JSON='{"to-verify":{"data":"hello world","signed_data":"MIIM...","id":"abc123..."}}'
+> verify '$JSON'
 Response:
 {
   "result": 0
 }
 
-> verify-sign '{"to-verify":{"data":"hello world","signed_data":"MIIM...","id":"abc123..."},"to-sign":{"data":"new data","id":"abc123..."}}'
+> JSON='{"to-verify":{"data":"hello world","signed_data":"MIIM...","id":"abc123..."},"to-sign":{"data":"new data","id":"abc123..."}}'
+> verify-sign '$JSON'
 Response:
 {
   "signed_data": "MIIM...",
@@ -179,7 +259,8 @@ verify-sign 命令需要完整的 JSON 格式参数，包含 `to-verify` 和 `to
 
 1. 先执行 `sign` 命令获取 `signed_data` 和 `id`：
    ```
-   > sign "hello"
+   > JSON='{"to-sign":{"data":"hello"}}'
+   > sign '$JSON'
    Response:
    {
      "signed_data": "MIIC...（很长的Base64字符串）",
@@ -190,7 +271,8 @@ verify-sign 命令需要完整的 JSON 格式参数，包含 `to-verify` 和 `to
 
 2. 使用步骤1的输出执行 `verify-sign`：
    ```
-   > verify-sign '{"to-verify":{"data":"hello","signed_data":"MIIC...","id":"ABC123..."},"to-sign":{"data":"world","id":"ABC123..."}}'
+   > JSON='{"to-verify":{"data":"hello","signed_data":"MIIC...","id":"ABC123..."},"to-sign":{"data":"world","id":"ABC123..."}}'
+   > verify-sign '$JSON'
    ```
 
 **注意事项：**

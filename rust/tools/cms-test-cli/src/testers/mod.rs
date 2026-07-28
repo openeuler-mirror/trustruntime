@@ -35,7 +35,7 @@ mod scenarios;
 mod security;
 
 pub use concurrent::ConcurrentTester;
-pub use interactive::InteractiveTester;
+pub use interactive::{InteractiveTester, TestError};
 pub use performance::PerformanceTester;
 pub use scenarios::ScenarioRunner;
 pub use security::ProtocolSecurityTester;
