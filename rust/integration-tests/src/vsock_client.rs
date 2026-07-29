@@ -70,16 +70,16 @@ const MSG_TYPE_VERIFY_SIGN_REQ: u32 = 0x12;
 const MSG_TYPE_VERIFY_REQ: u32 = 0x14;
 
 /// 签名请求结构
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct SignRequest {
     #[serde(rename = "to-sign")]
-    to_sign: ToSign,
+    pub to_sign: ToSign,
 }
 
 /// 待签名数据
-#[derive(Serialize, Deserialize)]
-struct ToSign {
-    data: String,
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ToSign {
+    pub data: String,
 }
 
 /// 签名响应结构
@@ -142,10 +142,10 @@ pub struct VerifySignResponse {
 }
 
 /// 验签请求结构
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct VerifyRequest {
     #[serde(rename = "to-verify")]
-    to_verify: ToVerify,
+    pub to_verify: ToVerify,
 }
 
 /// 验签响应结构
