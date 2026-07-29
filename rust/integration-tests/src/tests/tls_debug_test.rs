@@ -155,7 +155,7 @@ fn debug_tls_chain_verification() {
 port = 12345
 
 [log]
-path = "{}/trustring.log"
+path = "{}/trustruntime.log"
 max_file_size = 10
 max_roll_count = 10
 

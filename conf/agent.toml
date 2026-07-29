@@ -18,7 +18,7 @@ port = 12345
 # =============================================================================
 [log]
 # 日志文件路径（必填）
-path = "/var/log/trustruntime/trustring.log"
+path = "/var/log/trustruntime/trustruntime.log"
 
 # 日志级别（可选，默认 "info"）
 # 可选值: "trace", "debug", "info", "warn", "error"

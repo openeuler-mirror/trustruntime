@@ -110,7 +110,7 @@ max_connections = 16      # 最大并发连接数（可选，默认 16）
 
 ```toml
 [log]
-path = "/var/log/trustruntime/trustring.log"  # 日志文件路径（必填）
+path = "/var/log/trustruntime/trustruntime.log"  # 日志文件路径（必填）
 level = "info"            # 日志级别（可选，默认 info）
 max_file_size = 10        # 单个日志文件最大大小，单位 MB（必填）
 max_roll_count = 10       # 日志回滚文件个数（必填）
@@ -169,7 +169,7 @@ CRL（证书吊销列表）为可选配置，不配置时跳过 CRL 校验。
 port = 12345
 
 [log]
-path = "/var/log/trustruntime/trustring.log"
+path = "/var/log/trustruntime/trustruntime.log"
 max_file_size = 10
 max_roll_count = 10
 
@@ -223,9 +223,9 @@ journalctl -u trustruntime -f
 #### 日志文件位置
 
 ```
-/var/log/trustruntime/trustring.log
-/var/log/trustruntime/trustring.log.1
-/var/log/trustruntime/trustring.log.2.gz
+/var/log/trustruntime/trustruntime.log
+/var/log/trustruntime/trustruntime.log.1
+/var/log/trustruntime/trustruntime.log.2.gz
 ...
 ```
 
@@ -276,7 +276,7 @@ systemctl restart trustruntime
 查看证书过期告警：
 
 ```bash
-grep "certificate.*expired" /var/log/trustruntime/trustring.log
+grep "certificate.*expired" /var/log/trustruntime/trustruntime.log
 ```
 
 #### 通信证书过期处理

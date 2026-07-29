@@ -405,16 +405,16 @@ ls -laR /etc/cert/cms/
 
 ```toml
 [log]
-path = "/var/log/trustruntime/trustring.log"
+path = "/var/log/trustruntime/trustruntime.log"
 ```
 
-默认路径：`/var/log/trustruntime/trustring.log`
+默认路径：`/var/log/trustruntime/trustruntime.log`
 
 **查看日志**：
 
 ```bash
 # 查看最新日志
-tail -f /var/log/trustruntime/trustring.log
+tail -f /var/log/trustruntime/trustruntime.log
 
 # 查看历史日志
 ls -la /var/log/trustruntime/
@@ -494,7 +494,7 @@ systemctl show trustruntime --property=MemoryCurrent,CPUUsageNSec
 journalctl -u trustruntime -f
 
 # 检查证书过期告警
-grep "expired" /var/log/trustruntime/trustring.log
+grep "expired" /var/log/trustruntime/trustruntime.log
 ```
 
 ---

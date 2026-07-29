@@ -297,7 +297,7 @@ impl log4rs::encode::Encode for BasenameEncoder {
 /// 根据LogConfig配置初始化log4rs日志框架，配置滚动文件日志。
 ///
 /// # 配置项
-/// - `path`: 日志文件路径（如`/var/log/trustruntime/trustring.log`）
+/// - `path`: 日志文件路径（如`/var/log/trustruntime/trustruntime.log`）
 /// - `level`: 日志级别枚举（trace/debug/info/warn/error）
 /// - `max_file_size`: 单个日志文件最大大小（MB）
 /// - `max_roll_count`: 归档文件保留数量
