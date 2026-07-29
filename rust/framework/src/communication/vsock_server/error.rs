@@ -24,6 +24,7 @@
 pub const ERROR_HANDLER_PANIC: u32 = 0x00; // 服务端内部异常（插件崩溃、证书加载失败等）
 pub const ERROR_PROTOCOL: u32 = 0x01; // 报文格式异常（版本不匹配、消息解析失败、无处理器等）
 pub const ERROR_MESSAGE_TOO_LONG: u32 = 0x02; // 请求报文过长（超过10KB）
+pub const ERROR_TIMEOUT: u32 = 0x05; // 读超时（内部错误码，用于检查关闭信号）
 pub const ERROR_CONNECTION_CLOSED: u32 = 0xFF; // 连接关闭（内部错误码，不发送给客户端）
 
 /// 协议层配置常量

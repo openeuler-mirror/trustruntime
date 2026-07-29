@@ -60,6 +60,12 @@ use tokio::sync::Semaphore;
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
 
+/// Socket操作超时时间（秒）
+const SOCKET_TIMEOUT_SECS: u64 = 5;
+
+/// vsock关闭超时时间（秒）
+const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
+
 /// vsock传输层实现
 ///
 /// 实现TransportLayer trait，提供基于vsock的TLS安全传输层
@@ -208,7 +214,8 @@ impl TransportLayer for VsockTransport {
         };
 
         if let Some(handle) = handle {
-            let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
+            let result =
+                tokio::time::timeout(Duration::from_secs(SHUTDOWN_TIMEOUT_SECS), handle).await;
 
             match result {
                 Ok(Ok(_)) => {
@@ -220,10 +227,14 @@ impl TransportLayer for VsockTransport {
                     Err(TransportError::StopFailed(e.to_string()))
                 }
                 Err(_) => {
-                    log::warn!("vsock shutdown timeout (5s), listener task may still running");
-                    Err(TransportError::StopFailed(
-                        "shutdown timeout (5s)".to_string(),
-                    ))
+                    log::warn!(
+                        "vsock shutdown timeout ({}s), listener task may still running",
+                        SHUTDOWN_TIMEOUT_SECS
+                    );
+                    Err(TransportError::StopFailed(format!(
+                        "shutdown timeout ({}s)",
+                        SHUTDOWN_TIMEOUT_SECS
+                    )))
                 }
             }
         } else {

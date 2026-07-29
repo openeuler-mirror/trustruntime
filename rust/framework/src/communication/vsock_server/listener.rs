@@ -74,6 +74,7 @@ pub async fn listener_loop_async(
                     handlers.clone(),
                     semaphore.clone(),
                     ssl_acceptor.clone(),
+                    shutdown_signal.clone(),
                 );
             }
             Ok(Err(ref e))
@@ -106,12 +107,14 @@ pub async fn listener_loop_async(
 /// * `handlers` - 消息处理器映射
 /// * `semaphore` - 并发连接限制信号量
 /// * `ssl_acceptor` - TLS服务端接收器
+/// * `shutdown_signal` - 优雅关闭信号
 #[cfg(target_os = "linux")]
 fn spawn_connection_task(
     stream: vsock::VsockStream,
     handlers: Arc<RwLock<HashMap<u32, Box<dyn DataHandler>>>>,
     semaphore: Arc<Semaphore>,
     ssl_acceptor: Arc<SslAcceptor>,
+    shutdown_signal: Arc<AtomicBool>,
 ) {
     tokio::spawn(async move {
         let _permit = semaphore.acquire().await.ok();
@@ -128,8 +131,9 @@ fn spawn_connection_task(
         match result {
             Ok(Ok(ssl_stream)) => {
                 log::debug!("TLS handshake successful");
+                let shutdown_signal_clone = shutdown_signal.clone();
                 tokio::task::spawn_blocking(move || {
-                    handle_connection_blocking(ssl_stream, handlers_clone);
+                    handle_connection_blocking(ssl_stream, handlers_clone, shutdown_signal_clone);
                 })
                 .await
                 .ok();
