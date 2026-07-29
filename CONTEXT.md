@@ -29,11 +29,44 @@
 ### 通信证书（TLS）
 
 - **用途**: TLS双向认证握手
-- **路径**: `/etc/cert/cms/communication/`
-- **私钥**: 支持密码保护（key_pwd.txt）
-- **CRL**: `/etc/cert/cms/communication/cert.crl`
+- **路径**: `/etc/cert/server/`
+  - 服务端证书：`certificate.crt`
+  - 服务端私钥：`private.key`（支持密码保护）
+  - 私钥密码：`key_pwd.txt`（可选）
+  - CA根证书：`ca_root.crt`
+  - CRL：`cert.crl`（可选）
 - **过期处理（启动时）**: 过期则vsock启动失败，进程不退出，仅日志告警等待手动重启
 - **过期处理（运行中）**: 仅warn日志，不关闭vsock listener，不触发进程重启；客户端可通过TLS握手失败感知证书过期
+
+**测试环境证书结构**（cert-gen生成）：
+```
+test-certs/tls/
+├── ca/                       # 统一CA根证书
+│   ├── ca.crt
+│   └── ca.key
+├── server/node-{a,b,c}/      # 服务端证书
+│   ├── certificate.crt
+│   ├── private.key
+│   ├── key_pwd.txt
+│   ├── ca_root.crt
+│   └── cert.crl
+├── ubse/node-{a,b,c}/        # ubse客户端证书（双用途）
+│   ├── server.pem
+│   ├── server_key.pem
+│   ├── key_pwd.txt
+│   └── trust.pem
+├── lcne/node-{a,b,c}/        # lcne客户端证书
+│   ├── certificate.crt
+│   ├── private.key
+│   ├── key_pwd.txt
+│   ├── ca_root.crt
+│   └── communication.crl
+└── test-clients/             # 测试用特殊客户端证书
+    ├── revoked.crt           # 被吊销的客户端证书
+    ├── wrong-ca.crt          # 错误CA签发的客户端证书
+    ├── client-crl.crt        # 客户端CRL
+    └── other-ca.crt          # 其他CA证书
+```
 
 ### 签名验签证书（CMS）
 
@@ -136,7 +169,7 @@
 ### 路径
 
 - **配置文件**: `/etc/trustruntime/agent.toml`
-- **通信证书**: `/etc/cert/cms/communication/`
+- **通信证书**: `/etc/cert/server/`
 - **签名证书**: `/etc/cert/cms/`
 - **日志目录**: `/var/log/trustruntime/`
 
@@ -151,11 +184,11 @@ ca_root_cert = "/etc/cert/cms/ca_root.crt"
 cms_crl = "/etc/cert/cms/cms.crl"
 
 # 通信证书
-comm_cert = "/etc/cert/cms/communication/certificate.crt"
-comm_key = "/etc/cert/cms/communication/private.key"
-comm_key_pwd = "/etc/cert/cms/communication/key_pwd.txt"
-comm_ca_root = "/etc/cert/cms/communication/ca_root.crt"
-comm_crl = "/etc/cert/cms/communication/cert.crl"
+comm_cert = "/etc/cert/server/certificate.crt"
+comm_key = "/etc/cert/server/private.key"
+comm_key_pwd = "/etc/cert/server/key_pwd.txt"
+comm_ca_root = "/etc/cert/server/ca_root.crt"
+comm_crl = "/etc/cert/server/cert.crl"
 ```
 
 ## 部署

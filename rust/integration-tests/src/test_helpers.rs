@@ -82,7 +82,7 @@ impl TestPaths {
     ///
     /// 默认值：
     /// - cert_base: `$HOME/test-certs` 或 `TEST_CERT_DIR` 环境变量
-    /// - binary_path: `target/debug/trustruntime` 或 `TEST_BINARY_PATH` 环境变量
+    /// - binary_path: `target/release/trustruntime` 或 `TEST_BINARY_PATH` 环境变量
     pub fn new() -> Self {
         let cert_base = std::env::var("TEST_CERT_DIR")
             .map(PathBuf::from)
@@ -93,7 +93,7 @@ impl TestPaths {
 
         let binary_path = std::env::var("TEST_BINARY_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("target/debug/trustruntime"));
+            .unwrap_or_else(|_| PathBuf::from("target/release/trustruntime"));
 
         Self {
             cert_base,
@@ -123,27 +123,29 @@ impl TestPaths {
 
     /// TLS CA证书路径
     pub fn tls_ca_cert(&self) -> PathBuf {
-        self.cert_base.join("tls/ca.crt")
+        self.cert_base.join("tls/ca/ca.crt")
     }
 
     /// TLS客户端证书路径
     pub fn tls_client_cert(&self) -> PathBuf {
-        self.cert_base.join("tls/client/client.crt")
+        self.cert_base.join("tls/ubse/node-a/server.pem")
     }
 
     /// TLS客户端私钥路径
     pub fn tls_client_key(&self) -> PathBuf {
-        self.cert_base.join("tls/client/client.key")
+        self.cert_base.join("tls/ubse/node-a/server_key.pem")
     }
 
     /// 节点TLS服务端证书路径
     pub fn node_tls_cert(&self, node: &str) -> PathBuf {
-        self.cert_base.join(format!("tls/server/{}/node.crt", node))
+        self.cert_base
+            .join(format!("tls/server/{}/certificate.crt", node))
     }
 
     /// 节点TLS服务端私钥路径
     pub fn node_tls_key(&self, node: &str) -> PathBuf {
-        self.cert_base.join(format!("tls/server/{}/node.key", node))
+        self.cert_base
+            .join(format!("tls/server/{}/private.key", node))
     }
 
     /// 自签名CMS证书路径（错误场景测试用）
@@ -178,32 +180,32 @@ impl TestPaths {
 
     /// TLS客户端CRL路径
     pub fn tls_client_crl(&self) -> PathBuf {
-        self.cert_base.join("tls/client-crl.crt")
+        self.cert_base.join("tls/test-clients/client-crl.crt")
     }
 
     /// 已吊销TLS客户端证书路径
     pub fn tls_client_revoked_cert(&self) -> PathBuf {
-        self.cert_base.join("tls/client/revoked.crt")
+        self.cert_base.join("tls/test-clients/revoked.crt")
     }
 
     /// 已吊销TLS客户端私钥路径
     pub fn tls_client_revoked_key(&self) -> PathBuf {
-        self.cert_base.join("tls/client/revoked.key")
+        self.cert_base.join("tls/test-clients/revoked.key")
     }
 
     /// 错误CA签发的TLS客户端证书路径（错误场景测试用）
     pub fn tls_client_wrong_ca_cert(&self) -> PathBuf {
-        self.cert_base.join("tls/client/wrong-ca.crt")
+        self.cert_base.join("tls/test-clients/wrong-ca.crt")
     }
 
     /// 错误CA签发的TLS客户端私钥路径
     pub fn tls_client_wrong_ca_key(&self) -> PathBuf {
-        self.cert_base.join("tls/client/wrong-ca.key")
+        self.cert_base.join("tls/test-clients/wrong-ca.key")
     }
 
     /// TLS私钥密码
     pub fn tls_key_password(&self) -> Option<String> {
-        let pwd_path = self.cert_base.join("tls/key_pwd.txt");
+        let pwd_path = self.cert_base.join("tls/ubse/node-a/key_pwd.txt");
         if pwd_path.exists() {
             std::fs::read_to_string(pwd_path)
                 .map(|s| s.trim().to_string())
@@ -440,14 +442,6 @@ port = 12345
 path = "/tmp/test.log"
 max_file_size = 10
 max_roll_count = 10
-
-[certificate]
-signer_cert = "/tmp/signer.crt"
-signer_key = "/tmp/signer.key"
-ca_root_cert = "/tmp/ca.crt"
-comm_cert = "/tmp/comm.crt"
-comm_key = "/tmp/comm.key"
-comm_ca_root = "/tmp/comm_ca.crt"
 "#,
             )
             .unwrap(),

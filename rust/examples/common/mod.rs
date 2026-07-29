@@ -47,11 +47,11 @@ pub fn connect_vsock_tls(
     builder.set_verify(SslVerifyMode::PEER);
 
     let cert_path = env::var("TRUSTRUNTIME_CLIENT_CERT")
-        .unwrap_or_else(|_| "/etc/cert/cms/communication/client.crt".to_string());
+        .unwrap_or_else(|_| "/etc/cert/server/client.crt".to_string());
     let key_path = env::var("TRUSTRUNTIME_CLIENT_KEY")
-        .unwrap_or_else(|_| "/etc/cert/cms/communication/client.key".to_string());
+        .unwrap_or_else(|_| "/etc/cert/server/client.key".to_string());
     let ca_path = env::var("TRUSTRUNTIME_CA_CERT")
-        .unwrap_or_else(|_| "/etc/cert/cms/communication/ca_root.crt".to_string());
+        .unwrap_or_else(|_| "/etc/cert/server/ca_root.crt".to_string());
 
     let ca_data = std::fs::read(&ca_path).map_err(|e| format!("CA证书读取失败: {}", e))?;
     let ca = X509::from_pem(&ca_data).map_err(|e| format!("CA证书解析失败: {}", e))?;

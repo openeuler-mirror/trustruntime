@@ -277,7 +277,7 @@ impl ProcessManager {
             "TLS key",
         )?;
         self.copy_file(
-            &self.cert_base_path.join("tls/ca.crt"),
+            &self.cert_base_path.join("tls/ca/ca.crt"),
             "/etc/cert/server/ca_root.crt",
             "TLS CA",
         )?;
@@ -343,7 +343,7 @@ impl ProcessManager {
             self.copy_file(crl_path, "/etc/cert/server/cert.crl", "TLS CRL")?;
         } else {
             self.generate_and_copy_empty_crl(
-                &self.cert_base_path.join("tls/ca.crt"),
+                &self.cert_base_path.join("tls/ca/ca.crt"),
                 "/etc/cert/server/cert.crl",
                 "TLS",
             )?;
@@ -384,14 +384,14 @@ impl ProcessManager {
     }
 
     fn setup_key_password(&self) -> Result<(), ProcessError> {
-        let key_pwd_src = self.cert_base_path.join("tls/key_pwd.txt");
+        let key_pwd_src = self.cert_base_path.join("tls/server/node-a/key_pwd.txt");
         if key_pwd_src.exists() {
             self.copy_file(&key_pwd_src, "/etc/cert/server/key_pwd.txt", "key_pwd.txt")?;
         } else {
             self.run_sudo_command(
                 "sh",
-                &["-c", "echo -n '' > /etc/cert/server/key_pwd.txt"],
-                "create empty key_pwd.txt",
+                &["-c", "echo -n 'MyPasswd123' > /etc/cert/server/key_pwd.txt"],
+                "create key_pwd.txt with default password",
             )?;
         }
         Ok(())

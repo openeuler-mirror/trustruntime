@@ -284,11 +284,11 @@ ca_root_cert = "/etc/cert/cms/ca_root.crt"     # CA 根证书（必填）
 cms_crl = "/etc/cert/cms/cms.crl"              # CMS CRL（可选）
 
 # 通信证书
-comm_cert = "/etc/cert/cms/communication/certificate.crt"   # 通信证书（必填）
-comm_key = "/etc/cert/cms/communication/private.key"        # 通信私钥（必填）
-comm_key_pwd = "/etc/cert/cms/communication/key_pwd.txt"    # 私钥密码文件（可选）
-comm_ca_root = "/etc/cert/cms/communication/ca_root.crt"    # 通信 CA 根证书（必填）
-comm_crl = "/etc/cert/cms/communication/cert.crl"           # 通信 CRL（可选）
+comm_cert = "/etc/cert/server/certificate.crt"   # 通信证书（必填）
+comm_key = "/etc/cert/server/private.key"        # 通信私钥（必填）
+comm_key_pwd = "/etc/cert/server/key_pwd.txt"    # 私钥密码文件（可选）
+comm_ca_root = "/etc/cert/server/ca_root.crt"    # 通信 CA 根证书（必填）
+comm_crl = "/etc/cert/server/cert.crl"           # 通信 CRL（可选）
 
 [cert_check]
 interval_hours = 24         # 证书巡检间隔（可选）

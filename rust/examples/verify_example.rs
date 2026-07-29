@@ -31,9 +31,9 @@
 //! # 设置环境变量（可选，默认使用内置值）
 //! export TRUSTRUNTIME_CID=3
 //! export TRUSTRUNTIME_PORT=12345
-//! export TRUSTRUNTIME_CLIENT_CERT=/etc/cert/cms/communication/client.crt
-//! export TRUSTRUNTIME_CLIENT_KEY=/etc/cert/cms/communication/client.key
-//! export TRUSTRUNTIME_CA_CERT=/etc/cert/cms/communication/ca_root.crt
+//! export TRUSTRUNTIME_CLIENT_CERT=/etc/cert/server/client.crt
+//! export TRUSTRUNTIME_CLIENT_KEY=/etc/cert/server/client.key
+//! export TRUSTRUNTIME_CA_CERT=/etc/cert/server/ca_root.crt
 //!
 //! # 编译并运行
 //! cargo run --example verify_example

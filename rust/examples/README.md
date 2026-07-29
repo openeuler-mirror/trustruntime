@@ -50,9 +50,9 @@ cargo run --example verify_example
 
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
-| `TRUSTRUNTIME_CLIENT_CERT` | `/etc/cert/cms/communication/client.crt` | 客户端证书 |
-| `TRUSTRUNTIME_CLIENT_KEY` | `/etc/cert/cms/communication/client.key` | 客户端私钥 |
-| `TRUSTRUNTIME_CA_CERT` | `/etc/cert/cms/communication/ca_root.crt` | CA根证书 |
+| `TRUSTRUNTIME_CLIENT_CERT` | `/etc/cert/server/client.crt` | 客户端证书 |
+| `TRUSTRUNTIME_CLIENT_KEY` | `/etc/cert/server/client.key` | 客户端私钥 |
+| `TRUSTRUNTIME_CA_CERT` | `/etc/cert/server/ca_root.crt` | CA根证书 |
 
 #### 测试证书
 

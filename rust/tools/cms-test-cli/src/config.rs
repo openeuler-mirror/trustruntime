@@ -22,13 +22,13 @@
 //! port = 12345
 //!
 //! [tls_client]
-//! ca_cert = "/path/to/tls/ca.crt"
-//! client_cert = "/path/to/tls/client/client.crt"
-//! client_key = "/path/to/tls/client/client.key"
-//! client_key_pwd = "/path/to/tls/key_pwd.txt"  # 可选
+//! ca_cert = "/path/to/tls/ca/ca.crt"
+//! client_cert = "/path/to/tls/ubse/node-a/server.pem"
+//! client_key = "/path/to/tls/ubse/node-a/server_key.pem"
+//! client_key_pwd = "/path/to/tls/ubse/node-a/key_pwd.txt"  # 可选
 //!
 //! [cms_certs]
-//! ca_cert = "/path/to/cms/ca.crt"
+//! ca_cert = "/path/to/cms/node-a/ca.crt"
 //! signer_cert = "/path/to/cms/node-a/signer.crt"
 //! signer_key = "/path/to/cms/node-a/signer.key"
 //! expired_cert = "/path/to/cms/expired/signer.crt"  # 可选

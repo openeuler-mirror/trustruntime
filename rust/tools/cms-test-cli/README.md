@@ -72,7 +72,7 @@ status                               # 显示连接状态
 ```
 sign <data>                          # 签名接口 (0x10)
 verify <data> <signed_data> <id>     # 验签接口 (0x14)
-verify-sign <verify-json> <sign-json> # 验签+签名接口 (0x12)
+verify-sign <json>                   # 验签+签名接口 (0x12)
 raw <type> <json-body>               # 发送原始请求
 ```
 
@@ -146,7 +146,58 @@ Response:
 {
   "result": 0
 }
+
+> verify-sign '{"to-verify":{"data":"hello world","signed_data":"MIIM...","id":"abc123..."},"to-sign":{"data":"new data","id":"abc123..."}}'
+Response:
+{
+  "signed_data": "MIIM...",
+  "id": "abc123...",
+  "result": 0
+}
 ```
+
+### verify-sign 命令详解
+
+verify-sign 命令需要完整的 JSON 格式参数，包含 `to-verify` 和 `to-sign` 两部分：
+
+**JSON 格式：**
+```json
+{
+  "to-verify": {
+    "data": "<原始数据>",
+    "signed_data": "<Base64编码的签名数据>",
+    "id": "<Base64编码的证书ID>"
+  },
+  "to-sign": {
+    "data": "<新数据>",
+    "id": "<Base64编码的证书ID>"
+  }
+}
+```
+
+**使用步骤：**
+
+1. 先执行 `sign` 命令获取 `signed_data` 和 `id`：
+   ```
+   > sign "hello"
+   Response:
+   {
+     "signed_data": "MIIC...（很长的Base64字符串）",
+     "id": "ABC123...（Base64编码的证书ID）",
+     "result": 0
+   }
+   ```
+
+2. 使用步骤1的输出执行 `verify-sign`：
+   ```
+   > verify-sign '{"to-verify":{"data":"hello","signed_data":"MIIC...","id":"ABC123..."},"to-sign":{"data":"world","id":"ABC123..."}}'
+   ```
+
+**注意事项：**
+- `to-verify.signed_data` 必须是真实的签名数据（从 `sign` 或 `verify-sign` 命令获取）
+- `to-verify.id` 必须是真实的证书ID（从 `sign` 或 `verify-sign` 命令获取）
+- `to-verify.data` 必须与签名时的原始数据一致
+- `to-sign.id` 通常与 `to-verify.id` 相同
 
 ### 性能测试
 
