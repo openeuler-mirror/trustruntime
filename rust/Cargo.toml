@@ -35,6 +35,9 @@ vsock = "0.4"
 async-trait = "0.1"
 libc = "0.2"
 
+[profile.release]
+debug = true
+
 [package]
 name = "examples"
 version.workspace = true

@@ -7,7 +7,7 @@
 # =============================================================================
 [vsock]
 # vsock 端口号（必填）
-port = 12345
+port = 6174
 
 # 最大并发连接数（可选，默认 16）
 # 通过 tokio Semaphore 限流，超过此数量的新连接将等待
@@ -21,7 +21,7 @@ port = 12345
 path = "/var/log/trustruntime/trustruntime.log"
 
 # 日志级别（可选，默认 "info"）
-# 可选值: "trace", "debug", "info", "warn", "error"
+# 可选值: "info", "warn", "error"
 # RUST_LOG 环境变量可覆盖此配置
 # level = "info"
 

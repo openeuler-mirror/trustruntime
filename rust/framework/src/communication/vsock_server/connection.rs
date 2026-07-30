@@ -23,34 +23,30 @@
 //! 依赖：error模块、message模块、transport模块
 
 use super::error::*;
-use super::tls::set_socket_timeout;
-use super::SOCKET_TIMEOUT_SECS;
 use crate::message::VsockMessage;
 use crate::transport::DataHandler;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::time::Duration;
-
-#[cfg(target_os = "linux")]
-use std::os::unix::io::AsRawFd;
 
 /// 处理单个vsock连接的生命周期
 ///
 /// 阻塞式处理连接上的所有消息，直到连接关闭或发生错误
 ///
 /// # 流程
-/// 1. 设置socket读超时（5秒）
-/// 2. 循环读取消息（read_message）
-/// 3. 分发到业务处理器（process_message）
-/// 4. 发送响应或错误
-/// 5. 连接关闭或错误时退出循环
+/// 1. 循环读取消息（read_message）
+/// 2. 分发到业务处理器（process_message）
+/// 3. 发送响应或错误
+/// 4. 连接关闭或错误时退出循环
 ///
 /// # Arguments
 /// * `ssl_stream` - TLS加密的vsock流
 /// * `handlers` - 消息处理器映射（msg_type -> DataHandler）
 /// * `shutdown_signal` - 优雅关闭信号
+///
+/// # 注意
+/// socket超时已在TLS握手前设置（listener.rs），此处无需重复设置
 #[cfg(target_os = "linux")]
 pub fn handle_connection_blocking(
     mut ssl_stream: openssl::ssl::SslStream<vsock::VsockStream>,
@@ -60,11 +56,6 @@ pub fn handle_connection_blocking(
     use std::io::Write;
 
     log::debug!("New vsock connection established");
-
-    let fd = ssl_stream.get_ref().as_raw_fd();
-    if let Err(e) = set_socket_timeout(fd, Duration::from_secs(SOCKET_TIMEOUT_SECS)) {
-        log::warn!("Failed to set socket timeout: {}", e);
-    }
 
     loop {
         if shutdown_signal.load(Ordering::SeqCst) {

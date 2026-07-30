@@ -34,6 +34,9 @@ pub const MAX_MESSAGE_SIZE: u32 = 10240; // 最大消息长度（10KB，interfac
 pub const MAX_CONCURRENT_CONNECTIONS: usize = 16; // 最大并发连接数（AGENTS.md 第63节）
 pub const HEADER_SIZE: usize = 16; // 消息头长度（seq + version + msg_type + len）
 
+/// shutdown信号检查间隔（毫秒）
+pub const SHUTDOWN_CHECK_INTERVAL_MS: u64 = 100;
+
 /// vsock传输层错误类型
 ///
 /// 架构决策：错误类型细分便于定位问题
