@@ -497,7 +497,7 @@ impl ProcessManager {
         config: &NodeConfig,
         temp_dir: &Path,
     ) -> Result<(), ProcessError> {
-        let log_path = temp_dir.join("trustring.log");
+        let log_path = temp_dir.join("trustruntime.log");
 
         let config_content = format!(
             r#"

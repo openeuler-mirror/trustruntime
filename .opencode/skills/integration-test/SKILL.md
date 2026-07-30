@@ -58,7 +58,7 @@ cargo test --release -p integration-tests -- --include-ignored --test-threads=1
 | TLS/vsock errors | Use `--test-threads=1` |
 | vsock connection refused | Check vsock module loaded |
 | Certificate not found | Run with `--force` |
-| Process timeout | Check `/tmp/.tmp*/trustring.log` |
+| Process timeout | Check `/tmp/.tmp*/trustruntime.log` |
 
 ## Test Categories
 

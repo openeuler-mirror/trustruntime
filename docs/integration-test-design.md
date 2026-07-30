@@ -164,7 +164,7 @@ lsmod | grep vsock
 port = {{PORT}}
 
 [log]
-path = "/tmp/{{NODE_NAME}}/trustring.log"
+path = "/tmp/{{NODE_NAME}}/trustruntime.log"
 max_file_size = 10
 max_roll_count = 10
 

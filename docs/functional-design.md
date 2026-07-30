@@ -271,7 +271,7 @@ port = 12345                # vsock 端口号（必填）
 max_connections = 16        # 最大并发连接数（可选）
 
 [log]
-path = "/var/log/trustruntime/trustring.log"  # 日志文件路径（必填）
+path = "/var/log/trustruntime/trustruntime.log"  # 日志文件路径（必填）
 level = "info"              # 日志级别（可选）
 max_file_size = 10          # 单文件最大大小 MB（必填）
 max_roll_count = 10         # 回滚文件个数（必填）

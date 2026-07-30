@@ -169,12 +169,12 @@ impl LogLevel {
 /// 日志配置
 ///
 /// 使用log4rs实现日志滚动，限制日志文件大小和数量。
-/// 日志文件路径通常为 /var/log/trustruntime/trustring.log（参见ADR-0006）
+/// 日志文件路径通常为 /var/log/trustruntime/trustruntime.log（参见ADR-0006）
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct LogConfig {
     /// 日志文件路径
     ///
-    /// 例如：/var/log/trustruntime/trustring.log
+    /// 例如：/var/log/trustruntime/trustruntime.log
     pub path: String,
 
     /// 日志级别（默认info）

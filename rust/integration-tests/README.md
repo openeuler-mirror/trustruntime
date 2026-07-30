@@ -113,7 +113,7 @@ cd ../scripts && ./run-integration-tests.sh --cert-dir ~/my-certs
 | TLS/vsock错误 | 使用 `--test-threads=1`（并行测试导致端口冲突） |
 | vsock连接拒绝 | 检查 `lsmod | grep vsock`，重新加载模块 |
 | 证书未找到 | 运行 `cd ../scripts && ./run-integration-tests.sh --force` |
-| 进程超时 | 检查 `/tmp/.tmp*/trustring.log` 日志 |
+| 进程超时 | 检查 `/tmp/.tmp*/trustruntime.log` 日志 |
 | TLS握手失败 | 验证证书路径与配置匹配 |
 
 ## 详细设计
