@@ -120,7 +120,7 @@ fn configure_basic_qemu_command(qemu_cmd: &mut Command, qemu_launch_opts: &QemuL
         .args(["-m", &format!("size={mem_size}M")])
         .args(["-overcommit", "mem-lock=off"])
         .args(["-smp", &format!("{smp_cores}")])
-        .args(["-append", "rdinit=init console=ttyAMA0 rodata=full nosoftlockup rcupdate.rcu_cpu_stall_timeout=3000 ubfabric_addr=0x30200FF000"])
+        .args(["-append", "rdinit=init console=ttyAMA0 rodata=full nosoftlockup rcupdate.rcu_cpu_stall_timeout=3000"])
         .args(["-nographic"])
         .args(["-object", "rme-guest,id=rme0,measurement-algorithm=sha512,hisi-cca-enable=off"])
         .args(["-device", &format!("vhost-vsock-pci,guest-cid={cid}")]);
@@ -357,7 +357,7 @@ pub async fn launch_qemu(
 mod tests {
     use super::*;
     use crate::cli::{PortForwardValue, VirtiofsBind, VolumeValue};
-    use crate::utils::{create_vm_work_dir, ExecutablePaths};
+    use crate::utils::{ExecutablePaths, create_vm_work_dir};
     use mockrs::mock;
     use std::net::Ipv4Addr;
     use std::path::PathBuf;
@@ -498,13 +498,9 @@ mod tests {
         std::fs::write(&file_path, "data").unwrap();
 
         let mut cmd = Command::new("qemu-system-aarch64");
-        let result = configure_virtio_9p_single(
-            &mut cmd,
-            &PathBuf::from(&file_path),
-            "tag".to_string(),
-            0,
-        )
-        .await;
+        let result =
+            configure_virtio_9p_single(&mut cmd, &PathBuf::from(&file_path), "tag".to_string(), 0)
+                .await;
         assert!(result.is_err());
     }
 

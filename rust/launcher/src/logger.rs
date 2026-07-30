@@ -11,10 +11,10 @@
  */
 
 use log::LevelFilter;
-use log4rs::append::rolling_file::policy::compound::{
-    roll::fixed_window::FixedWindowRollerBuilder, trigger::size::SizeTrigger, CompoundPolicy,
-};
 use log4rs::append::rolling_file::RollingFileAppender;
+use log4rs::append::rolling_file::policy::compound::{
+    CompoundPolicy, roll::fixed_window::FixedWindowRollerBuilder, trigger::size::SizeTrigger,
+};
 use log4rs::config::{Appender, Config, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use std::error::Error;
@@ -45,7 +45,9 @@ pub fn init_logger(
         .to_str()
         .unwrap_or("trtlauncher");
     let binding = log_dir.join(format!("{}.{{}}", log_filename));
-    let archive_pattern = binding.to_str().unwrap_or("/var/log/trustruntime/trtlauncher.{}");
+    let archive_pattern = binding
+        .to_str()
+        .unwrap_or("/var/log/trustruntime/trtlauncher.{}");
     let roller = FixedWindowRollerBuilder::default()
         .base(1)
         .build(archive_pattern, max_backups)?;
@@ -86,9 +88,19 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let log_path1 = dir.path().join("test1.log");
         let log_path2 = dir.path().join("test2.log");
-        let result1 = init_logger(&log_path1.to_string_lossy(), 1024 * 1024, 5, LevelFilter::Debug);
+        let result1 = init_logger(
+            &log_path1.to_string_lossy(),
+            1024 * 1024,
+            5,
+            LevelFilter::Debug,
+        );
         assert!(result1.is_ok());
-        let result2 = init_logger(&log_path2.to_string_lossy(), 1024 * 1024, 5, LevelFilter::Debug);
+        let result2 = init_logger(
+            &log_path2.to_string_lossy(),
+            1024 * 1024,
+            5,
+            LevelFilter::Debug,
+        );
         assert!(result2.is_err());
     }
 }
