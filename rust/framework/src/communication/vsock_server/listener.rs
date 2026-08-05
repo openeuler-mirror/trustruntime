@@ -24,13 +24,18 @@
 //! 依赖：connection模块、transport模块
 
 use super::connection::handle_connection_blocking;
+use super::error::SHUTDOWN_CHECK_INTERVAL_MS;
+use super::tls::set_socket_timeout;
+use super::SOCKET_TIMEOUT_SECS;
 use crate::transport::DataHandler;
 use openssl::ssl::SslAcceptor;
 use std::collections::HashMap;
+use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::RwLock;
-use tokio::sync::Semaphore;
+use std::time::Duration;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// vsock监听循环（异步）
 ///
@@ -117,35 +122,104 @@ fn spawn_connection_task(
     shutdown_signal: Arc<AtomicBool>,
 ) {
     tokio::spawn(async move {
-        let _permit = semaphore.acquire().await.ok();
-        if _permit.is_none() {
-            log::warn!("Failed to acquire semaphore permit");
-            return;
-        }
+        let _permit = match acquire_semaphore_with_shutdown(semaphore, &shutdown_signal).await {
+            Some(p) => p,
+            None => return,
+        };
 
         log::debug!("Semaphore permit acquired, starting TLS handshake");
 
-        let handlers_clone = handlers.clone();
-        let result = tokio::task::spawn_blocking(move || ssl_acceptor.accept(stream)).await;
-
-        match result {
-            Ok(Ok(ssl_stream)) => {
-                log::debug!("TLS handshake successful");
-                let shutdown_signal_clone = shutdown_signal.clone();
-                tokio::task::spawn_blocking(move || {
-                    handle_connection_blocking(ssl_stream, handlers_clone, shutdown_signal_clone);
-                })
-                .await
-                .ok();
-            }
-            Ok(Err(e)) => {
-                log::warn!("TLS handshake failed: {}", e);
-            }
-            Err(e) => {
-                log::warn!("spawn_blocking error during TLS handshake: {}", e);
-            }
+        if let Err(e) =
+            set_socket_timeout(stream.as_raw_fd(), Duration::from_secs(SOCKET_TIMEOUT_SECS))
+        {
+            log::warn!("Failed to set socket timeout for TLS handshake: {}", e);
         }
+
+        let ssl_stream =
+            match accept_tls_with_shutdown(ssl_acceptor, stream, &shutdown_signal).await {
+                Some(Ok(s)) => s,
+                Some(Err(e)) => {
+                    log::warn!("TLS handshake failed: {}", e);
+                    return;
+                }
+                None => return,
+            };
+
+        log::debug!("TLS handshake successful");
+        tokio::task::spawn_blocking(move || {
+            handle_connection_blocking(ssl_stream, handlers, shutdown_signal);
+        })
+        .await
+        .ok();
 
         log::debug!("Connection task completed, semaphore permit released");
     });
+}
+
+/// 获取信号量许可（响应shutdown信号）
+#[cfg(target_os = "linux")]
+async fn acquire_semaphore_with_shutdown(
+    semaphore: Arc<Semaphore>,
+    shutdown_signal: &Arc<AtomicBool>,
+) -> Option<OwnedSemaphorePermit> {
+    let shutdown_clone = shutdown_signal.clone();
+
+    tokio::select! {
+        result = semaphore.acquire_owned() => match result {
+            Ok(p) => Some(p),
+            Err(_) => {
+                log::warn!("Connection rejected: semaphore closed");
+                None
+            }
+        },
+        _ = wait_for_shutdown(shutdown_clone) => {
+            log::info!("Connection rejected: server shutting down");
+            None
+        }
+    }
+}
+
+/// 执行TLS握手（响应shutdown信号）
+#[cfg(target_os = "linux")]
+async fn accept_tls_with_shutdown(
+    ssl_acceptor: Arc<SslAcceptor>,
+    stream: vsock::VsockStream,
+    shutdown_signal: &Arc<AtomicBool>,
+) -> Option<
+    Result<
+        openssl::ssl::SslStream<vsock::VsockStream>,
+        openssl::ssl::HandshakeError<vsock::VsockStream>,
+    >,
+> {
+    let shutdown_clone = shutdown_signal.clone();
+    let accept_result = tokio::task::spawn_blocking(move || ssl_acceptor.accept(stream));
+
+    let result = tokio::select! {
+        res = accept_result => res,
+        _ = wait_for_shutdown(shutdown_clone) => {
+            log::info!("Connection rejected: server shutting down during TLS handshake");
+            return None;
+        }
+    };
+
+    match result {
+        Ok(inner) => Some(inner),
+        Err(e) => {
+            log::warn!("spawn_blocking error during TLS handshake: {}", e);
+            None
+        }
+    }
+}
+
+/// 等待shutdown信号
+///
+/// 定期检查shutdown信号，用于tokio::select!中实现可中断的等待
+///
+/// # Arguments
+/// * `signal` - shutdown信号
+#[cfg(target_os = "linux")]
+async fn wait_for_shutdown(signal: Arc<AtomicBool>) {
+    while !signal.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(SHUTDOWN_CHECK_INTERVAL_MS)).await;
+    }
 }
