@@ -26,7 +26,7 @@ virt-customize -a tmp/openEuler.qcow2 \
     --network \
     --install tar \
     --install rinetd \
-    --append-line /etc/rinetd.conf:"0.0.0.0 34255 127.0.0.1 8799" \
+    --append-line /etc/rinetd.conf:"10.0.2.15 34255 127.0.0.1 8799" \
     --run-command 'systemctl enable rinetd' \
     --copy-in input/:/tmp \
     --run-command 'rpm -ivh /tmp/input/*.rpm --nodeps --replacefiles' \

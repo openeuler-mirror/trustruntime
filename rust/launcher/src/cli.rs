@@ -448,18 +448,38 @@ pub fn print_help(help_type: &HelpType) {
             println!("  --kernel <path>             Path to kernel image (e.g., ./Image)");
             println!("  --payload <path>            Path to payload image (e.g., abc.img)");
             println!("  --app-conf <path>           Path to app config file (e.g., launch.conf)");
-            println!("  --volume <hostdir:guestdir> (Optional) Shared directory for vm (e.g., /root/workspace/:/root/app/)");
-            println!("  --virtiofs <host:guest>     (Optional) VirtioFS mapping (supports multiple instances)");
-            println!("                              Example: --virtiofs xxx:xxx --virtiofs yyy:yyy");
-            println!("  --port-forward <spec>       (Optional) Port forwarding spec (supports multiple instances)");
+            println!(
+                "  --volume <hostdir:guestdir> (Optional) Shared directory for vm (e.g., /root/workspace/:/root/app/)"
+            );
+            println!(
+                "  --virtiofs <host:guest>     (Optional) VirtioFS mapping (supports multiple instances)"
+            );
+            println!(
+                "                              Example: --virtiofs xxx:xxx --virtiofs yyy:yyy"
+            );
+            println!(
+                "  --port-forward <spec>       (Optional) Port forwarding spec (supports multiple instances)"
+            );
             println!("                              Format: [hostip:]hostport:guestport");
-            println!("                              Example: --port-forward 8080:80 --port-forward 192.168.1.1:9090:90");
-            println!("  --qemu-args <quoted-args>   (Optional) Extra QEMU arguments (use quotes for spaces)");
+            println!(
+                "                              Example: --port-forward 8080:80 --port-forward 192.168.1.1:9090:90"
+            );
+            println!(
+                "  --qemu-args <quoted-args>   (Optional) Extra QEMU arguments (use quotes for spaces)"
+            );
             println!("                              Example: --qemu-args=\"--arg1=c1 --arg2=c2\"");
-            println!("  --mem <num>                 (Optional) Memory size in MB (positive integer, e.g., 2048)");
-            println!("  --smp <num>                 (Optional) Number of CPU cores (integer ≥1, e.g., 2)");
-            println!("  --cid <num>                 (Optional) CID for vhost-vsock (integer ≥3, e.g., 3)");
-            println!("  --runtime <string>          (Optional) Runtime type (e.g., qemu, default: qemu)");
+            println!(
+                "  --mem <num>                 (Optional) Memory size in MB (positive integer, e.g., 2048)"
+            );
+            println!(
+                "  --smp <num>                 (Optional) Number of CPU cores (integer ≥1, e.g., 2)"
+            );
+            println!(
+                "  --cid <num>                 (Optional) CID for vhost-vsock (integer ≥3, e.g., 3)"
+            );
+            println!(
+                "  --runtime <string>          (Optional) Runtime type (e.g., qemu, default: qemu)"
+            );
         }
     }
 }
@@ -656,9 +676,8 @@ mod tests {
 
     #[test]
     fn parse_run_args_equals_syntax() {
-        let result = parse_run_args(Box::new(vec![
-            "--runtime=qemu".to_string(),
-        ].into_iter())).unwrap();
+        let result =
+            parse_run_args(Box::new(vec!["--runtime=qemu".to_string()].into_iter())).unwrap();
         if let SubCommand::Run(args) = result {
             assert_eq!(args.runtime, Some("qemu".to_string()));
         } else {
@@ -668,10 +687,10 @@ mod tests {
 
     #[test]
     fn parse_run_args_space_syntax() {
-        let result = parse_run_args(Box::new(vec![
-            "--runtime".to_string(),
-            "qemu".to_string(),
-        ].into_iter())).unwrap();
+        let result = parse_run_args(Box::new(
+            vec!["--runtime".to_string(), "qemu".to_string()].into_iter(),
+        ))
+        .unwrap();
         if let SubCommand::Run(args) = result {
             assert_eq!(args.runtime, Some("qemu".to_string()));
         } else {
@@ -681,17 +700,20 @@ mod tests {
 
     #[test]
     fn parse_run_args_unknown_positional() {
-        assert!(parse_run_args(Box::new(vec![
-            "unknown_positional".to_string(),
-        ].into_iter())).is_err());
+        assert!(
+            parse_run_args(Box::new(
+                vec!["unknown_positional".to_string(),].into_iter()
+            ))
+            .is_err()
+        );
     }
 
     #[test]
     fn parse_run_args_mem_option() {
-        let result = parse_run_args(Box::new(vec![
-            "--mem".to_string(),
-            "2048".to_string(),
-        ].into_iter())).unwrap();
+        let result = parse_run_args(Box::new(
+            vec!["--mem".to_string(), "2048".to_string()].into_iter(),
+        ))
+        .unwrap();
         if let SubCommand::Run(args) = result {
             assert_eq!(args.mem, Some(2048));
         }
@@ -699,39 +721,41 @@ mod tests {
 
     #[test]
     fn parse_run_args_missing_value() {
-        assert!(parse_run_args(Box::new(vec![
-            "--runtime".to_string(),
-        ].into_iter())).is_err());
+        assert!(parse_run_args(Box::new(vec!["--runtime".to_string(),].into_iter())).is_err());
     }
 
     #[test]
     fn parse_run_args_full_options() {
         let dir = tempfile::TempDir::new().unwrap();
         let dir_path = dir.path().to_string_lossy().to_string();
-        let result = parse_run_args(Box::new(vec![
-            "--kernel".to_string(),
-            "/path".to_string(),
-            "--payload".to_string(),
-            "/payload".to_string(),
-            "--runtime".to_string(),
-            "qemu".to_string(),
-            "--mem".to_string(),
-            "2048".to_string(),
-            "--smp".to_string(),
-            "2".to_string(),
-            "--cid".to_string(),
-            "3".to_string(),
-            "--app-conf".to_string(),
-            "/conf".to_string(),
-            "--qemu-args".to_string(),
-            "--extra".to_string(),
-            "--virtiofs".to_string(),
-            "/host:/guest".to_string(),
-            "--port-forward".to_string(),
-            "8080:80".to_string(),
-            "--volume".to_string(),
-            format!("{}:/guest", dir_path),
-        ].into_iter())).unwrap();
+        let result = parse_run_args(Box::new(
+            vec![
+                "--kernel".to_string(),
+                "/path".to_string(),
+                "--payload".to_string(),
+                "/payload".to_string(),
+                "--runtime".to_string(),
+                "qemu".to_string(),
+                "--mem".to_string(),
+                "2048".to_string(),
+                "--smp".to_string(),
+                "2".to_string(),
+                "--cid".to_string(),
+                "3".to_string(),
+                "--app-conf".to_string(),
+                "/conf".to_string(),
+                "--qemu-args".to_string(),
+                "--extra".to_string(),
+                "--virtiofs".to_string(),
+                "/host:/guest".to_string(),
+                "--port-forward".to_string(),
+                "8080:80".to_string(),
+                "--volume".to_string(),
+                format!("{}:/guest", dir_path),
+            ]
+            .into_iter(),
+        ))
+        .unwrap();
         if let SubCommand::Run(args) = result {
             assert_eq!(args.runtime, Some("qemu".to_string()));
             assert_eq!(args.mem, Some(2048));
@@ -773,7 +797,11 @@ mod tests {
     #[cfg(not(feature = "coverage"))]
     fn parse_args_normal() {
         fn mock_get_args_run() -> Vec<String> {
-            vec!["run".to_string(), "--kernel".to_string(), "/path".to_string()]
+            vec![
+                "run".to_string(),
+                "--kernel".to_string(),
+                "/path".to_string(),
+            ]
         }
         let _mocker = mock!(get_args, mock_get_args_run);
         let result = parse_args().unwrap();
