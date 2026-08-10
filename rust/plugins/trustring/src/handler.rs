@@ -551,7 +551,9 @@ impl TrustringPlugin {
         let signer = Signer::new(cms_cert.clone());
 
         let ca_cert = CaCertificate::load(ca_cert_path)?;
-        let crl = crl_path.map(CertificateRevocationList::load).transpose()?;
+        let crl = crl_path
+            .map(|p| CertificateRevocationList::load(p, ca_cert.cert()))
+            .transpose()?;
         let verifier = Verifier::new(ca_cert, crl, cms_cert);
 
         Ok(Self {

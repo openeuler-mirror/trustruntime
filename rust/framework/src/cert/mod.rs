@@ -111,6 +111,9 @@ pub enum CertLoadError {
     /// 安全错误：路径验证失败（symlink、路径遍历等）
     #[error("security error: {0}")]
     SecurityError(String),
+    /// CRL验证错误：签名验证失败或颁发者不匹配
+    #[error("crl verification failed: {0}")]
+    CrlVerificationError(String),
 }
 
 /// 加载X.509证书
@@ -207,6 +210,119 @@ pub fn load_crl(path: &str) -> Result<X509Crl, CertLoadError> {
     X509Crl::from_pem(&data)
         .or_else(|_| X509Crl::from_der(&data))
         .map_err(|_| CertLoadError::InvalidFormat)
+}
+
+/// 检查CRL是否已过期
+///
+/// 算法说明：
+/// - 比较CRL的next_update时间戳与当前时间
+/// - next_update < 当前时间 → CRL已过期
+///
+/// # Arguments
+/// * `crl` - CRL吊销列表
+///
+/// # Returns
+/// * `true` - CRL已过期（next_update < 当前时间）
+/// * `false` - CRL仍在有效期内或next_update字段缺失
+///
+/// # Example
+/// ```text
+/// let crl = load_crl("/path/to/crl.pem")?;
+/// if is_crl_expired(&crl) {
+///     println!("CRL已过期");
+/// }
+/// ```
+pub fn is_crl_expired(crl: &X509Crl) -> bool {
+    match crl.next_update() {
+        Some(next_update) => match get_current_time() {
+            Some(now) => next_update < now,
+            None => true,
+        },
+        None => false,
+    }
+}
+
+/// 验证CRL签名和颁发者
+///
+/// 验证项：
+/// 1. CRL签名验证（使用CA公钥）
+/// 2. CRL颁发者与CA证书subject匹配
+///
+/// # Arguments
+/// * `crl` - CRL吊销列表
+/// * `ca_cert` - CA根证书
+///
+/// # Returns
+/// * `Ok(())` - 验证通过
+/// * `Err(CertLoadError::CrlVerificationError)` - 验证失败
+///
+/// # Example
+/// ```text
+/// let crl = load_crl("/path/to/crl.pem")?;
+/// let ca_cert = load_x509("/path/to/ca.pem")?;
+/// verify_crl(&crl, &ca_cert)?;
+/// ```
+pub fn verify_crl(crl: &X509Crl, ca_cert: &X509) -> Result<(), CertLoadError> {
+    let ca_pubkey = ca_cert.public_key().map_err(|e| {
+        CertLoadError::CrlVerificationError(format!("failed to get CA public key: {}", e))
+    })?;
+
+    if !crl.verify(&ca_pubkey).map_err(|e| {
+        CertLoadError::CrlVerificationError(format!("CRL signature verification failed: {}", e))
+    })? {
+        return Err(CertLoadError::CrlVerificationError(
+            "CRL signature is invalid".to_string(),
+        ));
+    }
+
+    match crl.issuer_name().try_cmp(ca_cert.subject_name()) {
+        Ok(std::cmp::Ordering::Equal) => {}
+        Ok(_) => {
+            return Err(CertLoadError::CrlVerificationError(
+                "CRL issuer does not match CA certificate subject".to_string(),
+            ))
+        }
+        Err(e) => {
+            return Err(CertLoadError::CrlVerificationError(format!(
+                "failed to compare issuer names: {}",
+                e
+            )))
+        }
+    }
+
+    if is_crl_expired(crl) {
+        return Err(CertLoadError::CrlVerificationError(
+            "CRL has expired".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// 加载并验证CRL吊销列表
+///
+/// 加载策略：先尝试PEM格式，失败后尝试DER格式，均失败则返回InvalidFormat错误
+/// 验证策略：验证CRL签名和颁发者
+///
+/// # Arguments
+/// * `crl_path` - CRL文件路径
+/// * `ca_cert` - CA根证书（用于验证签名）
+///
+/// # Returns
+/// * `Ok(X509Crl)` - 加载并验证成功
+/// * `Err(CertLoadError::IoError)` - 文件读取失败
+/// * `Err(CertLoadError::InvalidFormat)` - PEM和DER格式均解析失败
+/// * `Err(CertLoadError::CrlVerificationError)` - CRL验证失败
+///
+/// # Example
+/// ```text
+/// let ca_cert = load_x509("/path/to/ca.pem")?;
+/// let crl = load_and_verify_crl("/path/to/crl.pem", &ca_cert)?;
+/// ```
+pub fn load_and_verify_crl(crl_path: &str, ca_cert: &X509) -> Result<X509Crl, CertLoadError> {
+    let crl = load_crl(crl_path)?;
+    verify_crl(&crl, ca_cert)?;
+    Ok(crl)
 }
 
 /// 提取证书的Subject Key Identifier（SKI）
@@ -372,6 +488,12 @@ unsafe fn extract_eku_oids(eku: *mut std::ffi::c_void) -> Vec<String> {
 
     let stack = eku as *const openssl_sys::stack_st_ASN1_OBJECT;
     let num = openssl_sys::OPENSSL_sk_num(stack as *const _);
+
+    if num <= 0 {
+        log::warn!("OPENSSL_sk_num returned non-positive value: {}", num);
+        return Vec::new();
+    }
+
     let mut oids = Vec::with_capacity(num as usize);
 
     for i in 0..num {
@@ -385,6 +507,8 @@ unsafe fn extract_eku_oids(eku: *mut std::ffi::c_void) -> Vec<String> {
                 let oid = CStr::from_ptr(buf.as_ptr() as *const c_char).to_string_lossy();
                 oids.push(oid.into_owned());
             }
+        } else {
+            log::warn!("OPENSSL_sk_value returned NULL for index {}", i);
         }
     }
     oids
@@ -998,5 +1122,352 @@ mod tests {
         assert!(result.is_ok());
 
         fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn verify_crl_with_valid_signature() {
+        let group =
+            openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
+        let ec_key = openssl::ec::EcKey::generate(&group).unwrap();
+        let pkey = openssl::pkey::PKey::from_ec_key(ec_key.clone()).unwrap();
+
+        let mut name_builder = openssl::x509::X509NameBuilder::new().unwrap();
+        name_builder.append_entry_by_text("CN", "Test CA").unwrap();
+        let name = name_builder.build();
+
+        let mut cert_builder = X509Builder::new().unwrap();
+        cert_builder.set_version(2).unwrap();
+        cert_builder.set_subject_name(&name).unwrap();
+        cert_builder.set_issuer_name(&name).unwrap();
+        cert_builder.set_pubkey(&pkey).unwrap();
+        let not_before = Asn1Time::days_from_now(0).unwrap();
+        let not_after = Asn1Time::days_from_now(365).unwrap();
+        cert_builder.set_not_before(&not_before).unwrap();
+        cert_builder.set_not_after(&not_after).unwrap();
+        let serial = BigNum::from_u32(1).unwrap();
+        cert_builder
+            .set_serial_number(&serial.to_asn1_integer().unwrap())
+            .unwrap();
+        let ctx = cert_builder.x509v3_context(None, None);
+        let ski = SubjectKeyIdentifier::new().build(&ctx).unwrap();
+        cert_builder.append_extension(ski).unwrap();
+        cert_builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+        let ca_cert = cert_builder.build();
+
+        let mut builder = X509CrlBuilder::new().unwrap();
+        builder.set_issuer_name(&name).unwrap();
+        let last_update = Asn1Time::days_from_now(0).unwrap();
+        let next_update = Asn1Time::days_from_now(365).unwrap();
+        builder.set_last_update(&last_update).unwrap();
+        builder.set_next_update(&next_update).unwrap();
+
+        let crl_number =
+            openssl::x509::extension::CrlNumber::new(BigNum::from_u32(1).unwrap()).unwrap();
+        let crl_num_ext = crl_number.build().unwrap();
+        builder.append_extension(crl_num_ext).unwrap();
+
+        let temp_builder = X509Builder::new().unwrap();
+        let ctx = temp_builder.x509v3_context(Some(&ca_cert), None);
+        let aki = openssl::x509::extension::AuthorityKeyIdentifier::new()
+            .keyid(true)
+            .build(&ctx)
+            .unwrap();
+        builder.append_extension(aki).unwrap();
+
+        builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+        let crl = builder.build().unwrap();
+
+        let result = verify_crl(&crl, &ca_cert);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn verify_crl_with_invalid_signature() {
+        let crl = generate_test_crl();
+
+        let group =
+            openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
+        let ec_key = openssl::ec::EcKey::generate(&group).unwrap();
+        let pkey = openssl::pkey::PKey::from_ec_key(ec_key.clone()).unwrap();
+
+        let mut name_builder = openssl::x509::X509NameBuilder::new().unwrap();
+        name_builder.append_entry_by_text("CN", "Wrong CA").unwrap();
+        let name = name_builder.build();
+
+        let mut cert_builder = X509Builder::new().unwrap();
+        cert_builder.set_version(2).unwrap();
+        cert_builder.set_subject_name(&name).unwrap();
+        cert_builder.set_issuer_name(&name).unwrap();
+        cert_builder.set_pubkey(&pkey).unwrap();
+        let not_before = Asn1Time::days_from_now(0).unwrap();
+        let not_after = Asn1Time::days_from_now(365).unwrap();
+        cert_builder.set_not_before(&not_before).unwrap();
+        cert_builder.set_not_after(&not_after).unwrap();
+        let serial = BigNum::from_u32(1).unwrap();
+        cert_builder
+            .set_serial_number(&serial.to_asn1_integer().unwrap())
+            .unwrap();
+        let ctx = cert_builder.x509v3_context(None, None);
+        let ski = SubjectKeyIdentifier::new().build(&ctx).unwrap();
+        cert_builder.append_extension(ski).unwrap();
+        cert_builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+        let wrong_ca_cert = cert_builder.build();
+
+        let result = verify_crl(&crl, &wrong_ca_cert);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            CertLoadError::CrlVerificationError(_)
+        ));
+    }
+
+    #[test]
+    fn verify_crl_with_wrong_issuer() {
+        let group =
+            openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
+        let ec_key = openssl::ec::EcKey::generate(&group).unwrap();
+        let pkey = openssl::pkey::PKey::from_ec_key(ec_key.clone()).unwrap();
+
+        let mut name_builder = openssl::x509::X509NameBuilder::new().unwrap();
+        name_builder.append_entry_by_text("CN", "Test CA").unwrap();
+        let name = name_builder.build();
+
+        let mut cert_builder = X509Builder::new().unwrap();
+        cert_builder.set_version(2).unwrap();
+        cert_builder.set_subject_name(&name).unwrap();
+        cert_builder.set_issuer_name(&name).unwrap();
+        cert_builder.set_pubkey(&pkey).unwrap();
+        let not_before = Asn1Time::days_from_now(0).unwrap();
+        let not_after = Asn1Time::days_from_now(365).unwrap();
+        cert_builder.set_not_before(&not_before).unwrap();
+        cert_builder.set_not_after(&not_after).unwrap();
+        let serial = BigNum::from_u32(1).unwrap();
+        cert_builder
+            .set_serial_number(&serial.to_asn1_integer().unwrap())
+            .unwrap();
+        let ctx = cert_builder.x509v3_context(None, None);
+        let ski = SubjectKeyIdentifier::new().build(&ctx).unwrap();
+        cert_builder.append_extension(ski).unwrap();
+        cert_builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+        let issuer_cert = cert_builder.build();
+
+        let mut builder = X509CrlBuilder::new().unwrap();
+        let mut crl_name_builder = openssl::x509::X509NameBuilder::new().unwrap();
+        crl_name_builder
+            .append_entry_by_text("CN", "Different Issuer")
+            .unwrap();
+        let crl_name = crl_name_builder.build();
+        builder.set_issuer_name(&crl_name).unwrap();
+
+        let last_update = Asn1Time::days_from_now(0).unwrap();
+        let next_update = Asn1Time::days_from_now(365).unwrap();
+        builder.set_last_update(&last_update).unwrap();
+        builder.set_next_update(&next_update).unwrap();
+
+        let crl_number =
+            openssl::x509::extension::CrlNumber::new(BigNum::from_u32(1).unwrap()).unwrap();
+        let crl_num_ext = crl_number.build().unwrap();
+        builder.append_extension(crl_num_ext).unwrap();
+
+        let temp_builder = X509Builder::new().unwrap();
+        let ctx = temp_builder.x509v3_context(Some(&issuer_cert), None);
+        let aki = openssl::x509::extension::AuthorityKeyIdentifier::new()
+            .keyid(true)
+            .build(&ctx)
+            .unwrap();
+        builder.append_extension(aki).unwrap();
+
+        builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+        let crl = builder.build().unwrap();
+
+        let result = verify_crl(&crl, &issuer_cert);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            CertLoadError::CrlVerificationError(_)
+        ));
+    }
+
+    #[test]
+    fn load_and_verify_crl_succeeds() {
+        let temp_dir = std::env::temp_dir().join("framework_cert_crl_verify");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let group =
+            openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
+        let ec_key = openssl::ec::EcKey::generate(&group).unwrap();
+        let pkey = openssl::pkey::PKey::from_ec_key(ec_key.clone()).unwrap();
+
+        let mut name_builder = openssl::x509::X509NameBuilder::new().unwrap();
+        name_builder.append_entry_by_text("CN", "Test CA").unwrap();
+        let name = name_builder.build();
+
+        let mut cert_builder = X509Builder::new().unwrap();
+        cert_builder.set_version(2).unwrap();
+        cert_builder.set_subject_name(&name).unwrap();
+        cert_builder.set_issuer_name(&name).unwrap();
+        cert_builder.set_pubkey(&pkey).unwrap();
+        let not_before = Asn1Time::days_from_now(0).unwrap();
+        let not_after = Asn1Time::days_from_now(365).unwrap();
+        cert_builder.set_not_before(&not_before).unwrap();
+        cert_builder.set_not_after(&not_after).unwrap();
+        let serial = BigNum::from_u32(1).unwrap();
+        cert_builder
+            .set_serial_number(&serial.to_asn1_integer().unwrap())
+            .unwrap();
+        let ctx = cert_builder.x509v3_context(None, None);
+        let ski = SubjectKeyIdentifier::new().build(&ctx).unwrap();
+        cert_builder.append_extension(ski).unwrap();
+        cert_builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+        let ca_cert = cert_builder.build();
+
+        let ca_path = temp_dir.join("ca.crt");
+        fs::write(&ca_path, ca_cert.to_pem().unwrap()).unwrap();
+
+        let mut builder = X509CrlBuilder::new().unwrap();
+        builder.set_issuer_name(&name).unwrap();
+        let last_update = Asn1Time::days_from_now(0).unwrap();
+        let next_update = Asn1Time::days_from_now(365).unwrap();
+        builder.set_last_update(&last_update).unwrap();
+        builder.set_next_update(&next_update).unwrap();
+
+        let crl_number =
+            openssl::x509::extension::CrlNumber::new(BigNum::from_u32(1).unwrap()).unwrap();
+        let crl_num_ext = crl_number.build().unwrap();
+        builder.append_extension(crl_num_ext).unwrap();
+
+        let temp_builder = X509Builder::new().unwrap();
+        let ctx = temp_builder.x509v3_context(Some(&ca_cert), None);
+        let aki = openssl::x509::extension::AuthorityKeyIdentifier::new()
+            .keyid(true)
+            .build(&ctx)
+            .unwrap();
+        builder.append_extension(aki).unwrap();
+
+        builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+        let crl = builder.build().unwrap();
+        let crl_path = temp_dir.join("test.crl");
+        fs::write(&crl_path, crl.to_pem().unwrap()).unwrap();
+
+        let ca_cert_loaded = load_x509(ca_path.to_str().unwrap()).unwrap();
+        let result = load_and_verify_crl(crl_path.to_str().unwrap(), &ca_cert_loaded);
+        assert!(result.is_ok());
+
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn is_crl_expired_returns_true_for_expired_crl() {
+        let group =
+            openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
+        let ec_key = openssl::ec::EcKey::generate(&group).unwrap();
+        let pkey = openssl::pkey::PKey::from_ec_key(ec_key.clone()).unwrap();
+
+        let mut name_builder = openssl::x509::X509NameBuilder::new().unwrap();
+        name_builder.append_entry_by_text("CN", "Test CA").unwrap();
+        let name = name_builder.build();
+
+        let mut cert_builder = X509Builder::new().unwrap();
+        cert_builder.set_version(2).unwrap();
+        cert_builder.set_subject_name(&name).unwrap();
+        cert_builder.set_issuer_name(&name).unwrap();
+        cert_builder.set_pubkey(&pkey).unwrap();
+        let not_before = Asn1Time::days_from_now(0).unwrap();
+        let not_after = Asn1Time::days_from_now(365).unwrap();
+        cert_builder.set_not_before(&not_before).unwrap();
+        cert_builder.set_not_after(&not_after).unwrap();
+        let serial = BigNum::from_u32(1).unwrap();
+        cert_builder
+            .set_serial_number(&serial.to_asn1_integer().unwrap())
+            .unwrap();
+        let ctx = cert_builder.x509v3_context(None, None);
+        let ski = SubjectKeyIdentifier::new().build(&ctx).unwrap();
+        cert_builder.append_extension(ski).unwrap();
+        cert_builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+        let ca_cert = cert_builder.build();
+
+        let mut builder = X509CrlBuilder::new().unwrap();
+        builder.set_issuer_name(&name).unwrap();
+
+        let last_update = Asn1Time::days_from_now(0).unwrap();
+        let next_update = Asn1Time::from_unix(1000000000).unwrap();
+        builder.set_last_update(&last_update).unwrap();
+        builder.set_next_update(&next_update).unwrap();
+
+        let crl_number =
+            openssl::x509::extension::CrlNumber::new(BigNum::from_u32(1).unwrap()).unwrap();
+        let crl_num_ext = crl_number.build().unwrap();
+        builder.append_extension(crl_num_ext).unwrap();
+
+        let temp_builder = X509Builder::new().unwrap();
+        let ctx = temp_builder.x509v3_context(Some(&ca_cert), None);
+        let aki = openssl::x509::extension::AuthorityKeyIdentifier::new()
+            .keyid(true)
+            .build(&ctx)
+            .unwrap();
+        builder.append_extension(aki).unwrap();
+
+        builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+        let crl = builder.build().unwrap();
+
+        assert!(is_crl_expired(&crl));
+    }
+
+    #[test]
+    fn is_crl_expired_returns_false_for_valid_crl() {
+        let group =
+            openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
+        let ec_key = openssl::ec::EcKey::generate(&group).unwrap();
+        let pkey = openssl::pkey::PKey::from_ec_key(ec_key.clone()).unwrap();
+
+        let mut name_builder = openssl::x509::X509NameBuilder::new().unwrap();
+        name_builder.append_entry_by_text("CN", "Test CA").unwrap();
+        let name = name_builder.build();
+
+        let mut cert_builder = X509Builder::new().unwrap();
+        cert_builder.set_version(2).unwrap();
+        cert_builder.set_subject_name(&name).unwrap();
+        cert_builder.set_issuer_name(&name).unwrap();
+        cert_builder.set_pubkey(&pkey).unwrap();
+        let not_before = Asn1Time::days_from_now(0).unwrap();
+        let not_after = Asn1Time::days_from_now(365).unwrap();
+        cert_builder.set_not_before(&not_before).unwrap();
+        cert_builder.set_not_after(&not_after).unwrap();
+        let serial = BigNum::from_u32(1).unwrap();
+        cert_builder
+            .set_serial_number(&serial.to_asn1_integer().unwrap())
+            .unwrap();
+        let ctx = cert_builder.x509v3_context(None, None);
+        let ski = SubjectKeyIdentifier::new().build(&ctx).unwrap();
+        cert_builder.append_extension(ski).unwrap();
+        cert_builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+        let ca_cert = cert_builder.build();
+
+        let mut builder = X509CrlBuilder::new().unwrap();
+        builder.set_issuer_name(&name).unwrap();
+
+        let last_update = Asn1Time::days_from_now(0).unwrap();
+        let next_update = Asn1Time::days_from_now(365).unwrap();
+        builder.set_last_update(&last_update).unwrap();
+        builder.set_next_update(&next_update).unwrap();
+
+        let crl_number =
+            openssl::x509::extension::CrlNumber::new(BigNum::from_u32(1).unwrap()).unwrap();
+        let crl_num_ext = crl_number.build().unwrap();
+        builder.append_extension(crl_num_ext).unwrap();
+
+        let temp_builder = X509Builder::new().unwrap();
+        let ctx = temp_builder.x509v3_context(Some(&ca_cert), None);
+        let aki = openssl::x509::extension::AuthorityKeyIdentifier::new()
+            .keyid(true)
+            .build(&ctx)
+            .unwrap();
+        builder.append_extension(aki).unwrap();
+
+        builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+        let crl = builder.build().unwrap();
+
+        assert!(!is_crl_expired(&crl));
     }
 }

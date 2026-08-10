@@ -302,26 +302,22 @@ impl ProcessManager {
     fn generate_and_copy_empty_crl(
         &self,
         ca_cert_path: &Path,
+        ca_key_path: &Path,
         dst: &str,
         desc: &str,
     ) -> Result<(), ProcessError> {
-        use openssl::ec::{EcGroup, EcKey};
-        use openssl::nid::Nid;
-
         eprintln!("DEBUG: Generating empty {} CRL", desc);
         let ca_cert = openssl::x509::X509::from_pem(
             &fs::read(ca_cert_path).map_err(|e| ProcessError::ConfigError(e.to_string()))?,
         )
         .map_err(|e| ProcessError::ConfigError(e.to_string()))?;
 
-        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)
-            .map_err(|e| ProcessError::ConfigError(format!("Failed to create EC group: {}", e)))?;
-        let temp_ca_key = EcKey::generate(&group)
-            .map_err(|e| ProcessError::ConfigError(format!("Failed to generate EC key: {}", e)))?;
-        let temp_ca_pkey = PKey::from_ec_key(temp_ca_key)
-            .map_err(|e| ProcessError::ConfigError(format!("Failed to create PKey: {}", e)))?;
+        let ca_pkey = PKey::private_key_from_pem(
+            &fs::read(ca_key_path).map_err(|e| ProcessError::ConfigError(e.to_string()))?,
+        )
+        .map_err(|e| ProcessError::ConfigError(format!("Failed to load CA private key: {}", e)))?;
 
-        let empty_crl = Self::generate_empty_crl(&ca_cert, &temp_ca_pkey).map_err(|e| {
+        let empty_crl = Self::generate_empty_crl(&ca_cert, &ca_pkey).map_err(|e| {
             ProcessError::ConfigError(format!("Failed to generate empty CRL: {}", e))
         })?;
 
@@ -344,6 +340,7 @@ impl ProcessManager {
         } else {
             self.generate_and_copy_empty_crl(
                 &self.cert_base_path.join("tls/ca/ca.crt"),
+                &self.cert_base_path.join("tls/ca/ca.key"),
                 "/etc/cert/server/cert.crl",
                 "TLS",
             )?;
