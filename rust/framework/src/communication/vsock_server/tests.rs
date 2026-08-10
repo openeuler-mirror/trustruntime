@@ -303,3 +303,8 @@ fn accept_timeout_error_handling() {
     let e = Error::from_raw_os_error(libc::EWOULDBLOCK);
     assert!(e.raw_os_error() == Some(libc::EWOULDBLOCK));
 }
+
+#[test]
+fn max_idle_time_constant_is_60_seconds() {
+    assert_eq!(MAX_IDLE_SECS, 60);
+}
