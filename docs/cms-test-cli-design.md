@@ -142,9 +142,13 @@ Connected to vsock://1:12346
 |------|------|------|
 | `perf sign` | `--count <n> [--data <text>] [--interval <ms>]` | 签名接口性能测试 |
 | `perf verify` | `--count <n> --signed-data <b64> --id <b64>` | 验签接口性能测试 |
+| `perf verify-sign` | `--count <n> --sign-data <text> [--sign-id <id>] [--interval <ms>]` | 验签+签名接口性能测试（简化模式） |
+| `perf verify-sign` | `--count <n> --sign-data <text> --verify-data <text> --signed-data <b64> --verify-id <b64> [--sign-id <id>] [--interval <ms>]` | 验签+签名接口性能测试（完整模式） |
 | `perf report` | — | 显示最近性能测试统计 |
 
 **输出指标**：Total、Success、Failed、Avg/Min/Max Response Time、Throughput (QPS)、Error Distribution
+
+**verify-sign 简化模式**：只提供 `--sign-data`，工具自动调用 sign 接口获取签名数据用于验签。
 
 ### 3.4 并发测试命令
 
@@ -152,6 +156,8 @@ Connected to vsock://1:12346
 |------|------|------|
 | `concurrent sign` | `--threads <n> --count <n> [--data <text>]` | 签名接口并发测试 |
 | `concurrent verify` | `--threads <n> --count <n> --signed-data <b64> --id <b64>` | 验签接口并发测试 |
+| `concurrent verify-sign` | `--threads <n> --count <n> --sign-data <text> [--sign-id <id>] [--interval <ms>]` | 验签+签名接口并发测试（简化模式） |
+| `concurrent verify-sign` | `--threads <n> --count <n> --sign-data <text> --verify-data <text> --signed-data <b64> --verify-id <b64> [--sign-id <id>] [--interval <ms>]` | 验签+签名接口并发测试（完整模式） |
 | `concurrent report` | — | 显示最近并发测试统计 |
 
 **并发模型**：每个线程建立独立的 TLS over vsock 连接，主线程收集统计。
@@ -517,7 +523,7 @@ cargo run -p cms-test-cli -- --config my-config.toml --command 'scenario two-nod
 ```
 
 **特性：**
-- 使用变量存储 JSON，避免手动转义
+- 使用变量存储 JSON，避免手动转义（仅在命令行模式中需要）
 - 命令格式与REPL命令格式完全一致
 - 执行失败返回非零退出码（成功返回0，失败返回1）
 - 适合CI/CD集成和脚本化测试
@@ -535,8 +541,7 @@ Type 'help' for available commands.
 > connect
 Connected to vsock://1:12345
 
-> JSON='{"to-sign":{"data":"hello world"}}'
-> sign '$JSON'
+> sign '{"to-sign":{"data":"hello world"}}'
 {"signed_data": "MIIM...", "id": "abc123...", "result": 0}
 
 > perf sign --count 100

@@ -484,16 +484,6 @@ cargo run --example verify_and_sign_example
 - TrustRuntime 服务已启动
 - 客户端证书已配置
 
-可通过环境变量配置连接参数：
-
-```bash
-export TRUSTRUNTIME_CID=3
-export TRUSTRUNTIME_PORT=12345
-export TRUSTRUNTIME_CLIENT_CERT=/path/to/client.crt
-export TRUSTRUNTIME_CLIENT_KEY=/path/to/client.key
-export TRUSTRUNTIME_CA_CERT=/path/to/ca_root.crt
-```
-
 ---
 
 ## 9. 相关文档
