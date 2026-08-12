@@ -191,20 +191,21 @@ pub(crate) struct CertificateRevocationList {
 }
 
 impl CertificateRevocationList {
-    /// 加载CRL吊销列表
+    /// 加载并验证CRL吊销列表
     ///
-    /// 从文件路径加载CRL，支持PEM和DER双格式。
+    /// 从文件路径加载CRL，支持PEM和DER双格式，并验证签名和颁发者。
     ///
     /// 架构决策：PEM/DER双格式支持（ADR-0004）
     ///
     /// # Arguments
     /// * `path` - CRL文件路径（支持.pem或.der格式）
+    /// * `ca_cert` - CA根证书（用于验证CRL签名）
     ///
     /// # Returns
-    /// * `Ok(CertificateRevocationList)` - 加载成功
-    /// * `Err(CertLoadError)` - 加载失败
-    pub(crate) fn load(path: &str) -> Result<Self, CertLoadError> {
-        let crl = cert::load_crl(path)?;
+    /// * `Ok(CertificateRevocationList)` - 加载并验证成功
+    /// * `Err(CertLoadError)` - 加载或验证失败
+    pub(crate) fn load(path: &str, ca_cert: &X509) -> Result<Self, CertLoadError> {
+        let crl = cert::load_and_verify_crl(path, ca_cert)?;
         Ok(Self { crl })
     }
 

@@ -307,12 +307,20 @@ impl Verifier {
             let stack = signers_stack as *const OPENSSL_STACK;
             let num = OPENSSL_sk_num(stack);
 
-            if num == 0 {
+            if num <= 0 {
+                log::warn!("OPENSSL_sk_num returned non-positive value: {}", num);
                 OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
                 return None;
             }
 
             let x509_ptr = OPENSSL_sk_value(stack, 0) as *mut X509_sys;
+
+            if x509_ptr.is_null() {
+                log::warn!("OPENSSL_sk_value returned NULL for index 0");
+                OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
+                return None;
+            }
+
             X509_up_ref(x509_ptr);
 
             OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
@@ -339,6 +347,11 @@ impl Verifier {
             None => return Ok(()),
         };
 
+        if trustruntime_framework::cert::is_crl_expired(crl) {
+            log::warn!("CRL has expired, returning error");
+            return Err(VerifyError::CertificateRevoked);
+        }
+
         let certs = unsafe {
             let cms_ptr = cms.as_ptr();
             let certs_stack = CMS_get1_certs(cms_ptr);
@@ -350,9 +363,21 @@ impl Verifier {
             let stack = certs_stack as *const OPENSSL_STACK;
             let num = OPENSSL_sk_num(stack);
 
+            if num <= 0 {
+                log::warn!("OPENSSL_sk_num returned non-positive value: {}", num);
+                OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
+                return Ok(());
+            }
+
             let mut certs_vec = Vec::with_capacity(num as usize);
             for i in 0..num {
                 let x509_ptr = OPENSSL_sk_value(stack, i) as *mut X509_sys;
+
+                if x509_ptr.is_null() {
+                    log::warn!("OPENSSL_sk_value returned NULL for index {}", i);
+                    continue;
+                }
+
                 certs_vec.push(X509::from_ptr(x509_ptr));
             }
 
@@ -911,7 +936,8 @@ mod tests {
             let crl = crl_builder.build().unwrap();
             fs::write(&crl_path, crl.to_pem().unwrap()).unwrap();
 
-            Some(CertificateRevocationList::load(crl_path.to_str().unwrap()).unwrap())
+            let ca_cert_obj = X509::from_pem(&ca_pem).unwrap();
+            Some(CertificateRevocationList::load(crl_path.to_str().unwrap(), &ca_cert_obj).unwrap())
         } else {
             None
         };

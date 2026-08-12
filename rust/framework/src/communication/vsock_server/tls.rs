@@ -125,18 +125,18 @@ pub fn load_tls_certificates(
 /// # Arguments
 /// * `builder` - TLS配置构建器
 /// * `crl_path` - CRL吊销列表路径
-/// * `_ca_cert` - CA根证书（预留参数）
+/// * `ca_cert` - CA根证书（用于验证CRL签名）
 ///
 /// # Returns
 /// - `Ok(())` - 配置成功
-/// - `Err(VsockError)` - CRL加载失败
+/// - `Err(VsockError)` - CRL加载或验证失败
 pub fn configure_crl_verification(
     builder: &mut openssl::ssl::SslAcceptorBuilder,
     crl_path: &str,
-    _ca_cert: &openssl::x509::X509,
+    ca_cert: &openssl::x509::X509,
 ) -> Result<(), VsockError> {
-    let crl =
-        crate::cert::load_crl(crl_path).map_err(|e| VsockError::TlsConfigError(e.to_string()))?;
+    let crl = crate::cert::load_and_verify_crl(crl_path, ca_cert)
+        .map_err(|e| VsockError::TlsConfigError(e.to_string()))?;
 
     builder.set_verify_callback(
         SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT,
@@ -162,6 +162,11 @@ fn verify_cert_with_crl(
     crl: &openssl::x509::X509Crl,
 ) -> bool {
     if !ok {
+        return false;
+    }
+
+    if crate::cert::is_crl_expired(crl) {
+        log::warn!("CRL has expired, rejecting certificate");
         return false;
     }
 
