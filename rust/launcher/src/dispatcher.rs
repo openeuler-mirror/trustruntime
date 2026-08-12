@@ -40,6 +40,8 @@ pub struct LauncherConfig {
     pub memory: u64,
     #[serde(rename = "cid")]
     pub cid: u32,
+    #[serde(default, rename = "qemu_args")]
+    pub qemu_args: Option<String>,
 }
 
 pub fn validate_config(config: &LauncherConfig) -> Result<(), Box<dyn Error>> {
@@ -76,7 +78,7 @@ fn check_param_exists(opt_str: Option<String>, arg_name: &str) -> Result<PathBuf
 
 fn config_custom(
     config_path: &PathBuf,
-) -> Result<(PathBuf, PathBuf, u32, PathBuf, u32), Box<dyn Error>> {
+) -> Result<(PathBuf, PathBuf, u32, PathBuf, u32, Option<String>), Box<dyn Error>> {
     let content = fs::read_to_string(config_path)?;
     let config: LauncherConfig = serde_json::from_str(&content)?;
     validate_config(&config)?;
@@ -88,12 +90,13 @@ fn config_custom(
         memory,
         PathBuf::from(config.certdir),
         config.cid,
+        config.qemu_args,
     ))
 }
 
 fn analyze_required_args(
     cli_args: &RunArgs,
-) -> Result<(PathBuf, PathBuf, Option<PathBuf>, u32, u32), Box<dyn Error>> {
+) -> Result<(PathBuf, PathBuf, Option<PathBuf>, u32, u32, Option<String>), Box<dyn Error>> {
     match &cli_args.app_conf {
         Some(conf) => {
             info!("--app-conf is exists, using conf file");
@@ -105,8 +108,16 @@ fn analyze_required_args(
                 )
                 .into());
             }
-            let (image_path, payload_path, mem, cert_dir, cid) = config_custom(&config_path)?;
-            Ok((image_path, payload_path, Some(cert_dir), mem, cid))
+            let (image_path, payload_path, mem, cert_dir, cid, qemu_args) =
+                config_custom(&config_path)?;
+            Ok((
+                image_path,
+                payload_path,
+                Some(cert_dir),
+                mem,
+                cid,
+                qemu_args,
+            ))
         }
         None => {
             info!("--app-conf is not exists, using cmd line");
@@ -114,19 +125,20 @@ fn analyze_required_args(
             let image_path = check_param_exists(cli_args.kernel.clone(), "--kernel")?;
             let mem = cli_args.mem.unwrap_or(DEFAULT_MEM) as u32;
             let cid = cli_args.cid.unwrap_or(DEFAULT_CID);
-            Ok((image_path, payload_path, None, mem, cid))
+            Ok((image_path, payload_path, None, mem, cid, None))
         }
     }
 }
 
 fn cli_args_to_qemu_opts(cli_args: &RunArgs) -> Result<QemuLaunchOpts, Box<dyn Error>> {
-    let (image_path, payload_path, cert_dir, mem, cid) = analyze_required_args(cli_args)?;
+    let (image_path, payload_path, cert_dir, mem, cid, qemu_args) =
+        analyze_required_args(cli_args)?;
 
     Ok(QemuLaunchOpts {
         virtiofs_vols: cli_args.virtiofs.clone(),
         published_ports: cli_args.port_forward.clone(),
         image_path,
-        qemu_args: cli_args.qemu_args.clone(),
+        qemu_args,
         payload: Some(payload_path),
         cert_dir: cert_dir.clone(),
         vol_9p_paths: cli_args.volume.clone(),
@@ -183,15 +195,19 @@ mod tests {
         certdir: &str,
         memory: u64,
         cid: u32,
+        qemu_args: Option<&str>,
     ) -> String {
-        serde_json::json!({
+        let mut json = serde_json::json!({
             "certdir": certdir,
             "image": image_path,
             "payload": payload_path,
             "memory": memory,
             "cid": cid
-        })
-        .to_string()
+        });
+        if let Some(args) = qemu_args {
+            json["qemu_args"] = serde_json::Value::String(args.to_string());
+        }
+        json.to_string()
     }
 
     #[test]
@@ -210,6 +226,7 @@ mod tests {
             payload: payload_path.to_string_lossy().to_string(),
             memory: 2048,
             cid: 3,
+            qemu_args: None,
         };
         assert!(validate_config(&config).is_ok());
     }
@@ -228,6 +245,7 @@ mod tests {
             payload: payload_path.to_string_lossy().to_string(),
             memory: 2048,
             cid: 3,
+            qemu_args: None,
         };
         assert!(validate_config(&config).is_err());
     }
@@ -246,6 +264,7 @@ mod tests {
             payload: payload_path.to_string_lossy().to_string(),
             memory: 2048,
             cid: 3,
+            qemu_args: None,
         };
         assert!(validate_config(&config).is_err());
     }
@@ -266,6 +285,7 @@ mod tests {
             payload: payload_path.to_string_lossy().to_string(),
             memory: 2048,
             cid: 3,
+            qemu_args: None,
         };
         assert!(validate_config(&config).is_err());
     }
@@ -308,14 +328,16 @@ mod tests {
             &cert_dir.to_string_lossy(),
             2048,
             3,
+            None,
         );
         fs::write(&config_path, &json).unwrap();
 
         let result = config_custom(&PathBuf::from(config_path.to_string_lossy().to_string()));
         assert!(result.is_ok());
-        let (_image, _payload, mem, _certdir, cid) = result.unwrap();
+        let (_image, _payload, mem, _certdir, cid, qemu_args) = result.unwrap();
         assert_eq!(mem, 2048);
         assert_eq!(cid, 3);
+        assert!(qemu_args.is_none());
     }
 
     #[test]
@@ -345,6 +367,7 @@ mod tests {
             &cert_dir.to_string_lossy(),
             2048,
             3,
+            None,
         );
         fs::write(&config_path, &json).unwrap();
 
@@ -354,8 +377,9 @@ mod tests {
         };
         let result = analyze_required_args(&cli_args);
         assert!(result.is_ok());
-        let (_, _, cert_dir_opt, _, _) = result.unwrap();
+        let (_, _, cert_dir_opt, _, _, qemu_args) = result.unwrap();
         assert!(cert_dir_opt.is_some());
+        assert!(qemu_args.is_none());
     }
 
     #[test]
@@ -375,10 +399,11 @@ mod tests {
         };
         let result = analyze_required_args(&cli_args);
         assert!(result.is_ok());
-        let (_, _, cert_dir_opt, mem, cid) = result.unwrap();
+        let (_, _, cert_dir_opt, mem, cid, qemu_args) = result.unwrap();
         assert!(cert_dir_opt.is_none());
         assert_eq!(mem, 2048);
         assert_eq!(cid, 3);
+        assert!(qemu_args.is_none());
     }
 
     #[test]
@@ -469,6 +494,7 @@ mod tests {
             &cert_dir.to_string_lossy(),
             2048,
             3,
+            None,
         );
         fs::write(&config_path, &json).unwrap();
 
@@ -480,6 +506,62 @@ mod tests {
         assert!(result.is_ok());
         let opts = result.unwrap();
         assert!(opts.cert_dir.is_some());
+    }
+
+    #[test]
+    fn cli_args_to_qemu_opts_with_qemu_args() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let image_path = dir.path().join("image.bin");
+        let payload_path = dir.path().join("payload.cpio");
+        let cert_dir = dir.path().join("certs");
+        fs::write(&image_path, "").unwrap();
+        fs::write(&payload_path, "").unwrap();
+        fs::create_dir(&cert_dir).unwrap();
+
+        let config_path = dir.path().join("config.json");
+        let json = create_launcher_config_json(
+            &image_path.to_string_lossy(),
+            &payload_path.to_string_lossy(),
+            &cert_dir.to_string_lossy(),
+            2048,
+            3,
+            Some("-bios /usr/share/QEMU_EFI_CCA.fd"),
+        );
+        fs::write(&config_path, &json).unwrap();
+
+        let cli_args = RunArgs {
+            app_conf: Some(config_path.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+        let result = cli_args_to_qemu_opts(&cli_args);
+        assert!(result.is_ok());
+        let opts = result.unwrap();
+        assert_eq!(
+            opts.qemu_args,
+            Some("-bios /usr/share/QEMU_EFI_CCA.fd".to_string())
+        );
+    }
+
+    #[test]
+    fn cli_args_to_qemu_opts_without_qemu_args() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel_path = dir.path().join("kernel");
+        let payload_path = dir.path().join("payload.cpio");
+        fs::write(&kernel_path, "").unwrap();
+        fs::write(&payload_path, "").unwrap();
+
+        let cli_args = RunArgs {
+            kernel: Some(kernel_path.to_string_lossy().to_string()),
+            payload: Some(payload_path.to_string_lossy().to_string()),
+            mem: Some(2048),
+            cid: Some(3),
+            smp: Some(2),
+            ..Default::default()
+        };
+        let result = cli_args_to_qemu_opts(&cli_args);
+        assert!(result.is_ok());
+        let opts = result.unwrap();
+        assert!(opts.qemu_args.is_none());
     }
 
     #[test]

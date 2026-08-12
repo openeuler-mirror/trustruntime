@@ -7,7 +7,7 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/bin
-ExecStart=/bin/trt_launcher run --app-conf /etc/trt_launcher/trt_launcher.conf --volume /var/log/ubm/:/var/log/ubm/ --volume /sys/firmware/dmi/tables/:/sys/firmware/dmi/tables/ --volume /var/log/trustruntime/:/var/log/trustruntime/  --qemu-args "-bios /usr/share/QEMU_EFI_CCA.fd -device vfio-hisi-mmcd,sysfsdev=/sys/bus/platform/devices/HISI05A1:00" --port-forward 127.0.0.1:34256:34255 --port-forward 127.0.0.1:10022:22
+ExecStart=/bin/trt_launcher run --app-conf /etc/trt_launcher/trt_launcher.conf --volume /var/log/ubm/:/var/log/ubm/ --volume /sys/firmware/dmi/tables/:/sys/firmware/dmi/tables/ --volume /var/log/trustruntime/:/var/log/trustruntime/ --port-forward 127.0.0.1:34256:34255 --port-forward 127.0.0.1:10022:22
 Restart=always
 RestartSec=10
 StartLimitInterval=0
