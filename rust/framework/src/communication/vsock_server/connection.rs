@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::time::Instant;
 
 /// 处理单个vsock连接的生命周期
 ///
@@ -57,38 +58,55 @@ pub fn handle_connection_blocking(
 
     log::debug!("New vsock connection established");
 
+    let mut idle_start: Option<Instant> = None;
+
     loop {
         if shutdown_signal.load(Ordering::SeqCst) {
             log::debug!("Shutdown signal received, closing connection");
             break;
         }
         match read_message(&mut ssl_stream) {
-            Ok(msg) => match process_message(&msg, &handlers) {
-                Ok(resp_data) => {
-                    let resp = VsockMessage::new(
-                        msg.header.seq,
-                        msg.header.version,
-                        msg.header.msg_type + 1,
-                        resp_data,
-                    );
-                    ssl_stream.write_all(&resp.serialize()).ok();
+            Ok(msg) => {
+                idle_start = None;
+                match process_message(&msg, &handlers) {
+                    Ok(resp_data) => {
+                        let resp = VsockMessage::new(
+                            msg.header.seq,
+                            msg.header.version,
+                            msg.header.msg_type + 1,
+                            resp_data,
+                        );
+                        ssl_stream.write_all(&resp.serialize()).ok();
+                    }
+                    Err(error_code) => {
+                        log::warn!(
+                            "Handler returned error: msg_type 0x{:02X}, error_code 0x{:02X}",
+                            msg.header.msg_type,
+                            error_code
+                        );
+                        send_error_response(
+                            &mut ssl_stream,
+                            msg.header.seq,
+                            msg.header.version,
+                            error_code,
+                        );
+                    }
                 }
-                Err(error_code) => {
-                    log::warn!(
-                        "Handler returned error: msg_type 0x{:02X}, error_code 0x{:02X}",
-                        msg.header.msg_type,
-                        error_code
-                    );
-                    send_error_response(
-                        &mut ssl_stream,
-                        msg.header.seq,
-                        msg.header.version,
-                        error_code,
-                    );
-                }
-            },
+            }
             Err(error_code) => {
                 if error_code == ERROR_TIMEOUT {
+                    let idle_secs = match idle_start {
+                        Some(start) => start.elapsed().as_secs(),
+                        None => {
+                            idle_start = Some(Instant::now());
+                            0
+                        }
+                    };
+
+                    if idle_secs >= MAX_IDLE_SECS {
+                        log::info!("Connection idle timeout: {}s, closing", idle_secs);
+                        break;
+                    }
                     continue;
                 }
                 if error_code != ERROR_CONNECTION_CLOSED {

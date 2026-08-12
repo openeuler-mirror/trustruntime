@@ -37,6 +37,10 @@ pub const HEADER_SIZE: usize = 16; // 消息头长度（seq + version + msg_type
 /// shutdown信号检查间隔（毫秒）
 pub const SHUTDOWN_CHECK_INTERVAL_MS: u64 = 100;
 
+/// 最大空闲时间（秒）- 连接无数据传输的最大时长
+/// 超过此时长后服务端主动断开连接，防止恶意占用
+pub const MAX_IDLE_SECS: u64 = 60;
+
 /// vsock传输层错误类型
 ///
 /// 架构决策：错误类型细分便于定位问题
