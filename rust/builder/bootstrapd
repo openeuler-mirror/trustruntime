@@ -72,7 +72,7 @@ cp -f /tmp/share/server/cert.crl         /sysroot/etc/cert/server/cert.crl
 /sbin/busybox chmod 400 /sysroot/etc/cert/server/*
 
 /sbin/busybox chown -R 0:0 /sysroot/etc/cert/
-/sbin/busybox chown -R lcne:lcne /sysroot/etc/cert/communication/
+/sbin/busybox chown -R lcne:verona /sysroot/etc/cert/communication/
 
 umount /tmp/share
 
