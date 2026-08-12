@@ -12,11 +12,11 @@ path = "src/main.rs"
 [package.metadata.generate-rpm]
 name = "trustruntime-launcher"
 assets = [
-    { source = "../target/release/trt_launcher", dest = "/bin/trt_launcher", mode = "550" },
-    { source = "conf/trt_launcher.service", dest = "/usr/lib/systemd/system/trt_launcher.service", mode = "550" },
-    { source = "conf/trt_launcher.conf", dest = "/etc/trt_launcher/trt_launcher.conf", mode = "640", config = true },
+    { source = "../target/release/trt_launcher", dest = "/bin/trt_launcher", mode = "550", owner = "root", group = "root" },
+    { source = "conf/trt_launcher.service", dest = "/usr/lib/systemd/system/trt_launcher.service", mode = "550", owner = "root", group = "root" },
+    { source = "conf/trt_launcher.conf", dest = "/etc/trt_launcher/trt_launcher.conf", mode = "640", config = true, owner = "root", group = "root" },
 ]
-post_install_script = "mkdir -p /var/log/trustruntime && chmod 750 /var/log/trustruntime"
+post_install_script = "mkdir -p /var/log/trustruntime && chmod 750 /var/log/trustruntime && chown root:root /var/log/trustruntime"
 post_uninstall_script = "systemctl stop trt_launcher.service 2>/dev/null || true; systemctl disable trt_launcher.service 2>/dev/null || true"
 
 [dependencies]

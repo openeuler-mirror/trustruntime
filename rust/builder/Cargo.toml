@@ -8,7 +8,7 @@ description = "TrustRuntime VM Image Builder (packaging only)"
 [package.metadata.generate-rpm]
 name = "trustruntime-builder"
 assets = [
-    { source = "build.sh", dest = "/opt/trt_builder/build.sh", mode = "750" },
-    { source = "bootstrapd", dest = "/opt/trt_builder/bootstrapd", mode = "640" },
-    { source = "initrd.list", dest = "/opt/trt_builder/initrd.list", mode = "640" },
+    { source = "build.sh", dest = "/opt/trt_builder/build.sh", mode = "750", owner = "root", group = "root" },
+    { source = "bootstrapd", dest = "/opt/trt_builder/bootstrapd", mode = "640", owner = "root", group = "root" },
+    { source = "initrd.list", dest = "/opt/trt_builder/initrd.list", mode = "640", owner = "root", group = "root" },
 ]
