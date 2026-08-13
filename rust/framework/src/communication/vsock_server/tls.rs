@@ -56,6 +56,8 @@ pub struct TlsConfig {
 pub fn configure_tls_builder() -> Result<openssl::ssl::SslAcceptorBuilder, VsockError> {
     let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
 
+    builder.clear_options(openssl::ssl::SslOptions::NO_TLSV1_3);
+
     builder.set_min_proto_version(Some(openssl::ssl::SslVersion::TLS1_2))?;
     builder.set_max_proto_version(None)?;
 
