@@ -138,6 +138,23 @@ impl CommandRouter {
                 id,
                 interval,
             } => self.handle_perf_verify(count, data, signed_data, id, interval),
+            Command::PerfVerifySign {
+                count,
+                sign_data,
+                sign_id,
+                verify_data,
+                signed_data,
+                verify_id,
+                interval,
+            } => self.handle_perf_verify_sign(
+                count,
+                sign_data,
+                sign_id,
+                verify_data,
+                signed_data,
+                verify_id,
+                interval,
+            ),
             Command::PerfReport => self.handle_perf_report(),
 
             // 并发测试
@@ -145,14 +162,35 @@ impl CommandRouter {
                 threads,
                 count,
                 data,
-            } => self.handle_concurrent_sign(threads, count, data),
+                interval,
+            } => self.handle_concurrent_sign(threads, count, data, interval),
             Command::ConcurrentVerify {
                 threads,
                 count,
                 data,
                 signed_data,
                 id,
-            } => self.handle_concurrent_verify(threads, count, data, signed_data, id),
+                interval,
+            } => self.handle_concurrent_verify(threads, count, data, signed_data, id, interval),
+            Command::ConcurrentVerifySign {
+                threads,
+                count,
+                sign_data,
+                sign_id,
+                verify_data,
+                signed_data,
+                verify_id,
+                interval,
+            } => self.handle_concurrent_verify_sign(
+                threads,
+                count,
+                sign_data,
+                sign_id,
+                verify_data,
+                signed_data,
+                verify_id,
+                interval,
+            ),
             Command::ConcurrentReport => self.handle_concurrent_report(),
 
             // 安全测试
@@ -403,6 +441,38 @@ impl CommandRouter {
         Ok(ExecuteResult::Output(Reporter::format_perf_report(&result)))
     }
 
+    /// 处理 perf verify-sign 命令
+    ///
+    /// 执行验签+签名性能测试，支持简化模式和完整模式。
+    #[allow(clippy::too_many_arguments)]
+    fn handle_perf_verify_sign(
+        &self,
+        count: u32,
+        sign_data: String,
+        sign_id: Option<String>,
+        verify_data: Option<String>,
+        signed_data: Option<String>,
+        verify_id: Option<String>,
+        interval: Option<u32>,
+    ) -> Result<ExecuteResult, CommandError> {
+        let client = self.get_client()?;
+        let tester = PerformanceTester::new(client);
+        println!("Running {} verify-sign requests...", count);
+
+        let result = tester.run_verify_sign_test(
+            count,
+            &sign_data,
+            sign_id.as_deref(),
+            verify_data.as_deref(),
+            signed_data.as_deref(),
+            verify_id.as_deref(),
+            interval,
+        );
+
+        *self.perf_stats.lock().unwrap() = Some(result.clone());
+        Ok(ExecuteResult::Output(Reporter::format_perf_report(&result)))
+    }
+
     /// 处理 perf report 命令
     ///
     /// 显示最近一次性能测试结果。
@@ -421,6 +491,7 @@ impl CommandRouter {
         threads: u32,
         count: u32,
         data: Option<String>,
+        interval: Option<u32>,
     ) -> Result<ExecuteResult, CommandError> {
         let config = self.config.lock().unwrap();
         let data = data.unwrap_or_else(|| "test data".to_string());
@@ -433,7 +504,7 @@ impl CommandRouter {
         );
 
         let tester = ConcurrentTester::new(tls_config, port);
-        let result = tester.run_sign_test(threads, count, &data);
+        let result = tester.run_sign_test(threads, count, &data, interval);
 
         *self.concurrent_stats.lock().unwrap() = Some(result.clone());
         Ok(ExecuteResult::Output(Reporter::format_concurrent_report(
@@ -448,6 +519,7 @@ impl CommandRouter {
         data: String,
         signed_data: String,
         id: String,
+        interval: Option<u32>,
     ) -> Result<ExecuteResult, CommandError> {
         let config = self.config.lock().unwrap();
         let tls_config = config.tls_client.clone();
@@ -459,7 +531,46 @@ impl CommandRouter {
         );
 
         let tester = ConcurrentTester::new(tls_config, port);
-        let result = tester.run_verify_test(threads, count, &data, &signed_data, &id);
+        let result = tester.run_verify_test(threads, count, &data, &signed_data, &id, interval);
+
+        *self.concurrent_stats.lock().unwrap() = Some(result.clone());
+        Ok(ExecuteResult::Output(Reporter::format_concurrent_report(
+            &result,
+        )))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_concurrent_verify_sign(
+        &self,
+        threads: u32,
+        count: u32,
+        sign_data: String,
+        sign_id: Option<String>,
+        verify_data: Option<String>,
+        signed_data: Option<String>,
+        verify_id: Option<String>,
+        interval: Option<u32>,
+    ) -> Result<ExecuteResult, CommandError> {
+        let config = self.config.lock().unwrap();
+        let tls_config = config.tls_client.clone();
+        let port = config.connection.port;
+
+        println!(
+            "Running concurrent verify-sign test with {} threads, {} requests each...",
+            threads, count
+        );
+
+        let tester = ConcurrentTester::new(tls_config, port);
+        let result = tester.run_verify_sign_test(
+            threads,
+            count,
+            &sign_data,
+            sign_id.as_deref(),
+            verify_data.as_deref(),
+            signed_data.as_deref(),
+            verify_id.as_deref(),
+            interval,
+        );
 
         *self.concurrent_stats.lock().unwrap() = Some(result.clone());
         Ok(ExecuteResult::Output(Reporter::format_concurrent_report(
@@ -763,6 +874,8 @@ Note:
 /// perf 命令帮助文本
 const HELP_PERF: &str = "perf sign --count <n> [--data <text>] [--interval <ms>]
 perf verify --count <n> --data <text> --signed-data <b64> --id <b64> [--interval <ms>]
+perf verify-sign --count <n> --sign-data <text> [--sign-id <id>] [--interval <ms>]
+perf verify-sign --count <n> --sign-data <text> --verify-data <text> --signed-data <b64> --verify-id <b64> [--sign-id <id>] [--interval <ms>]
 perf report
 
 Run performance tests to measure response time and throughput.
@@ -779,6 +892,18 @@ Arguments (verify):
   --id         Base64-encoded certificate ID
   --interval   Interval between requests in ms (optional)
 
+Arguments (verify-sign):
+  --count        Number of requests
+  --sign-data    Data to sign (required)
+  --sign-id      Certificate ID for signing (optional, auto-filled in simple mode)
+  --verify-data  Original data for verification (optional, defaults to sign-data)
+  --signed-data  Base64-encoded signature (optional, auto-fetched in simple mode)
+  --verify-id    Certificate ID for verification (optional, auto-filled in simple mode)
+  --interval     Interval between requests in ms (optional)
+
+Simple mode (verify-sign):
+  Only provide --sign-data, tool auto-fetches signature via sign interface.
+
 Output:
   Total requests, Success/Failed count
   Avg/Min/Max response time (ms)
@@ -787,11 +912,15 @@ Output:
 
 Example:
   perf sign --count 100
-  perf verify --count 50 --data \"hello\" --signed-data MIIM... --id abc123...";
+  perf verify --count 50 --data \"hello\" --signed-data MIIM... --id abc123...
+  perf verify-sign --count 100 --sign-data \"test\"
+  perf verify-sign --count 50 --sign-data \"new\" --verify-data \"old\" --signed-data MIIM... --verify-id abc123...";
 
 /// concurrent 命令帮助文本
-const HELP_CONCURRENT: &str = "concurrent sign --threads <n> --count <n> [--data <text>]
-concurrent verify --threads <n> --count <n> --data <text> --signed-data <b64> --id <b64>
+const HELP_CONCURRENT: &str = "concurrent sign --threads <n> --count <n> [--data <text>] [--interval <ms>]
+concurrent verify --threads <n> --count <n> --data <text> --signed-data <b64> --id <b64> [--interval <ms>]
+concurrent verify-sign --threads <n> --count <n> --sign-data <text> [--sign-id <id>] [--interval <ms>]
+concurrent verify-sign --threads <n> --count <n> --sign-data <text> --verify-data <text> --signed-data <b64> --verify-id <b64> [--sign-id <id>] [--interval <ms>]
 concurrent report
 
 Run concurrent tests with multiple independent connections.
@@ -800,6 +929,7 @@ Arguments (sign):
   --threads    Number of concurrent threads (default: 4)
   --count      Requests per thread (default: 10)
   --data       Data to sign
+  --interval   Interval between requests in ms (optional)
 
 Arguments (verify):
   --threads    Number of concurrent threads
@@ -807,12 +937,31 @@ Arguments (verify):
   --data       Original data that was signed
   --signed-data  Signature to verify
   --id         Certificate ID
+  --interval   Interval between requests in ms (optional)
+
+Arguments (verify-sign):
+  --threads      Number of concurrent threads
+  --count        Requests per thread
+  --sign-data    Data to sign (required)
+  --sign-id      Certificate ID for signing (optional, auto-filled in simple mode)
+  --verify-data  Original data for verification (optional, defaults to sign-data)
+  --signed-data  Base64-encoded signature (optional, auto-fetched in simple mode)
+  --verify-id    Certificate ID for verification (optional, auto-filled in simple mode)
+  --interval     Interval between requests in ms (optional)
+
+Simple mode (verify-sign):
+  Only provide --sign-data, tool auto-fetches signature via sign interface.
 
 Note: Each thread creates its own TLS connection.
 
 Example:
   concurrent sign --threads 16 --count 50
-  concurrent verify --threads 8 --count 20 --data \"hello\" --signed-data MIIM... --id abc123...";
+  concurrent sign --threads 8 --count 20 --interval 100
+  concurrent verify --threads 8 --count 20 --data \"hello\" --signed-data MIIM... --id abc123...
+  concurrent verify --threads 4 --count 10 --data \"test\" --signed-data MIIM... --id abc123... --interval 50
+  concurrent verify-sign --threads 4 --count 10 --sign-data \"test\"
+  concurrent verify-sign --threads 4 --count 10 --sign-data \"test\" --interval 100
+  concurrent verify-sign --threads 4 --count 10 --sign-data \"new\" --verify-data \"old\" --signed-data MIIM... --verify-id abc123...";
 
 /// security 命令帮助文本
 const HELP_SECURITY: &str = "security protocol [test]

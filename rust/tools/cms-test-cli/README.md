@@ -71,7 +71,7 @@ cargo run -p cms-test-cli -- --config my-config.toml --command 'scenario two-nod
 ```
 
 **注意事项：**
-- 使用变量存储 JSON，避免手动转义
+- 使用变量存储 JSON，避免手动转义（仅在命令行模式中需要）
 - 命令需要用双引号包裹，变量用单引号包裹
 - 执行失败时返回非零退出码（成功返回0，失败返回1）
 - 命令格式与REPL命令格式完全一致
@@ -158,16 +158,22 @@ raw <type> <json-body>                # 发送原始请求
 ```
 perf sign --count <n> [--data <text>] [--interval <ms>]
 perf verify --count <n> --signed-data <b64> --id <b64>
+perf verify-sign --count <n> --sign-data <text> [--sign-id <id>] [--interval <ms>]
+perf verify-sign --count <n> --sign-data <text> --verify-data <text> --signed-data <b64> --verify-id <b64> [--sign-id <id>] [--interval <ms>]
 perf report                          # 显示性能统计
 ```
 
 **输出指标**: 总数、成功数、失败数、平均响应时间、吞吐量(QPS)
+
+**verify-sign 简化模式**: 只提供 `--sign-data`，工具自动调用 sign 接口获取签名数据用于验签。
 
 ### 并发测试
 
 ```
 concurrent sign --threads <n> --count <n> [--data <text>]
 concurrent verify --threads <n> --count <n> --signed-data <b64> --id <b64>
+concurrent verify-sign --threads <n> --count <n> --sign-data <text> [--sign-id <id>] [--interval <ms>]
+concurrent verify-sign --threads <n> --count <n> --sign-data <text> --verify-data <text> --signed-data <b64> --verify-id <b64> [--sign-id <id>] [--interval <ms>]
 concurrent report                    # 显示并发统计
 ```
 
@@ -210,8 +216,7 @@ Type 'help' for available commands.
 > connect
 Connected to vsock://1:12345
 
-> JSON='{"to-sign":{"data":"hello world"}}'
-> sign '$JSON'
+> sign '{"to-sign":{"data":"hello world"}}'
 Response:
 {
   "signed_data": "MIIM...",
@@ -219,15 +224,13 @@ Response:
   "result": 0
 }
 
-> JSON='{"to-verify":{"data":"hello world","signed_data":"MIIM...","id":"abc123..."}}'
-> verify '$JSON'
+> verify '{"to-verify":{"data":"hello world","signed_data":"MIIM...","id":"abc123..."}}'
 Response:
 {
   "result": 0
 }
 
-> JSON='{"to-verify":{"data":"hello world","signed_data":"MIIM...","id":"abc123..."},"to-sign":{"data":"new data","id":"abc123..."}}'
-> verify-sign '$JSON'
+> verify-sign '{"to-verify":{"data":"hello world","signed_data":"MIIM...","id":"abc123..."},"to-sign":{"data":"new data","id":"abc123..."}}'
 Response:
 {
   "signed_data": "MIIM...",
@@ -259,8 +262,7 @@ verify-sign 命令需要完整的 JSON 格式参数，包含 `to-verify` 和 `to
 
 1. 先执行 `sign` 命令获取 `signed_data` 和 `id`：
    ```
-   > JSON='{"to-sign":{"data":"hello"}}'
-   > sign '$JSON'
+   > sign '{"to-sign":{"data":"hello"}}'
    Response:
    {
      "signed_data": "MIIC...（很长的Base64字符串）",
@@ -271,8 +273,7 @@ verify-sign 命令需要完整的 JSON 格式参数，包含 `to-verify` 和 `to
 
 2. 使用步骤1的输出执行 `verify-sign`：
    ```
-   > JSON='{"to-verify":{"data":"hello","signed_data":"MIIC...","id":"ABC123..."},"to-sign":{"data":"world","id":"ABC123..."}}'
-   > verify-sign '$JSON'
+   > verify-sign '{"to-verify":{"data":"hello","signed_data":"MIIC...","id":"ABC123..."},"to-sign":{"data":"world","id":"ABC123..."}}'
    ```
 
 **注意事项：**

@@ -73,23 +73,46 @@ pub enum Command {
         id: String,
         interval: Option<u32>,
     },
+    /// 性能验签+签名测试：perf verify-sign --count <n> --sign-data <text> [其他可选参数]
+    PerfVerifySign {
+        count: u32,
+        sign_data: String,
+        sign_id: Option<String>,
+        verify_data: Option<String>,
+        signed_data: Option<String>,
+        verify_id: Option<String>,
+        interval: Option<u32>,
+    },
     /// 显示性能报告
     PerfReport,
 
     // 并发测试
-    /// 并发签名测试：concurrent sign --threads <n> --count <n> [--data <text>]
+    /// 并发签名测试：concurrent sign --threads <n> --count <n> [--data <text>] [--interval <ms>]
     ConcurrentSign {
         threads: u32,
         count: u32,
         data: Option<String>,
+        interval: Option<u32>,
     },
-    /// 并发验签测试：concurrent verify --threads <n> --count <n> --data <text> --signed-data <b64> --id <b64>
+    /// 并发验签测试：concurrent verify --threads <n> --count <n> --data <text> --signed-data <b64> --id <b64> [--interval <ms>]
     ConcurrentVerify {
         threads: u32,
         count: u32,
         data: String,
         signed_data: String,
         id: String,
+        interval: Option<u32>,
+    },
+    /// 并发验签+签名测试：concurrent verify-sign --threads <n> --count <n> --sign-data <text> [其他可选参数]
+    ConcurrentVerifySign {
+        threads: u32,
+        count: u32,
+        sign_data: String,
+        sign_id: Option<String>,
+        verify_data: Option<String>,
+        signed_data: Option<String>,
+        verify_id: Option<String>,
+        interval: Option<u32>,
     },
     /// 显示并发报告
     ConcurrentReport,
@@ -317,6 +340,7 @@ fn parse_perf(args: &[String]) -> Result<Command, ParseError> {
     match subcmd.as_str() {
         "sign" => parse_perf_sign(&args[1..]),
         "verify" => parse_perf_verify(&args[1..]),
+        "verify-sign" => parse_perf_verify_sign(&args[1..]),
         "report" => Ok(Command::PerfReport),
         _ => Err(ParseError::UnknownCommand(format!("perf {}", subcmd))),
     }
@@ -439,6 +463,124 @@ fn parse_perf_verify(args: &[String]) -> Result<Command, ParseError> {
     })
 }
 
+/// 验签+签名命令的公共参数
+struct VerifySignArgs {
+    sign_data: String,
+    sign_id: Option<String>,
+    verify_data: Option<String>,
+    signed_data: Option<String>,
+    verify_id: Option<String>,
+}
+
+/// 解析 verify-sign 命令的公共参数
+///
+/// 公共参数：--sign-data, --sign-id, --verify-data, --signed-data, --verify-id
+fn parse_verify_sign_common(args: &[String]) -> Result<VerifySignArgs, ParseError> {
+    let mut sign_data = String::new();
+    let mut sign_id = None;
+    let mut verify_data = None;
+    let mut signed_data = None;
+    let mut verify_id = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--sign-data" {
+            sign_data = args
+                .get(i + 1)
+                .ok_or_else(|| ParseError::MissingArgument("sign-data value".to_string()))?
+                .to_string();
+            i += 2;
+        } else if args[i] == "--sign-id" {
+            sign_id = Some(
+                args.get(i + 1)
+                    .ok_or_else(|| ParseError::MissingArgument("sign-id value".to_string()))?
+                    .to_string(),
+            );
+            i += 2;
+        } else if args[i] == "--verify-data" {
+            verify_data = Some(
+                args.get(i + 1)
+                    .ok_or_else(|| ParseError::MissingArgument("verify-data value".to_string()))?
+                    .to_string(),
+            );
+            i += 2;
+        } else if args[i] == "--signed-data" {
+            signed_data = Some(
+                args.get(i + 1)
+                    .ok_or_else(|| ParseError::MissingArgument("signed-data value".to_string()))?
+                    .to_string(),
+            );
+            i += 2;
+        } else if args[i] == "--verify-id" {
+            verify_id = Some(
+                args.get(i + 1)
+                    .ok_or_else(|| ParseError::MissingArgument("verify-id value".to_string()))?
+                    .to_string(),
+            );
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    if sign_data.is_empty() {
+        return Err(ParseError::MissingArgument("sign-data".to_string()));
+    }
+
+    Ok(VerifySignArgs {
+        sign_data,
+        sign_id,
+        verify_data,
+        signed_data,
+        verify_id,
+    })
+}
+
+/// 解析 perf verify-sign 子命令
+///
+/// 格式：
+/// - 简化模式：perf verify-sign --count <n> --sign-data <text> [--sign-id <id>] [--interval <ms>]
+/// - 完整模式：perf verify-sign --count <n> --sign-data <text> --verify-data <text> --signed-data <b64> --verify-id <b64> [--sign-id <id>] [--interval <ms>]
+///   默认值：count=10
+fn parse_perf_verify_sign(args: &[String]) -> Result<Command, ParseError> {
+    let mut count = 10u32;
+    let mut interval = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--count" {
+            count = args
+                .get(i + 1)
+                .ok_or_else(|| ParseError::MissingArgument("count value".to_string()))?
+                .parse::<u32>()
+                .map_err(|_| ParseError::InvalidArgument("count".to_string()))?;
+            i += 2;
+        } else if args[i] == "--interval" {
+            interval = Some(
+                args.get(i + 1)
+                    .ok_or_else(|| ParseError::MissingArgument("interval value".to_string()))?
+                    .parse::<u32>()
+                    .map_err(|_| ParseError::InvalidArgument("interval".to_string()))?,
+            );
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    let common = parse_verify_sign_common(args)?;
+
+    Ok(Command::PerfVerifySign {
+        count,
+        sign_data: common.sign_data,
+        sign_id: common.sign_id,
+        verify_data: common.verify_data,
+        signed_data: common.signed_data,
+        verify_id: common.verify_id,
+        interval,
+    })
+}
+
 /// 解析 concurrent 命令
 ///
 /// 子命令：sign、verify、report
@@ -451,6 +593,7 @@ fn parse_concurrent(args: &[String]) -> Result<Command, ParseError> {
     match subcmd.as_str() {
         "sign" => parse_concurrent_sign(&args[1..]),
         "verify" => parse_concurrent_verify(&args[1..]),
+        "verify-sign" => parse_concurrent_verify_sign(&args[1..]),
         "report" => Ok(Command::ConcurrentReport),
         _ => Err(ParseError::UnknownCommand(format!("concurrent {}", subcmd))),
     }
@@ -458,12 +601,13 @@ fn parse_concurrent(args: &[String]) -> Result<Command, ParseError> {
 
 /// 解析 concurrent sign 子命令
 ///
-/// 格式：concurrent sign --threads <n> --count <n> [--data <text>]
+/// 格式：concurrent sign --threads <n> --count <n> [--data <text>] [--interval <ms>]
 /// 默认值：threads=4, count=10
 fn parse_concurrent_sign(args: &[String]) -> Result<Command, ParseError> {
     let mut threads = 4u32;
     let mut count = 10u32;
     let mut data = None;
+    let mut interval = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -488,6 +632,14 @@ fn parse_concurrent_sign(args: &[String]) -> Result<Command, ParseError> {
                     .to_string(),
             );
             i += 2;
+        } else if args[i] == "--interval" {
+            interval = Some(
+                args.get(i + 1)
+                    .ok_or_else(|| ParseError::MissingArgument("interval value".to_string()))?
+                    .parse::<u32>()
+                    .map_err(|_| ParseError::InvalidArgument("interval".to_string()))?,
+            );
+            i += 2;
         } else {
             i += 1;
         }
@@ -497,12 +649,13 @@ fn parse_concurrent_sign(args: &[String]) -> Result<Command, ParseError> {
         threads,
         count,
         data,
+        interval,
     })
 }
 
 /// 解析 concurrent verify 子命令
 ///
-/// 格式：concurrent verify --threads <n> --count <n> --data <text> --signed-data <b64> --id <b64>
+/// 格式：concurrent verify --threads <n> --count <n> --data <text> --signed-data <b64> --id <b64> [--interval <ms>]
 /// 默认值：threads=4, count=10
 fn parse_concurrent_verify(args: &[String]) -> Result<Command, ParseError> {
     let mut threads = 4u32;
@@ -510,6 +663,7 @@ fn parse_concurrent_verify(args: &[String]) -> Result<Command, ParseError> {
     let mut data = String::new();
     let mut signed_data = String::new();
     let mut id = String::new();
+    let mut interval = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -545,6 +699,14 @@ fn parse_concurrent_verify(args: &[String]) -> Result<Command, ParseError> {
                 .ok_or_else(|| ParseError::MissingArgument("id value".to_string()))?
                 .to_string();
             i += 2;
+        } else if args[i] == "--interval" {
+            interval = Some(
+                args.get(i + 1)
+                    .ok_or_else(|| ParseError::MissingArgument("interval value".to_string()))?
+                    .parse::<u32>()
+                    .map_err(|_| ParseError::InvalidArgument("interval".to_string()))?,
+            );
+            i += 2;
         } else {
             i += 1;
         }
@@ -567,6 +729,61 @@ fn parse_concurrent_verify(args: &[String]) -> Result<Command, ParseError> {
         data,
         signed_data,
         id,
+        interval,
+    })
+}
+
+/// 解析 concurrent verify-sign 子命令
+///
+/// 格式：
+/// - 简化模式：concurrent verify-sign --threads <n> --count <n> --sign-data <text> [--sign-id <id>] [--interval <ms>]
+/// - 完整模式：concurrent verify-sign --threads <n> --count <n> --sign-data <text> --verify-data <text> --signed-data <b64> --verify-id <b64> [--sign-id <id>] [--interval <ms>]
+///   默认值：threads=4, count=10
+fn parse_concurrent_verify_sign(args: &[String]) -> Result<Command, ParseError> {
+    let mut threads = 4u32;
+    let mut count = 10u32;
+    let mut interval = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--threads" {
+            threads = args
+                .get(i + 1)
+                .ok_or_else(|| ParseError::MissingArgument("threads value".to_string()))?
+                .parse::<u32>()
+                .map_err(|_| ParseError::InvalidArgument("threads".to_string()))?;
+            i += 2;
+        } else if args[i] == "--count" {
+            count = args
+                .get(i + 1)
+                .ok_or_else(|| ParseError::MissingArgument("count value".to_string()))?
+                .parse::<u32>()
+                .map_err(|_| ParseError::InvalidArgument("count".to_string()))?;
+            i += 2;
+        } else if args[i] == "--interval" {
+            interval = Some(
+                args.get(i + 1)
+                    .ok_or_else(|| ParseError::MissingArgument("interval value".to_string()))?
+                    .parse::<u32>()
+                    .map_err(|_| ParseError::InvalidArgument("interval".to_string()))?,
+            );
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    let common = parse_verify_sign_common(args)?;
+
+    Ok(Command::ConcurrentVerifySign {
+        threads,
+        count,
+        sign_data: common.sign_data,
+        sign_id: common.sign_id,
+        verify_data: common.verify_data,
+        signed_data: common.signed_data,
+        verify_id: common.verify_id,
+        interval,
     })
 }
 
