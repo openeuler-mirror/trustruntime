@@ -44,6 +44,10 @@ pub fn connect_vsock_tls(
     let mut builder =
         SslConnector::builder(SslMethod::tls()).map_err(|e| format!("SSL上下文创建失败: {}", e))?;
 
+    builder
+        .set_min_proto_version(Some(openssl::ssl::SslVersion::TLS1_2))
+        .map_err(|e| format!("设置TLS版本失败: {}", e))?;
+
     builder.set_verify(SslVerifyMode::PEER);
 
     let cert_path = env::var("TRUSTRUNTIME_CLIENT_CERT")

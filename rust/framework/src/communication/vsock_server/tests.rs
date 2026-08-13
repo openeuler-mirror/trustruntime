@@ -308,3 +308,28 @@ fn accept_timeout_error_handling() {
 fn max_idle_time_constant_is_60_seconds() {
     assert_eq!(MAX_IDLE_SECS, 60);
 }
+
+#[test]
+fn tls_builder_supports_tls1_3() {
+    use super::tls::configure_tls_builder;
+    use openssl::ssl::SslVersion;
+
+    let mut builder = configure_tls_builder().expect("Failed to create TLS builder");
+
+    let min_proto = builder.min_proto_version();
+    assert_eq!(
+        min_proto,
+        Some(SslVersion::TLS1_2),
+        "Min protocol should be TLS 1.2"
+    );
+
+    let max_proto = builder.max_proto_version();
+    assert!(
+        max_proto.is_none() || max_proto == Some(SslVersion::TLS1_3),
+        "Max protocol should support TLS 1.3 (either None or TLS1_3)"
+    );
+
+    println!("TLS configuration verified:");
+    println!("  Min protocol: {:?}", min_proto);
+    println!("  Max protocol: {:?}", max_proto);
+}

@@ -578,6 +578,10 @@ fn wrap_with_tls(
     let mut builder = SslConnector::builder(SslMethod::tls())
         .map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
 
+    builder
+        .set_min_proto_version(Some(openssl::ssl::SslVersion::TLS1_2))
+        .map_err(|e| VsockError::TlsHandshake(e.to_string()))?;
+
     // 加载CA证书用于验证服务端
     let ca = X509::from_pem(
         &std::fs::read(ca_cert).map_err(|e| VsockError::TlsHandshake(e.to_string()))?,
