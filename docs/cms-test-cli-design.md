@@ -415,13 +415,13 @@ impl Reporter {
 port = 12345
 
 [tls_client]
-ca_cert = "/tmp/test-certs/tls/ca.crt"
-client_cert = "/tmp/test-certs/tls/client/client.crt"
-client_key = "/tmp/test-certs/tls/client/client.key"
-client_key_pwd = "/tmp/test-certs/tls/key_pwd.txt"  # 可选
+ca_cert = "/tmp/test-certs/tls/server/node-a/ca_root.crt"
+client_cert = "/tmp/test-certs/tls/lcne/node-a/certificate.crt"
+client_key = "/tmp/test-certs/tls/lcne/node-a/private.key"
+client_key_pwd = "/tmp/test-certs/tls/lcne/node-a/key_pwd.txt"  # 可选
 
 [cms_certs]
-ca_cert = "/tmp/test-certs/cms/ca.crt"
+ca_cert = "/tmp/test-certs/cms/node-a/ca.crt"
 signer_cert = "/tmp/test-certs/cms/node-a/signer.crt"
 signer_key = "/tmp/test-certs/cms/node-a/signer.key"
 expired_cert = "/tmp/test-certs/cms/expired/signer.crt"  # 可选

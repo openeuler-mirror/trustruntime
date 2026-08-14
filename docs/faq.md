@@ -72,11 +72,12 @@ openssl crl -in /etc/cert/cms/cms.crl -noout -text
 openssl crl -in /etc/cert/cms/cms.crl -noout -text | grep "Serial Number"
 ```
 
-4. 如果不需要 CRL 校验，在配置中注释掉：
+4. 如果不需要 CRL 校验，删除或不放置 CRL 文件：
 
-```toml
-[certificate]
-# cms_crl = "/etc/cert/cms/cms.crl"  # 注释掉跳过 CRL 校验
+```bash
+# 删除 CRL 文件跳过 CRL 校验
+rm /etc/cert/cms/cms.crl
+rm /etc/cert/server/cert.crl
 ```
 
 ---
@@ -204,21 +205,6 @@ stat /etc/cert/cms/signer.key  # 应为 600 或 400
 
 ---
 
-### Q: 签名返回 result=11（私钥不可用）？
-
-**A**: 原因：签名私钥无法使用。
-
-可能原因：
-
-- 私钥文件损坏
-- 私钥与证书不匹配
-- 私钥权限问题（无法读取）
-- 私钥加密但未提供密码（签名私钥不支持密码）
-
-**注意**：签名私钥不支持密码保护，如需加密私钥应解密后使用。
-
----
-
 ### Q: 签名返回 result=12（签名算法错误）？
 
 **A**: 服务仅支持 ECC-256 签名算法。
@@ -262,7 +248,7 @@ openssl verify -CAfile /etc/cert/cms/ca_root.crt signer.crt
 
 **处理方式**：
 
-- 如不需要 CRL 校验，在配置中注释掉 `cms_crl`
+- 如不需要 CRL 校验，删除或不放置 CRL 文件
 - 更新 CRL 文件以移除已恢复的证书
 - 联系证书管理员确认证书状态
 
@@ -380,8 +366,7 @@ openssl x509 -in cert.pem -noout -text | grep "Subject Key Identifier"
 | 原因 | 解决方案 |
 |------|----------|
 | 配置文件缺失 | 检查 `/etc/trustruntime/agent.toml` |
-| 证书文件缺失 | 检查 `/etc/cert/cms/` 目录 |
-| 证书路径配置错误 | 检查配置文件中 certificate 部分 |
+| 证书文件缺失 | 检查 `/etc/cert/cms/` 和 `/etc/cert/server/` 目录 |
 | vsock 模块未加载 | `modprobe vhost_vsock` |
 
 **排查命令**：
@@ -421,33 +406,6 @@ ls -la /var/log/trustruntime/
 
 # systemd 日志
 journalctl -u trustruntime -f
-```
-
----
-
-### Q: 如何调试？
-
-**A**: 启用详细日志级别：
-
-**方式一**：修改配置文件
-
-```toml
-[log]
-level = "debug"  # 或 "trace"
-```
-
-**方式二**：环境变量
-
-```bash
-RUST_LOG=debug systemctl restart trustruntime
-```
-
-**方式三**：手动启动（开发环境）
-
-```bash
-cd rust
-cargo build
-./target/debug/trustruntime --config ../conf/agent.toml
 ```
 
 ---

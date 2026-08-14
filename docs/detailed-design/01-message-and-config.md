@@ -58,7 +58,6 @@ pub enum MessageError {
 pub struct AppConfig {
     pub vsock: VsockConfig,
     pub log: LogConfig,
-    pub certificate: CertificateConfig,
     pub cert_check: CertCheckConfig,  // 可选 section，缺省时使用默认值
 }
 
@@ -69,24 +68,18 @@ pub struct VsockConfig {
 
 pub struct LogConfig {
     pub path: String,           // 日志文件路径（必填）
-    pub level: String,          // 日志级别（可选，默认 "info"）
+    pub level: LogLevel,        // 日志级别（可选，默认 Info）
     pub max_file_size: u64,     // 单个日志文件最大大小 (MB)（必填）
     pub max_roll_count: u32,    // 日志回滚文件个数（必填）
 }
 
-pub struct CertificateConfig {
-    // 签名验签证书
-    pub signer_cert: String,
-    pub signer_key: String,
-    pub ca_root_cert: String,
-    pub cms_crl: Option<String>,        // 可选，不配置则跳过 CRL 校验
-    // 通信证书
-    pub comm_cert: String,
-    pub comm_key: String,
-    pub comm_key_pwd: Option<String>,   // 可选，私钥未加密时不填
-    pub comm_ca_root: String,
-    pub comm_crl: Option<String>,       // 可选，不配置则跳过 CRL 校验
+// 日志级别枚举（强类型）
+pub enum LogLevel {
+    Trace, Debug, Info, Warn, Error,
 }
+
+// 注意：Release 构建时，level 必须为 Info/Warn/Error
+// Debug 构建时，允许所有级别
 
 pub struct CertCheckConfig {
     pub interval_hours: u64,    // 巡检间隔，单位小时（可选，默认 24）
@@ -98,11 +91,23 @@ impl AppConfig {
 
     /// 从文件路径加载并解析
     pub fn from_file(path: &str) -> Result<Self, ConfigError>;
+
+    /// 验证配置参数有效性
+    /// 
+    /// 验证规则：
+    /// - vsock.port: 不能为 0
+    /// - vsock.max_connections: 1-1024 范围
+    /// - log.max_file_size: 1-100 MB 范围
+    /// - log.max_roll_count: 1-100 范围
+    /// - log.level: Release 构建仅允许 info/warn/error
+    /// - cert_check.interval_hours: 1-720 小时范围
+    pub fn validate(&self) -> Result<(), ConfigError>;
 }
 
 pub enum ConfigError {
     IoError(std::io::Error),        // 文件读取失败
-    ParseError(String),              // TOML 解析失败或缺少必填字段（错误描述字符串）
+    ParseError(String),              // TOML 解析失败或缺少必填字段
+    ValidationError(String),         // 配置参数超出有效范围
 }
 ```
 
@@ -199,7 +204,7 @@ main.rs                   config
 | 场景 | 验证点 |
 |------|--------|
 | 完整 TOML 解析 | 所有字段正确映射（含可选字段） |
-| 最小 TOML 解析 | 仅必填字段，可选字段使用默认值（max_connections=16, level="info", cms_crl=None, comm_key_pwd=None, comm_crl=None, interval_hours=24） |
+| 最小 TOML 解析 | 仅必填字段，可选字段使用默认值（max_connections=16, level="info", interval_hours=24） |
 | 缺少必填字段 | 返回 ParseError |
 | 文件不存在 | 返回 IoError |
 | 额外字段（TOML 中有未定义字段） | 忽略或报错（取决于 serde 配置） |

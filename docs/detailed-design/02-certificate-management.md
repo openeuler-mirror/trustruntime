@@ -218,7 +218,7 @@ cert_checker (后台 task)
 |------|------|
 | `openssl` crate | X509、PKey、X509Crl 类型及解析 |
 | `framework::cert` | cert_loader 和 cert_checker 的底层加载能力 |
-| `config::CertificateConfig` | cert_checker 获取所有证书路径 |
+| `config` 常量 | cert_checker 使用硬编码证书路径（COMM_CERT_PATH、SIGNER_CERT_PATH等） |
 | `log` crate | cert_checker 通过 `log::warn!` 输出日志 |
 
 ### 下游消费者

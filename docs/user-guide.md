@@ -41,15 +41,44 @@ TrustRuntime 是 CMS 签名验签服务，部署于机密计算虚机中，通�
 
 安装前需完成以下准备：
 
-**1. 准备证书文件**
+#### 准备证书文件
 
-参见 [4.3 证书配置](#43-证书配置)，确保证书文件已放置到正确路径。
+证书路径已硬编码，需将证书文件放置到以下固定路径：
 
-**2. 准备配置文件**
+**通信证书（TLS）**：
+- 通信证书：`/etc/cert/server/certificate.crt`
+- 通信私钥：`/etc/cert/server/private.key`
+- 私钥密码：`/etc/cert/server/key_pwd.txt`（可选）
+- 通信CA根证书：`/etc/cert/server/ca_root.crt`
+- 通信CRL：`/etc/cert/server/cert.crl`（可选）
 
-RPM 安装会在 `/etc/trustruntime/agent.toml` 创建配置模板。请根据实际证书路径修改配置文件。
+**签名证书（CMS）**：
+- 签名证书：`/etc/cert/cms/signer.crt`
+- 签名私钥：`/etc/cert/cms/signer.key`
+- CMS CA根证书：`/etc/cert/cms/ca_root.crt`
+- CMS CRL：`/etc/cert/cms/cms.crl`（可选）
 
-参见 [第4章 配置](#4-配置) 了解配置项详情。
+**证书类型**：
+
+| 证书类型 | 用途 | 路径 |
+|----------|------|------|
+| 通信证书（TLS） | TLS 双向认证 | `/etc/cert/server/` |
+| 签名证书（CMS） | CMS 签名验签 | `/etc/cert/cms/` |
+
+**证书格式**：
+
+支持 PEM 和 DER 格式，服务端自动识别。
+
+**私钥保护**：
+
+| 私钥类型 | 密码保护 |
+|----------|----------|
+| 签名私钥 | 无密码保护 |
+| 通信私钥 | 支持密码保护（key_pwd.txt） |
+
+**CRL 配置**：
+
+CRL（证书吊销列表）为可选配置，不配置时跳过 CRL 校验。
 
 ### 3.2 RPM 安装
 
@@ -61,13 +90,13 @@ RPM 安装自动执行：
 
 - 复制二进制到 `/usr/bin/trustruntime`
 - 安装配置模板到 `/etc/trustruntime/agent.toml`
-- 创建日志目录 `/var/log/trustruntime`
-- 安装 systemd 服务
+- 安装并启动 systemd 服务
 
-安装完成后，需根据实际证书路径修改配置文件，然后手动启动服务：
+安装完成后，服务自动启动。如需修改配置：
 
 ```bash
-systemctl enable trustruntime
+systemctl stop trustruntime
+# 修改配置文件
 systemctl start trustruntime
 ```
 
@@ -98,6 +127,22 @@ systemctl status trustruntime
 
 ### 4.2 配置项说明
 
+#### 配置验证规则
+
+服务启动时会验证配置参数，超出范围将启动失败：
+
+**vsock 配置**：
+- `port`: 不能为 0（保留端口）
+- `max_connections`: 必须在 1-1024 范围内
+
+**日志配置**：
+- `max_file_size`: 必须在 1-100 MB 范围内
+- `max_roll_count`: 必须在 1-100 范围内
+- `level`: Release 构建仅允许 info/warn/error
+
+**证书检查配置**：
+- `interval_hours`: 必须在 1-720 小时范围内（最长 30 天）
+
 #### vsock 通信配置
 
 ```toml
@@ -118,49 +163,12 @@ max_roll_count = 10       # 日志回滚文件个数（必填）
 
 日志级别可选值：`trace`, `debug`, `info`, `warn`, `error`
 
-#### 证书路径配置
+**重要限制**：
+- Release 构建：仅允许 `info`, `warn`, `error` 级别
+- Debug 构建：允许所有级别（包括 `trace`, `debug`）
+- 配置验证会在 Release 构建时拒绝 `trace`/`debug` 级别
 
-```toml
-[certificate]
-# --- 签名验签证书（CMS）---
-signer_cert = "/etc/cert/cms/signer.crt"       # 签名证书（必填）
-signer_key = "/etc/cert/cms/signer.key"        # 签名私钥（必填，无密码）
-ca_root_cert = "/etc/cert/cms/ca_root.crt"     # CA 根证书（必填）
-cms_crl = "/etc/cert/cms/cms.crl"              # CRL（可选）
-
-# --- 通信证书（TLS）---
-comm_cert = "/etc/cert/server/certificate.crt"  # 通信证书（必填）
-comm_key = "/etc/cert/server/private.key"       # 通信私钥（必填）
-comm_key_pwd = "/etc/cert/server/key_pwd.txt"   # 私钥密码（可选）
-comm_ca_root = "/etc/cert/server/ca_root.crt"  # CA 根证书（必填）
-comm_crl = "/etc/cert/server/cert.crl"          # CRL（可选）
-```
-
-### 4.3 证书配置
-
-#### 证书类型
-
-| 证书类型 | 用途 | 路径 |
-|----------|------|------|
-| 通信证书（TLS） | TLS 双向认证 | `/etc/cert/server/` |
-| 签名证书（CMS） | CMS 签名验签 | `/etc/cert/cms/` |
-
-#### 证书格式
-
-支持 PEM 和 DER 格式，服务端自动识别。
-
-#### 私钥保护
-
-| 私钥类型 | 密码保护 |
-|----------|----------|
-| 签名私钥 | 无密码保护 |
-| 通信私钥 | 支持密码保护（key_pwd.txt） |
-
-#### CRL 配置
-
-CRL（证书吊销列表）为可选配置，不配置时跳过 CRL 校验。
-
-### 4.4 配置示例
+### 4.3 配置示例
 
 最小配置：
 
@@ -172,15 +180,9 @@ port = 12345
 path = "/var/log/trustruntime/trustruntime.log"
 max_file_size = 10
 max_roll_count = 10
-
-[certificate]
-signer_cert = "/etc/cert/cms/signer.crt"
-signer_key = "/etc/cert/cms/signer.key"
-ca_root_cert = "/etc/cert/cms/ca_root.crt"
-comm_cert = "/etc/cert/server/certificate.crt"
-comm_key = "/etc/cert/server/private.key"
-comm_ca_root = "/etc/cert/server/ca_root.crt"
 ```
+
+**注意**：证书路径已硬编码，需将证书文件放置到固定路径（参见 3.1 前置准备）。
 
 ---
 
@@ -232,8 +234,8 @@ journalctl -u trustruntime -f
 #### 日志格式
 
 ```
-2026-06-29T10:00:00.000Z INFO trustruntime::core: Service started
-2026-06-29T10:00:00.100Z INFO trustruntime::vsock: Listening on vsock port 12345
+[2026-08-13 10:21:51.329] [INFO] [main.rs:26] Logger initialized
+[2026-08-13 10:21:51.430] [INFO] [vsock_server/mod.rs:125] Listening on vsock port 12345
 ```
 
 #### 日志轮转
@@ -276,7 +278,7 @@ systemctl restart trustruntime
 查看证书过期告警：
 
 ```bash
-grep "certificate.*expired" /var/log/trustruntime/trustruntime.log
+grep "Certificate has expired\|Certificate is not yet valid\|Certificate load failed" /var/log/trustruntime/trustruntime.log
 ```
 
 #### 通信证书过期处理
@@ -348,9 +350,23 @@ ls -la /etc/cert/server/ca_root.crt
 
 #### 检查日志
 
+**systemd 日志**（捕获早期启动错误）：
+
 ```bash
 journalctl -u trustruntime -n 50
 ```
+
+**日志文件**（日志系统启动后的完整日志）：
+
+```bash
+# 查看最新日志
+tail -100 /var/log/trustruntime/trustruntime.log
+
+# 查看历史日志
+ls -la /var/log/trustruntime/
+```
+
+**注意**：journalctl 主要捕获 stderr 输出（如 log4rs 初始化前的错误），日志系统启动后的日志记录在文件中。
 
 常见错误：
 
@@ -414,24 +430,8 @@ openssl crl -in /etc/cert/server/cert.crl -noout -text
 | result | 含义 | 解决方案 |
 |--------|------|----------|
 | 0 | 成功 | - |
-| 7 | 证书加载失败 | 检查签名证书路径 |
-| 8 | 私钥不可用 | 检查私钥文件权限 |
-| 9 | 签名算法错误 | 仅支持 ECC-256 |
-
-### 6.5 调试模式
-
-启用详细日志：
-
-```toml
-[log]
-level = "debug"  # 或 "trace"
-```
-
-或通过环境变量：
-
-```bash
-RUST_LOG=debug systemctl restart trustruntime
-```
+| 10 | 证书加载失败 | 检查签名证书路径 |
+| 12 | 签名算法错误 | 仅支持 ECC-256 |
 
 ---
 
@@ -482,7 +482,7 @@ cargo run --example verify_and_sign_example
 
 运行示例前需确保：
 - TrustRuntime 服务已启动
-- 客户端证书已配置
+- 客户端证书已配置（参见 `rust/examples/README.md`）
 
 ---
 

@@ -28,37 +28,135 @@ trustruntime/
 
 ## 快速开始
 
-### 构建
+### 1. 生成测试证书
+
+使用 cert-gen 工具快速生成测试证书：
+
+```bash
+cd rust
+cargo run -p cert-gen -- --output-dir /tmp/test-certs --force
+```
+
+### 2. 放置证书文件
+
+将生成的证书放置到系统路径：
+
+```bash
+# 创建证书目录
+sudo mkdir -p /etc/cert/cms /etc/cert/server
+
+# 复制 CMS 证书
+sudo cp /tmp/test-certs/cms/node-a/signer.crt /etc/cert/cms/signer.crt
+sudo cp /tmp/test-certs/cms/node-a/signer.key /etc/cert/cms/signer.key
+sudo cp /tmp/test-certs/cms/node-a/ca.crt /etc/cert/cms/ca_root.crt
+
+# 复制 TLS 证书
+sudo cp /tmp/test-certs/tls/server/node-a/certificate.crt /etc/cert/server/certificate.crt
+sudo cp /tmp/test-certs/tls/server/node-a/private.key /etc/cert/server/private.key
+sudo cp /tmp/test-certs/tls/server/node-a/key_pwd.txt /etc/cert/server/key_pwd.txt
+sudo cp /tmp/test-certs/tls/server/node-a/ca_root.crt /etc/cert/server/ca_root.crt
+
+# 设置权限
+sudo chmod 600 /etc/cert/cms/signer.key
+sudo chmod 600 /etc/cert/server/private.key
+sudo chmod 600 /etc/cert/server/key_pwd.txt
+```
+
+### 3. 准备配置文件
+
+```bash
+sudo mkdir -p /etc/trustruntime
+sudo cp conf/agent.toml /etc/trustruntime/agent.toml
+```
+
+### 4. 构建项目
 
 ```bash
 cd rust
 cargo build --release
 ```
 
-### 测试
+### 5. 启动服务（后台运行）
 
 ```bash
-cd rust
-cargo test --workspace
+nohup ./target/release/trustruntime --config /etc/trustruntime/agent.toml > /tmp/trustruntime.log 2>&1 &
 ```
 
-### 运行
-
-开发测试：
+查看服务日志：
 
 ```bash
-cd rust
-cargo build --release
-./target/release/trustruntime --config ../conf/agent.toml
+tail -f /tmp/trustruntime.log
+```
+
+或查看默认日志文件：
+
+```bash
+tail -f /var/log/trustruntime/trustruntime.log
+```
+
+### 6. 测试服务连接
+
+#### 6.1 准备测试配置文件
+
+创建文件 `/tmp/cms-test-config.toml`，内容如下：
+
+```toml
+[connection]
+port = 6174
+
+[tls_client]
+ca_cert = "/tmp/test-certs/tls/lcne/node-a/ca_root.crt"
+client_cert = "/tmp/test-certs/tls/lcne/node-a/certificate.crt"
+client_key = "/tmp/test-certs/tls/lcne/node-a/private.key"
+client_key_pwd = "/tmp/test-certs/tls/lcne/node-a/key_pwd.txt"
+
+[cms_certs]
+ca_cert = "/tmp/test-certs/cms/node-a/ca.crt"
+signer_cert = "/tmp/test-certs/cms/node-a/signer.crt"
+signer_key = "/tmp/test-certs/cms/node-a/signer.key"
+
+[server]
+binary_path = "trustruntime"
+```
+
+#### 6.2 编译并运行测试工具
+
+```bash
+# 编译 cms-test-cli
+cargo build --release -p cms-test-cli
+
+# 运行测试
+./target/release/cms-test-cli --config /tmp/cms-test-config.toml
+```
+
+#### 6.3 测试签名接口
+
+在 cms-test-cli REPL 界面中执行：
+
+```
+> connect
+Connected to vsock://1:6174
+
+> sign '{"to-sign":{"data":"hello world"}}'
+Response:
+{
+  "signed_data": "MIIM...",
+  "id": "abc123...",
+  "result": 0
+}
+
+> quit
+```
+
+服务连接成功，项目可用性验证完成。
+
+### 7. 停止服务
+
+```bash
+pkill -f trustruntime
 ```
 
 > **Windows用户替代方案**：使用WSL执行上述命令，参见 `.opencode/skills/wsl-cargo/SKILL.md`。
-
-生产部署（RPM安装后）：
-
-```bash
-trustruntime --config /etc/trustruntime/agent.toml
-```
 
 ## 接口
 

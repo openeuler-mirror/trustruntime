@@ -176,7 +176,7 @@ cms_crl = "test-certs/cms/cms.crl"
 
 comm_cert = "{{TLS_DIR}}/node.crt"
 comm_key = "{{TLS_DIR}}/node.key"
-comm_ca_root = "test-certs/tls/ca.crt"
+comm_ca_root = "test-certs/tls/ca/ca.crt"
 ```
 
 ---

@@ -19,13 +19,13 @@
 //!
 //! 运行前需要：
 //! - TrustRuntime 服务已启动
-//! - 配置正确的客户端证书
+//! - 配置正确的客户端证书（参见 README.md）
 //!
 //! 运行方法：
 //! ```bash
 //! # 设置环境变量（可选，默认使用内置值）
 //! export TRUSTRUNTIME_CID=3
-//! export TRUSTRUNTIME_PORT=12345
+//! export TRUSTRUNTIME_PORT=6174
 //! export TRUSTRUNTIME_CLIENT_CERT=/etc/cert/server/client.crt
 //! export TRUSTRUNTIME_CLIENT_KEY=/etc/cert/server/client.key
 //! export TRUSTRUNTIME_CA_CERT=/etc/cert/server/ca_root.crt

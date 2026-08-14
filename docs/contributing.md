@@ -182,14 +182,8 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum SignError {
-    #[error("证书加载失败: {0}")]
-    CertLoadError(#[from] openssl::error::ErrorStack),
-
-    #[error("私钥不可用")]
-    KeyUnavailable,
-
-    #[error("签名算法错误")]
-    AlgorithmError,
+    #[error("OpenSSL 错误: {0}")]
+    OpenSslError(#[from] openssl::error::ErrorStack),
 }
 ```
 
@@ -200,22 +194,41 @@ pub enum SignError {
 使用 `log` crate 宏：
 
 ```rust
-use log::{info, warn, error, debug};
+use log::{info, warn, error};
 
 // 启动信息
 info!("Service started on vsock port {}", port);
 
 // 告警
-warn!("Certificate {} will expire in {} days", cert_path, days);
+warn!("Certificate will expire in {} days", days);
 
 // 错误
 error!("Failed to load certificate: {}", err);
-
-// 调试信息
-debug!("Processing request type 0x{:02x}", msg_type);
 ```
 
 日志系统由 `logger::init_logger(&config.log)` 在启动时初始化（基于 `log4rs`）。
+
+**日志级别限制**：
+
+- **Release 版本**：仅支持 info/warn/error 级别
+- **Debug 版本**：支持所有级别（trace/debug/info/warn/error）
+- 配置验证会在 release 构建时拒绝 debug/trace 级别
+
+**日志安全规范**：
+
+禁止记录敏感信息：
+- 文件路径（证书路径、配置文件路径、密钥路径）
+- 密钥材料（私钥内容、密码）
+- 证书详情（not_before/not_after 时间戳）
+
+使用固定描述代替动态路径：
+```rust
+// 错误示例（泄露路径）
+error!("Failed to load certificate: {}", cert_path);
+
+// 正确示例（固定描述）
+error!("Failed to load certificate");
+```
 
 ### 3.4 模块职责边界
 
@@ -527,6 +540,12 @@ cargo generate-rpm -p trustruntime
 ```
 
 RPM 配置在 `rust/trustruntime/Cargo.toml` 的 `[package.metadata.generate-rpm]` 部分。
+
+**RPM 安装后行为**：
+
+- 服务自动启动：安装后自动启动 trustruntime 服务
+- 服务状态检查：`systemctl status trustruntime`
+- 日志查看：`journalctl -u trustruntime -f`
 
 ### 7.3 发布检查清单
 
