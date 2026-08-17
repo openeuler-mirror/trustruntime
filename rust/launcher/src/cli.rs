@@ -42,7 +42,6 @@ pub struct RunArgs {
     pub virtiofs: Vec<VirtiofsBind>,
     pub app_conf: Option<String>,
     pub port_forward: Vec<PortForwardValue>,
-    pub qemu_args: Option<String>,
     pub mem: Option<u64>,
     pub smp: Option<u16>,
     pub cid: Option<u32>,
@@ -365,7 +364,6 @@ fn parse_run_args(mut iter: Box<dyn Iterator<Item = String>>) -> Result<SubComma
         virtiofs: vec![],
         app_conf: None,
         port_forward: vec![],
-        qemu_args: None,
         mem: None,
         smp: None,
         cid: None,
@@ -412,9 +410,6 @@ fn parse_run_args(mut iter: Box<dyn Iterator<Item = String>>) -> Result<SubComma
                     port_forward,
                     parse_port_forward
                 );
-                handle_option!(s, iter, args, "qemu-args", qemu_args, |v| {
-                    validate_non_empty(v, "--qemu-args").map(|s| s.to_string())
-                });
                 handle_option!(s, iter, args, "mem", mem, validate_mem);
                 handle_option!(s, iter, args, "smp", smp, validate_smp);
                 handle_option!(s, iter, args, "cid", cid, validate_cid);
@@ -464,10 +459,6 @@ pub fn print_help(help_type: &HelpType) {
             println!(
                 "                              Example: --port-forward 8080:80 --port-forward 192.168.1.1:9090:90"
             );
-            println!(
-                "  --qemu-args <quoted-args>   (Optional) Extra QEMU arguments (use quotes for spaces)"
-            );
-            println!("                              Example: --qemu-args=\"--arg1=c1 --arg2=c2\"");
             println!(
                 "  --mem <num>                 (Optional) Memory size in MB (positive integer, e.g., 2048)"
             );
@@ -744,8 +735,6 @@ mod tests {
                 "3".to_string(),
                 "--app-conf".to_string(),
                 "/conf".to_string(),
-                "--qemu-args".to_string(),
-                "--extra".to_string(),
                 "--virtiofs".to_string(),
                 "/host:/guest".to_string(),
                 "--port-forward".to_string(),
@@ -764,7 +753,6 @@ mod tests {
             assert_eq!(args.kernel, Some("/path".to_string()));
             assert_eq!(args.payload, Some("/payload".to_string()));
             assert_eq!(args.app_conf, Some("/conf".to_string()));
-            assert_eq!(args.qemu_args, Some("--extra".to_string()));
             assert_eq!(args.virtiofs.len(), 1);
             assert_eq!(args.port_forward.len(), 1);
             assert_eq!(args.volume.len(), 1);
