@@ -276,44 +276,34 @@ level = "info"              # 日志级别（可选）
 max_file_size = 10          # 单文件最大大小 MB（必填）
 max_roll_count = 10         # 回滚文件个数（必填）
 
-[certificate]
-# 签名验签证书
-signer_cert = "/etc/cert/cms/signer.crt"       # 签名证书（必填）
-signer_key = "/etc/cert/cms/signer.key"        # 签名私钥（必填）
-ca_root_cert = "/etc/cert/cms/ca_root.crt"     # CA 根证书（必填）
-cms_crl = "/etc/cert/cms/cms.crl"              # CMS CRL（可选）
-
-# 通信证书
-comm_cert = "/etc/cert/server/certificate.crt"   # 通信证书（必填）
-comm_key = "/etc/cert/server/private.key"        # 通信私钥（必填）
-comm_key_pwd = "/etc/cert/server/key_pwd.txt"    # 私钥密码文件（可选）
-comm_ca_root = "/etc/cert/server/ca_root.crt"    # 通信 CA 根证书（必填）
-comm_crl = "/etc/cert/server/cert.crl"           # 通信 CRL（可选）
-
 [cert_check]
 interval_hours = 24         # 证书巡检间隔（可选）
 ```
+
+**注意**：证书路径已硬编码，不从配置文件读取。硬编码路径如下：
+- 通信证书：`/etc/cert/server/certificate.crt`
+- 通信私钥：`/etc/cert/server/private.key`
+- 通信私钥密码：`/etc/cert/server/key_pwd.txt`（可选）
+- 通信CA根证书：`/etc/cert/server/ca_root.crt`
+- 通信CRL：`/etc/cert/server/cert.crl`（可选）
+- 签名证书：`/etc/cert/cms/signer.crt`
+- 签名私钥：`/etc/cert/cms/signer.key`
+- CMS CA根证书：`/etc/cert/cms/ca_root.crt`
+- CMS CRL：`/etc/cert/cms/cms.crl`（可选）
 
 ### 4.2 配置项定义
 
 | Section | 配置项 | 类型 | 必填 | 默认值 | 说明 |
 |---------|--------|------|------|--------|------|
-| [vsock] | port | u32 | 是 | — | vsock 端口号 |
-| [vsock] | max_connections | u32 | 否 | 16 | 最大并发连接数 |
+| [vsock] | port | u32 | 是 | — | vsock 端口号（不能为 0） |
+| [vsock] | max_connections | u32 | 否 | 16 | 最大并发连接数（范围：1-1024） |
 | [log] | path | String | 是 | — | 日志文件路径 |
-| [log] | level | String | 否 | "info" | 日志级别（debug/info/warn/error），RUST_LOG 环境变量可覆盖 |
-| [log] | max_file_size | u64 | 是 | — | 单文件最大大小 (MB) |
-| [log] | max_roll_count | u32 | 是 | — | 回滚文件个数 |
-| [certificate] | signer_cert | String | 是 | — | 签名证书路径（PEM/DER） |
-| [certificate] | signer_key | String | 是 | — | 签名私钥路径（无密码） |
-| [certificate] | ca_root_cert | String | 是 | — | CMS CA 根证书路径 |
-| [certificate] | cms_crl | String | 否 | None | CMS CRL 路径，不配置则跳过校验 |
-| [certificate] | comm_cert | String | 是 | — | 通信证书路径（PEM/DER） |
-| [certificate] | comm_key | String | 是 | — | 通信私钥路径 |
-| [certificate] | comm_key_pwd | String | 否 | None | 通信私钥密码文件路径 |
-| [certificate] | comm_ca_root | String | 是 | — | 通信 CA 根证书路径 |
-| [certificate] | comm_crl | String | 否 | None | 通信 CRL 路径 |
-| [cert_check] | interval_hours | u64 | 否 | 24 | 证书巡检间隔（小时） |
+| [log] | level | String | 否 | "info" | 日志级别（info/warn/error），RUST_LOG 环境变量可覆盖。Release构建仅允许info/warn/error |
+| [log] | max_file_size | u64 | 是 | — | 单文件最大大小 (MB)（范围：1-100） |
+| [log] | max_roll_count | u32 | 是 | — | 回滚文件个数（范围：1-100） |
+| [cert_check] | interval_hours | u64 | 否 | 24 | 证书巡检间隔（小时）（范围：1-720） |
+
+**配置验证**：服务启动时验证所有配置项，超出范围将启动失败并输出错误日志。
 
 ### 4.3 配置项与模块归属
 
@@ -325,9 +315,9 @@ interval_hours = 24         # 证书巡检间隔（可选）
 | log.level | logger | 日志级别过滤 |
 | log.max_file_size | logger | 回滚触发阈值 |
 | log.max_roll_count | logger | 回滚文件数量 |
-| signer_cert / signer_key / ca_root_cert / cms_crl | trustring::cert_loader | 加载签名验签证书和 CA |
-| comm_cert / comm_key / comm_key_pwd / comm_ca_root / comm_crl | tls | 加载通信证书和 CA |
 | cert_check.interval_hours | cert_checker | 定时巡检间隔 |
+
+**证书路径**：硬编码路径由各模块直接使用，不通过配置传递。
 
 ---
 

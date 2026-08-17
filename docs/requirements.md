@@ -282,11 +282,10 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
   - `/usr/bin/trustruntime` — 服务二进制（权限 550）
   - `/etc/trustruntime/agent.toml` — 默认配置文件（权限 640，config=noreplace）
   - `/usr/lib/systemd/system/trustruntime.service` — systemd unit（权限 644）
-  - `/var/log/trustruntime/` — 日志目录（权限 750，%post 创建）
 - 依赖：openssl-libs, systemd
-- `%post` 脚本：创建日志目录、systemctl enable trustruntime.service、systemctl start trustruntime.service
+- `%post` 脚本：systemctl enable trustruntime.service、systemctl start trustruntime.service
 - `%postun` 脚本：systemctl stop trustruntime.service、systemctl disable trustruntime.service
-- 证书目录由 trt_launcher 创建，不在 RPM 包内管理
+- 日志目录和证书目录由 trt_launcher 创建和管理，不在 RPM 包内管理
 - 文件权限在 Cargo.toml 的 [package.metadata.generate-rpm] 中定义
 
 ### 8.2 systemd 服务配置

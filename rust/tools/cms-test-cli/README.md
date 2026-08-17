@@ -80,16 +80,16 @@ cargo run -p cms-test-cli -- --config my-config.toml --command 'scenario two-nod
 
 ```toml
 [connection]
-port = 12345
+port = 6174
 
 [tls_client]
-ca_cert = "/tmp/test-certs/tls/ca.crt"
-client_cert = "/tmp/test-certs/tls/client/client.crt"
-client_key = "/tmp/test-certs/tls/client/client.key"
-client_key_pwd = "/tmp/test-certs/tls/key_pwd.txt"  # 可选
+ca_cert = "/tmp/test-certs/tls/lcne/node-a/ca_root.crt"
+client_cert = "/tmp/test-certs/tls/lcne/node-a/certificate.crt"
+client_key = "/tmp/test-certs/tls/lcne/node-a/private.key"
+client_key_pwd = "/tmp/test-certs/tls/lcne/node-a/key_pwd.txt"  # 可选
 
 [cms_certs]
-ca_cert = "/tmp/test-certs/cms/ca.crt"
+ca_cert = "/tmp/test-certs/cms/node-a/ca.crt"
 signer_cert = "/tmp/test-certs/cms/node-a/signer.crt"
 signer_key = "/tmp/test-certs/cms/node-a/signer.key"
 
@@ -214,7 +214,7 @@ cms-test-cli v0.1.0
 Type 'help' for available commands.
 
 > connect
-Connected to vsock://1:12345
+Connected to vsock://1:6174
 
 > sign '{"to-sign":{"data":"hello world"}}'
 Response:

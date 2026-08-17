@@ -91,19 +91,21 @@ fn init_logger(config: &AppConfig) -> Result<(), i32> {
 }
 
 async fn check_certificates(
-    config: &AppConfig,
+    _config: &AppConfig,
     daemon: &mut Daemon,
 ) -> Result<CertificateChecker, ()> {
+    use trustruntime_framework::config::{COMM_CERT_PATH, SIGNER_CERT_PATH};
+
     let cert_checker = CertificateChecker::new(vec![
-        config.certificate.comm_cert().to_string(),
-        config.certificate.signer_cert().to_string(),
+        COMM_CERT_PATH.to_string(),
+        SIGNER_CERT_PATH.to_string(),
     ]);
 
     let statuses = cert_checker.check_all();
 
     let comm_expired = statuses
         .iter()
-        .find(|s| s.path == config.certificate.comm_cert() && s.expired);
+        .find(|s| s.path == COMM_CERT_PATH && s.expired);
 
     if let Some(_expired) = comm_expired {
         log::error!("Communication certificate has expired");
@@ -119,7 +121,7 @@ async fn check_certificates(
     }
 
     for status in &statuses {
-        if status.expired && status.path != config.certificate.comm_cert() {
+        if status.expired && status.path != COMM_CERT_PATH {
             log::warn!("CMS certificate has expired");
         }
     }

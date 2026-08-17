@@ -530,39 +530,23 @@ graph TB
     subgraph "agent.toml"
         VSOCK[vsock配置]
         LOGC[log配置]
-        CERTC[certificate配置]
+        CERTC[cert_check配置]
     end
 
     subgraph "vsock"
         PORT[port: u32]
-        MAX[max_connections: u16]
+        MAX[max_connections: u32]
     end
 
     subgraph "log"
         LPATH[path: String]
-        LLEV[level: String]
-        LSIZE[max_file_size: u32]
+        LLEV[level: LogLevel]
+        LSIZE[max_file_size: u64]
         LROLL[max_roll_count: u32]
     end
 
-    subgraph "certificate"
-        CMS[CMS证书]
-        TLS[TLS证书]
-    end
-
-    subgraph "CMS证书"
-        SCERT[signer_cert]
-        SKEY[signer_key]
-        CA[ca_root_cert]
-        CRL[cms_crl]
-    end
-
-    subgraph "TLS证书"
-        CCERT[comm_cert]
-        CKEY[comm_key]
-        CPWD[comm_key_pwd]
-        CCA[comm_ca_root]
-        CCRL[comm_crl]
+    subgraph "cert_check"
+        INT[interval_hours: u64]
     end
 
     VSOCK --> PORT
@@ -571,17 +555,7 @@ graph TB
     LOGC --> LLEV
     LOGC --> LSIZE
     LOGC --> LROLL
-    CERTC --> CMS
-    CERTC --> TLS
-    CMS --> SCERT
-    CMS --> SKEY
-    CMS --> CA
-    CMS --> CRL
-    TLS --> CCERT
-    TLS --> CKEY
-    TLS --> CPWD
-    TLS --> CCA
-    TLS --> CCRL
+    CERTC --> INT
 ```
 
 ---

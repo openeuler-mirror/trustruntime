@@ -16,7 +16,7 @@ use std::env;
 use std::io::{Read, Write};
 
 pub const VSOCK_CID: u32 = 3;
-pub const VSOCK_PORT: u32 = 12345;
+pub const VSOCK_PORT: u32 = 6174;
 pub const VERSION: u32 = 0xFFFF0400;
 
 pub fn get_config() -> (u32, u32) {

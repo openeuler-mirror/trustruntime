@@ -42,7 +42,7 @@ cargo run --example verify_example
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
 | `TRUSTRUNTIME_CID` | 3 | vsock CID（机密虚机） |
-| `TRUSTRUNTIME_PORT` | 12345 | vsock 端口 |
+| `TRUSTRUNTIME_PORT` | 6174 | vsock 端口 |
 
 ### 证书配置
 
@@ -65,9 +65,9 @@ cd rust && cargo run -p cert-gen -- --output-dir /tmp/test-certs
 生成后设置环境变量：
 
 ```bash
-export TRUSTRUNTIME_CLIENT_CERT=/tmp/test-certs/tls/client/client.crt
-export TRUSTRUNTIME_CLIENT_KEY=/tmp/test-certs/tls/client/client.key
-export TRUSTRUNTIME_CA_CERT=/tmp/test-certs/tls/ca.crt
+export TRUSTRUNTIME_CLIENT_CERT=/tmp/test-certs/tls/lcne/node-a/certificate.crt
+export TRUSTRUNTIME_CLIENT_KEY=/tmp/test-certs/tls/lcne/node-a/private.key
+export TRUSTRUNTIME_CA_CERT=/tmp/test-certs/tls/lcne/node-a/ca_root.crt
 ```
 
 ## 依赖

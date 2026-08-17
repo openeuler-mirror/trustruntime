@@ -81,10 +81,6 @@ pub struct AppConfig {
     /// 日志配置
     pub log: LogConfig,
 
-    /// 证书配置（硬编码路径，不从配置文件读取）
-    #[serde(default)]
-    pub certificate: CertificateConfig,
-
     /// 证书检查配置（可选，默认每24小时检查一次）
     #[serde(default)]
     pub cert_check: CertCheckConfig,
@@ -232,86 +228,6 @@ impl LogConfig {
     }
 }
 
-/// 证书配置
-///
-/// 证书路径已硬编码，不再从配置文件读取。
-///
-/// 硬编码路径：
-/// - 通信证书：/etc/cert/server/certificate.crt
-/// - 通信私钥：/etc/cert/server/private.key
-/// - 通信私钥密码：/etc/cert/server/key_pwd.txt（可选）
-/// - 通信CA根证书：/etc/cert/server/ca_root.crt
-/// - 通信CRL：/etc/cert/server/cert.crl（可选）
-/// - 签名证书：/etc/cert/cms/signer.crt
-/// - 签名私钥：/etc/cert/cms/signer.key
-/// - CMS CA根证书：/etc/cert/cms/ca_root.crt
-/// - CMS CRL：/etc/cert/cms/cms.crl（可选）
-#[derive(Debug, Deserialize, PartialEq, Default)]
-pub struct CertificateConfig {
-    #[serde(skip)]
-    _private: (),
-}
-
-impl CertificateConfig {
-    pub fn comm_cert(&self) -> &'static str {
-        COMM_CERT_PATH
-    }
-
-    pub fn comm_key(&self) -> &'static str {
-        COMM_KEY_PATH
-    }
-
-    pub fn comm_key_pwd(&self) -> &'static str {
-        COMM_KEY_PWD_PATH
-    }
-
-    pub fn comm_ca_root(&self) -> &'static str {
-        COMM_CA_ROOT_PATH
-    }
-
-    pub fn comm_crl(&self) -> &'static str {
-        COMM_CRL_PATH
-    }
-
-    pub fn signer_cert(&self) -> &'static str {
-        SIGNER_CERT_PATH
-    }
-
-    pub fn signer_key(&self) -> &'static str {
-        SIGNER_KEY_PATH
-    }
-
-    pub fn ca_root_cert(&self) -> &'static str {
-        CA_ROOT_CERT_PATH
-    }
-
-    pub fn cms_crl(&self) -> &'static str {
-        CMS_CRL_PATH
-    }
-
-    pub fn validate_paths(&self) -> Result<(), ConfigError> {
-        let required_paths = [
-            ("通信证书", COMM_CERT_PATH),
-            ("通信私钥", COMM_KEY_PATH),
-            ("通信CA根证书", COMM_CA_ROOT_PATH),
-            ("签名证书", SIGNER_CERT_PATH),
-            ("签名私钥", SIGNER_KEY_PATH),
-            ("CMS CA根证书", CA_ROOT_CERT_PATH),
-        ];
-
-        for (name, path) in required_paths.iter() {
-            if !Path::new(path).exists() {
-                return Err(ConfigError::ValidationError(format!(
-                    "{}文件不存在，请检查证书部署",
-                    name
-                )));
-            }
-        }
-
-        Ok(())
-    }
-}
-
 /// 证书检查配置
 ///
 /// 定期检查证书有效性的配置项。
@@ -415,7 +331,6 @@ impl AppConfig {
         self.vsock.validate()?;
         self.log.validate()?;
         self.cert_check.validate()?;
-        self.certificate.validate_paths()?;
         Ok(())
     }
 }
@@ -478,22 +393,6 @@ max_roll_count = 10
         assert_eq!(config.vsock.max_connections, 16);
         assert_eq!(config.log.level, LogLevel::Info);
         assert_eq!(config.cert_check.interval_hours, 24);
-    }
-
-    #[test]
-    fn parsing_toml_with_missing_required_field_returns_error() {
-        let incomplete = r#"
-[vsock]
-port = 12345
-
-[log]
-path = "/var/log/test.log"
-max_file_size = 10
-max_roll_count = 10
-
-[certificate]
-"#;
-        assert!(AppConfig::from_toml(incomplete).is_ok());
     }
 
     #[test]
