@@ -16,7 +16,6 @@ StartLimitBurst=5
 #资源限制
 LimitNOFILE=65536
 LimitNPROC=65536
-MemoryMax=10M
 
 #日志设置
 StandardOutput=journal
