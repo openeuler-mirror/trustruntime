@@ -72,7 +72,10 @@ cp -f /tmp/share/server/cert.crl         /sysroot/etc/cert/server/cert.crl
 /sbin/busybox chmod 400 /sysroot/etc/cert/server/*
 
 /sbin/busybox chown -R 0:0 /sysroot/etc/cert/
-/sbin/busybox chown -R lcne:verona /sysroot/etc/cert/communication/
+
+uid=$(grep '^lcne:' /sysroot/etc/passwd | sed 's/[^:]*:[^:]*:\([^:]*\):.*/\1/')
+gid=$(grep '^lcne:' /sysroot/etc/passwd | sed 's/[^:]*:[^:]*:[^:]*:\([^:]*\):.*/\1/')
+/sbin/busybox chown -R "$uid:$gid" /sysroot/etc/cert/communication/
 
 umount /tmp/share
 
