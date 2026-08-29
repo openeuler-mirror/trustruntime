@@ -35,6 +35,7 @@ pub enum ParseError {
 pub enum Command {
     Connect {
         port: Option<u32>,
+        cid: Option<u32>,
     },
     Disconnect,
     Status,
@@ -168,8 +169,10 @@ pub enum Command {
 ///
 /// # 示例
 /// ```
-/// parse("connect 12345")  // => Command::Connect { port: Some(12345) }
-/// parse("sign \"hello\"")  // => Command::Sign { data: "hello".to_string() }
+/// parse("connect 12345")          // => Command::Connect { port: Some(12345), cid: None }
+/// parse("connect --cid 3")        // => Command::Connect { port: None, cid: Some(3) }
+/// parse("connect 12345 --cid 3") // => Command::Connect { port: Some(12345), cid: Some(3) }
+/// parse("sign \"hello\"")         // => Command::Sign { data: "hello".to_string() }
 /// ```
 pub fn parse(input: &str) -> Result<Command, ParseError> {
     // 分割参数（支持引号包裹）
@@ -258,16 +261,41 @@ fn split_args(input: &str) -> Vec<String> {
 }
 
 fn parse_connect(args: &[String]) -> Result<Command, ParseError> {
-    let port = if args.is_empty() {
-        None
-    } else {
-        Some(
-            args[0]
-                .parse::<u32>()
-                .map_err(|_| ParseError::InvalidArgument("port".to_string()))?,
-        )
-    };
-    Ok(Command::Connect { port })
+    let mut port = None;
+    let mut cid = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--cid" {
+            cid = Some(
+                args.get(i + 1)
+                    .ok_or_else(|| ParseError::MissingArgument("cid value".to_string()))?
+                    .parse::<u32>()
+                    .map_err(|_| ParseError::InvalidArgument("cid".to_string()))?,
+            );
+            i += 2;
+        } else if args[i] == "--port" {
+            port = Some(
+                args.get(i + 1)
+                    .ok_or_else(|| ParseError::MissingArgument("port value".to_string()))?
+                    .parse::<u32>()
+                    .map_err(|_| ParseError::InvalidArgument("port".to_string()))?,
+            );
+            i += 2;
+        } else if port.is_none() {
+            // 第一个非 --flag 参数作为端口号（向后兼容 connect <port>）
+            port = Some(
+                args[i]
+                    .parse::<u32>()
+                    .map_err(|_| ParseError::InvalidArgument("port".to_string()))?,
+            );
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+
+    Ok(Command::Connect { port, cid })
 }
 
 /// 解析 JSON 请求参数

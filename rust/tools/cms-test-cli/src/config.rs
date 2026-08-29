@@ -19,6 +19,7 @@
 //!
 //! ```toml
 //! [connection]
+//! cid = 1
 //! port = 12345
 //!
 //! [tls_client]
@@ -26,15 +27,6 @@
 //! client_cert = "/path/to/tls/ubse/node-a/server.pem"
 //! client_key = "/path/to/tls/ubse/node-a/server_key.pem"
 //! client_key_pwd = "/path/to/tls/ubse/node-a/key_pwd.txt"  # 可选
-//!
-//! [cms_certs]
-//! ca_cert = "/path/to/cms/node-a/ca.crt"
-//! signer_cert = "/path/to/cms/node-a/signer.crt"
-//! signer_key = "/path/to/cms/node-a/signer.key"
-//! expired_cert = "/path/to/cms/expired/signer.crt"  # 可选
-//! expired_key = "/path/to/cms/expired/signer.key"   # 可选
-//! revoked_cert = "/path/to/cms/revoked/signer.crt"  # 可选
-//! revoked_key = "/path/to/cms/revoked/signer.key"   # 可选
 //!
 //! [server]
 //! binary_path = "trustruntime"
@@ -69,9 +61,6 @@ pub struct CmsTestConfig {
     /// TLS 客户端证书配置
     pub tls_client: TlsClientConfig,
 
-    /// CMS 证书配置
-    pub cms_certs: CmsCertsConfig,
-
     /// 服务器配置
     #[serde(default)]
     pub server: ServerConfig,
@@ -84,8 +73,17 @@ pub struct CmsTestConfig {
 /// 连接配置
 #[derive(Debug, Deserialize)]
 pub struct ConnectionConfig {
+    /// vsock CID（1=VMADDR_CID_LOCAL, 2=VMADDR_CID_HOST, >=3=guest VM）
+    #[serde(default = "default_cid")]
+    pub cid: u32,
+
     /// vsock 端口号
     pub port: u32,
+}
+
+/// 默认 CID 值（VMADDR_CID_LOCAL）
+fn default_cid() -> u32 {
+    1
 }
 
 /// TLS 客户端证书配置
@@ -102,31 +100,6 @@ pub struct TlsClientConfig {
 
     /// 私钥密码文件路径（可选）
     pub client_key_pwd: Option<PathBuf>,
-}
-
-/// CMS 证书配置
-#[derive(Debug, Deserialize, Clone)]
-pub struct CmsCertsConfig {
-    /// CA 根证书路径，用于验签测试
-    pub ca_cert: PathBuf,
-
-    /// 签名者证书路径
-    pub signer_cert: PathBuf,
-
-    /// 签名者私钥路径
-    pub signer_key: PathBuf,
-
-    /// 过期证书路径（可选，用于安全测试）
-    pub expired_cert: Option<PathBuf>,
-
-    /// 过期私钥路径（可选）
-    pub expired_key: Option<PathBuf>,
-
-    /// 已吊销证书路径（可选，用于安全测试）
-    pub revoked_cert: Option<PathBuf>,
-
-    /// 已吊销私钥路径（可选）
-    pub revoked_key: Option<PathBuf>,
 }
 
 /// 服务器配置
@@ -172,6 +145,14 @@ impl CmsTestConfig {
     /// - 端口号范围
     /// - 所有必需证书文件是否存在
     pub fn validate(&self) -> Result<(), ConfigError> {
+        // CID 验证（0 无效，1=LOCAL, 2=HOST, >=3=guest VM）
+        if self.connection.cid == 0 {
+            return Err(ConfigError::Validation(format!(
+                "connection.cid must be >= 1, got {}",
+                self.connection.cid
+            )));
+        }
+
         // 端口范围验证
         if self.connection.port == 0 || self.connection.port > 65535 {
             return Err(ConfigError::Validation(format!(
@@ -188,25 +169,6 @@ impl CmsTestConfig {
         // 私钥密码文件（可选）
         if let Some(ref pwd_path) = self.tls_client.client_key_pwd {
             Self::validate_path_exists(pwd_path, "tls_client.client_key_pwd")?;
-        }
-
-        // CMS 证书文件存在性验证
-        Self::validate_path_exists(&self.cms_certs.ca_cert, "cms_certs.ca_cert")?;
-        Self::validate_path_exists(&self.cms_certs.signer_cert, "cms_certs.signer_cert")?;
-        Self::validate_path_exists(&self.cms_certs.signer_key, "cms_certs.signer_key")?;
-
-        // 可选特殊证书验证
-        if let Some(ref path) = self.cms_certs.expired_cert {
-            Self::validate_path_exists(path, "cms_certs.expired_cert")?;
-        }
-        if let Some(ref path) = self.cms_certs.expired_key {
-            Self::validate_path_exists(path, "cms_certs.expired_key")?;
-        }
-        if let Some(ref path) = self.cms_certs.revoked_cert {
-            Self::validate_path_exists(path, "cms_certs.revoked_cert")?;
-        }
-        if let Some(ref path) = self.cms_certs.revoked_key {
-            Self::validate_path_exists(path, "cms_certs.revoked_key")?;
         }
 
         Ok(())
@@ -238,17 +200,11 @@ mod tests {
         file
     }
 
-    fn create_valid_config_content(
-        ca_cert: &str,
-        client_cert: &str,
-        client_key: &str,
-        cms_ca: &str,
-        signer_cert: &str,
-        signer_key: &str,
-    ) -> String {
+    fn create_valid_config_content(ca_cert: &str, client_cert: &str, client_key: &str) -> String {
         format!(
             r#"
 [connection]
+cid = 1
 port = 12345
 
 [tls_client]
@@ -256,15 +212,10 @@ ca_cert = "{}"
 client_cert = "{}"
 client_key = "{}"
 
-[cms_certs]
-ca_cert = "{}"
-signer_cert = "{}"
-signer_key = "{}"
-
 [server]
 binary_path = "trustruntime"
 "#,
-            ca_cert, client_cert, client_key, cms_ca, signer_cert, signer_key
+            ca_cert, client_cert, client_key
         )
     }
 
@@ -273,21 +224,16 @@ binary_path = "trustruntime"
         let ca = create_test_cert_file();
         let client_cert = create_test_cert_file();
         let client_key = create_test_cert_file();
-        let cms_ca = create_test_cert_file();
-        let signer_cert = create_test_cert_file();
-        let signer_key = create_test_cert_file();
 
         let content = create_valid_config_content(
             ca.path().to_str().unwrap(),
             client_cert.path().to_str().unwrap(),
             client_key.path().to_str().unwrap(),
-            cms_ca.path().to_str().unwrap(),
-            signer_cert.path().to_str().unwrap(),
-            signer_key.path().to_str().unwrap(),
         );
 
         let config: CmsTestConfig = toml::from_str(&content).unwrap();
         assert_eq!(config.connection.port, 12345);
+        assert_eq!(config.connection.cid, 1);
         assert!(config.tls_client.client_key_pwd.is_none());
     }
 
@@ -296,17 +242,11 @@ binary_path = "trustruntime"
         let ca = create_test_cert_file();
         let client_cert = create_test_cert_file();
         let client_key = create_test_cert_file();
-        let cms_ca = create_test_cert_file();
-        let signer_cert = create_test_cert_file();
-        let signer_key = create_test_cert_file();
 
         let content = create_valid_config_content(
             ca.path().to_str().unwrap(),
             client_cert.path().to_str().unwrap(),
             client_key.path().to_str().unwrap(),
-            cms_ca.path().to_str().unwrap(),
-            signer_cert.path().to_str().unwrap(),
-            signer_key.path().to_str().unwrap(),
         );
 
         let mut config_file = NamedTempFile::new().unwrap();
@@ -314,6 +254,7 @@ binary_path = "trustruntime"
 
         let config = CmsTestConfig::from_file(config_file.path().to_str().unwrap()).unwrap();
         assert_eq!(config.connection.port, 12345);
+        assert_eq!(config.connection.cid, 1);
     }
 
     #[test]
@@ -326,11 +267,6 @@ port = 12345
 ca_cert = "/nonexistent/path/ca.crt"
 client_cert = "/nonexistent/path/client.crt"
 client_key = "/nonexistent/path/client.key"
-
-[cms_certs]
-ca_cert = "/nonexistent/path/cms_ca.crt"
-signer_cert = "/nonexistent/path/signer.crt"
-signer_key = "/nonexistent/path/signer.key"
 "#;
 
         let config: CmsTestConfig = toml::from_str(content).unwrap();
@@ -349,11 +285,6 @@ port = 0
 ca_cert = "/tmp/ca.crt"
 client_cert = "/tmp/client.crt"
 client_key = "/tmp/client.key"
-
-[cms_certs]
-ca_cert = "/tmp/cms_ca.crt"
-signer_cert = "/tmp/signer.crt"
-signer_key = "/tmp/signer.key"
 "#;
 
         let config: CmsTestConfig = toml::from_str(content).unwrap();
@@ -366,9 +297,6 @@ signer_key = "/tmp/signer.key"
         let ca = create_test_cert_file();
         let client_cert = create_test_cert_file();
         let client_key = create_test_cert_file();
-        let cms_ca = create_test_cert_file();
-        let signer_cert = create_test_cert_file();
-        let signer_key = create_test_cert_file();
 
         let content = format!(
             r#"
@@ -379,23 +307,34 @@ port = 12345
 ca_cert = "{}"
 client_cert = "{}"
 client_key = "{}"
-
-[cms_certs]
-ca_cert = "{}"
-signer_cert = "{}"
-signer_key = "{}"
 "#,
             ca.path().to_str().unwrap(),
             client_cert.path().to_str().unwrap(),
-            client_key.path().to_str().unwrap(),
-            cms_ca.path().to_str().unwrap(),
-            signer_cert.path().to_str().unwrap(),
-            signer_key.path().to_str().unwrap()
+            client_key.path().to_str().unwrap()
         );
 
         let config: CmsTestConfig = toml::from_str(&content).unwrap();
         assert!(config.validate().is_ok());
-        assert!(config.cms_certs.expired_cert.is_none());
+        assert_eq!(config.connection.cid, 1);
         assert!(config.server.binary_path == Path::new("trustruntime"));
+    }
+
+    #[test]
+    fn invalid_cid_returns_validation_error() {
+        let content = r#"
+[connection]
+cid = 0
+port = 12345
+
+[tls_client]
+ca_cert = "/tmp/ca.crt"
+client_cert = "/tmp/client.crt"
+client_key = "/tmp/client.key"
+"#;
+
+        let config: CmsTestConfig = toml::from_str(content).unwrap();
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ConfigError::Validation(_))));
     }
 }

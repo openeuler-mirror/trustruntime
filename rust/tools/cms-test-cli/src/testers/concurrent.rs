@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 pub struct ConcurrentTester {
     tls_config: TlsClientConfig,
     port: u32,
+    cid: u32,
 }
 
 impl ConcurrentTester {
@@ -46,8 +47,13 @@ impl ConcurrentTester {
     ///
     /// * `tls_config` - TLS 客户端证书配置
     /// * `port` - vsock 服务端口
-    pub fn new(tls_config: TlsClientConfig, port: u32) -> Self {
-        Self { tls_config, port }
+    /// * `cid` - vsock CID
+    pub fn new(tls_config: TlsClientConfig, port: u32, cid: u32) -> Self {
+        Self {
+            tls_config,
+            port,
+            cid,
+        }
     }
 
     /// 读取私钥密码（如果配置了密码文件）
@@ -90,6 +96,7 @@ impl ConcurrentTester {
             let data_clone = data.to_string();
             let interval_clone = interval;
             let port = self.port;
+            let cid = self.cid;
             let tls_ca = self.tls_config.ca_cert.clone();
             let tls_client_cert = self.tls_config.client_cert.clone();
             let tls_client_key = self.tls_config.client_key.clone();
@@ -98,6 +105,7 @@ impl ConcurrentTester {
 
             let handle = thread::spawn(move || {
                 let mut client = VsockClient::connect(
+                    cid,
                     port,
                     &tls_ca,
                     &tls_client_cert,
@@ -182,6 +190,7 @@ impl ConcurrentTester {
             let id_clone = id.to_string();
             let interval_clone = interval;
             let port = self.port;
+            let cid = self.cid;
             let tls_ca = self.tls_config.ca_cert.clone();
             let tls_client_cert = self.tls_config.client_cert.clone();
             let tls_client_key = self.tls_config.client_key.clone();
@@ -190,6 +199,7 @@ impl ConcurrentTester {
 
             let handle = thread::spawn(move || {
                 let mut client = VsockClient::connect(
+                    cid,
                     port,
                     &tls_ca,
                     &tls_client_cert,
@@ -306,6 +316,7 @@ impl ConcurrentTester {
             let sign_id_clone = params.sign_id.clone();
             let interval_clone = interval;
             let port = self.port;
+            let cid = self.cid;
             let tls_ca = self.tls_config.ca_cert.clone();
             let tls_client_cert = self.tls_config.client_cert.clone();
             let tls_client_key = self.tls_config.client_key.clone();
@@ -314,6 +325,7 @@ impl ConcurrentTester {
 
             let handle = thread::spawn(move || {
                 let mut client = VsockClient::connect(
+                    cid,
                     port,
                     &tls_ca,
                     &tls_client_cert,
@@ -398,6 +410,7 @@ impl ConcurrentTester {
             None => {
                 println!("Auto-fetching signature for verify-sign test...");
                 let mut client = VsockClient::connect(
+                    self.cid,
                     self.port,
                     &self.tls_config.ca_cert,
                     &self.tls_config.client_cert,

@@ -15,7 +15,7 @@
 //! 提供预定义测试场景的运行入口，指向integration-tests包中的具体实现。
 //! 场景分类遵循测试规范，覆盖正常、错误和边界三类场景。
 
-use crate::config::{CmsCertsConfig, TlsClientConfig};
+use crate::config::TlsClientConfig;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -31,20 +31,14 @@ pub enum ScenarioError {
 
 pub struct ScenarioRunner {
     tls_config: TlsClientConfig,
-    cms_certs: CmsCertsConfig,
     #[allow(dead_code)]
     binary_path: PathBuf,
 }
 
 impl ScenarioRunner {
-    pub fn new(
-        tls_config: TlsClientConfig,
-        cms_certs: CmsCertsConfig,
-        binary_path: PathBuf,
-    ) -> Self {
+    pub fn new(tls_config: TlsClientConfig, binary_path: PathBuf) -> Self {
         Self {
             tls_config,
-            cms_certs,
             binary_path,
         }
     }
@@ -53,10 +47,8 @@ impl ScenarioRunner {
         Ok(format!(
             "Two-node scenario (N01) requires running integration-tests.\n\
              Use: cargo test -p integration-tests n01_two_node_sign_verify -- --include-ignored\n\
-             TLS CA: {}\n\
-             CMS CA: {}",
-            self.tls_config.ca_cert.display(),
-            self.cms_certs.ca_cert.display()
+             TLS CA: {}",
+            self.tls_config.ca_cert.display()
         ))
     }
 

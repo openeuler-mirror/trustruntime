@@ -24,7 +24,7 @@
 //! ## 使用示例
 //! ```text
 //! // 连接服务端
-//! let client = VsockClient::connect(port, tls_ca, client_cert, client_key, None)?;
+//! let client = VsockClient::connect(cid, port, tls_ca, client_cert, client_key, None)?;
 //! // 发送签名请求
 //! let response = client.sign("test data")?;
 //! ```
@@ -205,6 +205,7 @@ impl VsockClient {
     /// 建立vsock连接并完成TLS握手。
     ///
     /// # Arguments
+    /// * `cid` - vsock CID（1=VMADDR_CID_LOCAL, 2=VMADDR_CID_HOST, >=3=guest VM）
     /// * `port` - vsock端口
     /// * `tls_ca_cert` - TLS CA证书路径
     /// * `tls_client_cert` - TLS客户端证书路径
@@ -217,15 +218,13 @@ impl VsockClient {
     /// # Errors
     /// 连接失败或TLS握手失败时返回错误
     pub fn connect(
+        cid: u32,
         port: u32,
         tls_ca_cert: &PathBuf,
         tls_client_cert: &PathBuf,
         tls_client_key: &PathBuf,
         key_password: Option<&str>,
     ) -> Result<Self, VsockError> {
-        // 使用VMADDR_CID_LOCAL (1) 作为连接CID
-        let cid: u32 = 1;
-
         let raw_stream =
             connect_vsock(cid, port).map_err(|e| VsockError::ConnectionFailed(e.to_string()))?;
 

@@ -66,6 +66,7 @@ fn c01_tls_mutual_auth_success() {
         .expect("Failed to start node-a");
 
     let mut client = VsockClient::connect(
+        1,
         12345,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -118,6 +119,7 @@ fn c02_client_cert_crl_revoked() {
         .expect("Failed to start node-a");
 
     let result = VsockClient::connect(
+        1,
         12345,
         &paths.tls_ca_cert(),
         &paths.tls_client_revoked_cert(),
@@ -171,6 +173,7 @@ fn c03_client_cert_wrong_ca() {
         .expect("Failed to start node-a");
 
     let result = VsockClient::connect(
+        1,
         12345,
         &paths.tls_ca_cert(),
         &paths.tls_client_wrong_ca_cert(),
@@ -231,6 +234,7 @@ fn c04_client_cert_invalid() {
     fs::write(&invalid_key_path, "not a valid key").expect("Failed to write invalid key");
 
     let result = VsockClient::connect(
+        1,
         12345,
         &paths.tls_ca_cert(),
         &invalid_cert_path,
@@ -284,6 +288,7 @@ fn c05_message_too_long() {
         .expect("Failed to start node-a");
 
     let mut client = VsockClient::connect(
+        1,
         12345,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -338,6 +343,7 @@ fn c06_version_mismatch() {
         .expect("Failed to start node-a");
 
     let mut client = VsockClient::connect(
+        1,
         12345,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -392,6 +398,7 @@ fn c07_byte_order_le_consistency() {
         .expect("Failed to start node-a");
 
     let mut client = VsockClient::connect(
+        1,
         12345,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -449,6 +456,7 @@ fn c08_version_mismatch_rejection() {
         .expect("Failed to start node-a");
 
     let mut client = VsockClient::connect(
+        1,
         12345,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -522,7 +530,7 @@ fn c09_concurrent_16_connections() {
 
         let handle = thread::spawn(move || {
             let mut client =
-                VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, key_pwd.as_deref())
+                VsockClient::connect(1, 12345, &tls_ca, &tls_cert, &tls_key, key_pwd.as_deref())
                     .unwrap_or_else(|e| panic!("Failed to connect client {}: {}", i, e));
 
             let resp = client
@@ -603,6 +611,7 @@ fn c10_semaphore_limit_wait() {
 
         let handle = thread::spawn(move || {
             let mut client = VsockClient::connect(
+                1,
                 12345,
                 &tls_ca,
                 &tls_cert,
@@ -635,7 +644,7 @@ fn c10_semaphore_limit_wait() {
 
     let start_time = std::time::Instant::now();
     let mut client_17 =
-        VsockClient::connect(12345, &tls_ca, &tls_cert, &tls_key, key_pwd.as_deref())
+        VsockClient::connect(1, 12345, &tls_ca, &tls_cert, &tls_key, key_pwd.as_deref())
             .expect("Failed to connect client 17");
 
     // Connection should eventually succeed (after one of the 16 releases)
@@ -704,6 +713,7 @@ fn c11_semaphore_release_after_disconnect() {
 
         let handle = thread::spawn(move || {
             let mut client = VsockClient::connect(
+                1,
                 12345,
                 &tls_ca,
                 &tls_cert,
@@ -737,6 +747,7 @@ fn c11_semaphore_release_after_disconnect() {
 
         let handle = thread::spawn(move || {
             let mut client = VsockClient::connect(
+                1,
                 12345,
                 &tls_ca,
                 &tls_cert,
