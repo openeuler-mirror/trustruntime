@@ -26,7 +26,7 @@ pub fn generate_cms_certificates(output_path: &Path, group: &EcGroup) {
     let cms_dir = output_path.join("cms");
     fs::create_dir_all(&cms_dir).expect("Failed to create cms directory");
 
-    let (ca_cert, ca_pkey, _ca_id) = create_ca_cert(group, "CMS Test CA");
+    let (ca_cert, ca_pkey, _ca_id) = create_ca_cert(group, "localhost");
     fs::write(
         cms_dir.join("ca.crt"),
         ca_cert.to_pem().expect("Failed to PEM encode CA cert"),
@@ -50,7 +50,7 @@ pub fn generate_cms_certificates(output_path: &Path, group: &EcGroup) {
         fs::create_dir_all(&node_dir).expect("Failed to create node directory");
 
         let (cert, key, _cert_id) =
-            create_signer_cert(group, &ca_cert, &ca_pkey, format!("CMS {}", node));
+            create_signer_cert(group, &ca_cert, &ca_pkey, "localhost".to_string());
         fs::write(
             node_dir.join("signer.crt"),
             cert.to_pem().expect("Failed to PEM encode cert"),
@@ -72,7 +72,7 @@ pub fn generate_cms_certificates(output_path: &Path, group: &EcGroup) {
     let expired_dir = cms_dir.join("expired");
     fs::create_dir_all(&expired_dir).expect("Failed to create expired directory");
     let (expired_cert, expired_key, _) =
-        create_expired_cert(group, &ca_cert, &ca_pkey, "CMS Expired");
+        create_expired_cert(group, &ca_cert, &ca_pkey, "localhost");
     fs::write(
         expired_dir.join("signer.crt"),
         expired_cert.to_pem().expect("Failed to PEM encode"),
@@ -92,7 +92,7 @@ pub fn generate_cms_certificates(output_path: &Path, group: &EcGroup) {
     let revoked_dir = cms_dir.join("revoked");
     fs::create_dir_all(&revoked_dir).expect("Failed to create revoked directory");
     let (revoked_cert, revoked_key, revoked_id) =
-        create_signer_cert(group, &ca_cert, &ca_pkey, "CMS Revoked".to_string());
+        create_signer_cert(group, &ca_cert, &ca_pkey, "localhost".to_string());
     fs::write(
         revoked_dir.join("signer.crt"),
         revoked_cert.to_pem().expect("Failed to PEM encode"),
@@ -128,7 +128,7 @@ pub fn generate_cms_certificates(output_path: &Path, group: &EcGroup) {
 
     let self_signed_dir = cms_dir.join("self-signed");
     fs::create_dir_all(&self_signed_dir).expect("Failed to create self-signed directory");
-    let (self_cert, self_key, _) = create_self_signed_cert(group, "CMS Self-Signed");
+    let (self_cert, self_key, _) = create_self_signed_cert(group, "localhost");
     fs::write(
         self_signed_dir.join("signer.crt"),
         self_cert.to_pem().expect("Failed to PEM encode"),
@@ -150,7 +150,7 @@ pub fn generate_tls_certificates(output_path: &Path, group: &EcGroup) {
 
     let key_password = b"MyPasswd123";
 
-    let (ca_cert, ca_pkey, _) = create_ca_cert(group, "TLS Unified CA");
+    let (ca_cert, ca_pkey, _) = create_ca_cert(group, "localhost");
     let ca_dir = tls_dir.join("ca");
     fs::create_dir_all(&ca_dir).expect("Failed to create CA directory");
     fs::write(
@@ -250,12 +250,11 @@ fn generate_ubse_cert(
     key_password: &[u8],
 ) {
     let ubse_dir = tls_dir.join("ubse").join(node);
-    let cn = format!("{}-ubse", node);
     let (cert, key, _) = create_cert_with_usage(
         group,
         ca_cert,
         ca_pkey,
-        &cn,
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
         Some(&["serverAuth", "clientAuth"]),
     );
@@ -283,14 +282,13 @@ fn generate_lcne_cert(
     key_password: &[u8],
 ) {
     let lcne_dir = tls_dir.join("lcne").join(node);
-    let cn = format!("{}-lcne", node);
     let (cert, key, _) = create_cert_with_usage(
         group,
         ca_cert,
         ca_pkey,
-        &cn,
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
-        Some(&["clientAuth"]),
+        Some(&["serverAuth", "clientAuth"]),
     );
 
     write_cert_files(
@@ -321,7 +319,7 @@ fn generate_test_client_certs(
     fs::create_dir_all(&test_clients_dir).expect("Failed to create test-clients directory");
 
     // 生成另一个CA（用于测试错误CA场景）
-    let (other_ca_cert, other_ca_pkey, _) = create_ca_cert(group, "TLS Test Other CA");
+    let (other_ca_cert, other_ca_pkey, _) = create_ca_cert(group, "localhost");
     fs::write(
         test_clients_dir.join("other-ca.crt"),
         other_ca_cert.to_pem().expect("Failed to PEM encode"),
@@ -334,7 +332,7 @@ fn generate_test_client_certs(
         group,
         ca_cert,
         ca_pkey,
-        "TLS Revoked Client",
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
         Some(&["clientAuth"]),
     );
@@ -357,7 +355,7 @@ fn generate_test_client_certs(
         group,
         &other_ca_cert,
         &other_ca_pkey,
-        "TLS Wrong CA Client",
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
         Some(&["clientAuth"]),
     );

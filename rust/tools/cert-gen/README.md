@@ -56,14 +56,14 @@ tls/
 │   ├── key_pwd.txt             # 私钥密码文件
 │   ├── ca_root.crt             # CA 根证书副本
 │   └── cert.crl                # CRL 文件
-├── ubse/node-a/, node-b/, node-c/    # ubse 客户端证书
-│   ├── server.pem              # 客户端证书
-│   ├── server_key.pem          # 客户端私钥（加密）
+├── ubse/node-a/, node-b/, node-c/    # ubse 服务端+客户端证书
+│   ├── server.pem              # 证书（serverAuth+clientAuth）
+│   ├── server_key.pem          # 私钥（加密）
 │   ├── key_pwd.txt             # 私钥密码文件
 │   └── trust.pem               # CA 根证书副本
-├── lcne/node-a/, node-b/, node-c/    # lcne 客户端证书
-│   ├── certificate.crt         # 客户端证书
-│   ├── private.key             # 客户端私钥（加密）
+├── lcne/node-a/, node-b/, node-c/    # lcne 服务端+客户端证书
+│   ├── certificate.crt         # 证书（serverAuth+clientAuth）
+│   ├── private.key             # 私钥（加密）
 │   ├── key_pwd.txt             # 私钥密码文件
 │   ├── ca_root.crt             # CA 根证书副本
 │   └── communication.crl       # CRL 文件
