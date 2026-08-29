@@ -37,7 +37,7 @@ use std::io::{self, Write};
 /// 循环读取用户输入，解析命令并执行，直到用户输入 `quit` 或 `exit`。
 ///
 /// # 命令格式
-/// - `connect <port>`: 连接服务
+/// - `connect [port] [--cid <n>]`: 连接服务
 /// - `sign <data>`: 签名数据
 /// - `verify <data> <signed_data> <id>`: 验证签名
 /// - `perf sign --count <n>`: 性能测试

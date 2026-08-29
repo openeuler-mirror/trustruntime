@@ -115,7 +115,7 @@ impl CommandRouter {
             }
 
             // 连接管理
-            Command::Connect { port } => self.handle_connect(port),
+            Command::Connect { port, cid } => self.handle_connect(port, cid),
             Command::Disconnect => self.handle_disconnect(),
             Command::Status => self.handle_status(),
 
@@ -242,9 +242,14 @@ impl CommandRouter {
         }
     }
 
-    fn handle_connect(&mut self, port: Option<u32>) -> Result<ExecuteResult, CommandError> {
+    fn handle_connect(
+        &mut self,
+        port: Option<u32>,
+        cid: Option<u32>,
+    ) -> Result<ExecuteResult, CommandError> {
         let config = self.config.lock().unwrap();
         let port = port.unwrap_or(config.connection.port);
+        let cid = cid.unwrap_or(config.connection.cid);
 
         let tls_ca = config.tls_client.ca_cert.clone();
         let tls_client_cert = config.tls_client.client_cert.clone();
@@ -257,6 +262,7 @@ impl CommandRouter {
             .map(|s| s.trim().to_string());
 
         let client = VsockClient::connect(
+            cid,
             port,
             &tls_ca,
             &tls_client_cert,
@@ -268,8 +274,8 @@ impl CommandRouter {
         self.client = Some(Arc::new(Mutex::new(client)));
 
         Ok(ExecuteResult::Output(format!(
-            "Connected to vsock://1:{}",
-            port
+            "Connected to vsock://{}:{}",
+            cid, port
         )))
     }
 
@@ -299,8 +305,9 @@ impl CommandRouter {
         };
 
         Ok(ExecuteResult::Output(format!(
-            "Status: {}\nPort: {}\nTLS CA: {}\nClient cert: {}",
+            "Status: {}\nCID: {}\nPort: {}\nTLS CA: {}\nClient cert: {}",
             conn_status,
+            config.connection.cid,
             config.connection.port,
             config.tls_client.ca_cert.display(),
             config.tls_client.client_cert.display()
@@ -497,13 +504,14 @@ impl CommandRouter {
         let data = data.unwrap_or_else(|| "test data".to_string());
         let tls_config = config.tls_client.clone();
         let port = config.connection.port;
+        let cid = config.connection.cid;
 
         println!(
             "Running concurrent test with {} threads, {} requests each...",
             threads, count
         );
 
-        let tester = ConcurrentTester::new(tls_config, port);
+        let tester = ConcurrentTester::new(tls_config, port, cid);
         let result = tester.run_sign_test(threads, count, &data, interval);
 
         *self.concurrent_stats.lock().unwrap() = Some(result.clone());
@@ -524,13 +532,14 @@ impl CommandRouter {
         let config = self.config.lock().unwrap();
         let tls_config = config.tls_client.clone();
         let port = config.connection.port;
+        let cid = config.connection.cid;
 
         println!(
             "Running concurrent verify test with {} threads, {} requests each...",
             threads, count
         );
 
-        let tester = ConcurrentTester::new(tls_config, port);
+        let tester = ConcurrentTester::new(tls_config, port, cid);
         let result = tester.run_verify_test(threads, count, &data, &signed_data, &id, interval);
 
         *self.concurrent_stats.lock().unwrap() = Some(result.clone());
@@ -554,13 +563,14 @@ impl CommandRouter {
         let config = self.config.lock().unwrap();
         let tls_config = config.tls_client.clone();
         let port = config.connection.port;
+        let cid = config.connection.cid;
 
         println!(
             "Running concurrent verify-sign test with {} threads, {} requests each...",
             threads, count
         );
 
-        let tester = ConcurrentTester::new(tls_config, port);
+        let tester = ConcurrentTester::new(tls_config, port, cid);
         let result = tester.run_verify_sign_test(
             threads,
             count,
@@ -674,11 +684,8 @@ impl CommandRouter {
 
     fn handle_scenario(&self, name: String) -> Result<ExecuteResult, CommandError> {
         let config = self.config.lock().unwrap();
-        let runner = ScenarioRunner::new(
-            config.tls_client.clone(),
-            config.cms_certs.clone(),
-            config.server.binary_path.clone(),
-        );
+        let runner =
+            ScenarioRunner::new(config.tls_client.clone(), config.server.binary_path.clone());
 
         let output = match name.as_str() {
             "two-node" => runner
@@ -721,7 +728,7 @@ impl CommandRouter {
 const HELP_GENERAL: &str = "CMS Test CLI - Interactive testing tool for CMS signing service
 
 Commands:
-  connect [port]                       Connect to server (uses config port if not specified)
+  connect [port] [--cid <n>]           Connect to server (uses config if not specified)
   disconnect                           Disconnect from server
   status                               Show connection status
 
@@ -757,16 +764,20 @@ verify-sign <json>                     Verify and sign (0x12)
 Use 'help <command>' for detailed help on a specific command.";
 
 /// connect 命令帮助文本
-const HELP_CONNECT: &str = "connect [port]
+const HELP_CONNECT: &str = "connect [port] [--cid <n>]
 
 Connect to CMS signing service via TLS over vsock.
 
 Arguments:
   port    vsock port number (optional, uses config value if not specified)
+  --cid   vsock CID (optional, uses config value if not specified)
+          1=VMADDR_CID_LOCAL, 2=VMADDR_CID_HOST, >=3=guest VM
 
 Example:
-  connect           # Use port from config file
-  connect 12345     # Override port";
+  connect           # Use port and CID from config file
+  connect 12345     # Override port
+  connect --cid 3   # Override CID
+  connect 12345 --cid 3  # Override both";
 
 /// sign 命令帮助文本
 const HELP_SIGN: &str = "sign <json>

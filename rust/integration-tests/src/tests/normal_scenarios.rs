@@ -76,6 +76,7 @@ fn n01_two_node_sign_verify() {
         .expect("Failed to start node-b");
 
     let mut client_a = VsockClient::connect(
+        1,
         12345,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -85,6 +86,7 @@ fn n01_two_node_sign_verify() {
     .expect("Failed to connect to node-a");
 
     let mut client_b = VsockClient::connect(
+        1,
         12346,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -203,6 +205,7 @@ fn n02_three_node_sign_verify() {
         .expect("Failed to start node-c");
 
     let mut client_a = VsockClient::connect(
+        1,
         12345,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -212,6 +215,7 @@ fn n02_three_node_sign_verify() {
     .expect("Failed to connect to node-a");
 
     let mut client_b = VsockClient::connect(
+        1,
         12346,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -221,6 +225,7 @@ fn n02_three_node_sign_verify() {
     .expect("Failed to connect to node-b");
 
     let mut client_c = VsockClient::connect(
+        1,
         12347,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -319,6 +324,7 @@ fn n03_single_node_sign_verify() {
         .expect("Failed to start node-a");
 
     let mut client_a = VsockClient::connect(
+        1,
         12345,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),

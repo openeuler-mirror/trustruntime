@@ -112,6 +112,7 @@ fn e01_signature_mismatch() {
         .expect("Failed to start node-b");
 
     let mut client_a = VsockClient::connect(
+        1,
         12345,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -121,6 +122,7 @@ fn e01_signature_mismatch() {
     .expect("Failed to connect to node-a");
 
     let mut client_b = VsockClient::connect(
+        1,
         12346,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -193,6 +195,7 @@ fn e02_certificate_chain_invalid() {
         .expect("Failed to start node-b");
 
     let mut client_self_signed = VsockClient::connect(
+        1,
         12350,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -202,6 +205,7 @@ fn e02_certificate_chain_invalid() {
     .expect("Failed to connect to self-signed node");
 
     let mut client_b = VsockClient::connect(
+        1,
         12346,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -272,6 +276,7 @@ fn e03_crl_revoked() {
         .expect("Failed to start node-b");
 
     let mut client_revoked = VsockClient::connect(
+        1,
         12351,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -281,6 +286,7 @@ fn e03_crl_revoked() {
     .expect("Failed to connect to revoked node");
 
     let mut client_b = VsockClient::connect(
+        1,
         12346,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -338,6 +344,7 @@ fn e04_cms_format_error() {
         .expect("Failed to start node-b");
 
     let mut client_b = VsockClient::connect(
+        1,
         12346,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -390,6 +397,7 @@ fn e05_json_parse_error() {
         .expect("Failed to start node-b");
 
     let mut client_b = VsockClient::connect(
+        1,
         12346,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),
@@ -444,6 +452,7 @@ fn e06_base64_decode_error() {
         .expect("Failed to start node-b");
 
     let mut client_b = VsockClient::connect(
+        1,
         12346,
         &paths.tls_ca_cert(),
         &paths.tls_client_cert(),

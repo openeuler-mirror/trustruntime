@@ -48,6 +48,12 @@ wsl bash -c "source ~/.cargo/env && cd rust && cargo run -p cms-test-cli -- --co
 
 执行单条命令后退出，适合脚本化测试和CI/CD集成。
 
+也可以通过 `--cid` 参数覆盖配置文件中的 CID：
+
+```bash
+wsl bash -c "source ~/.cargo/env && cd rust && cargo run -p cms-test-cli -- --config /path/to/my-config.toml --cid 3 --command '<command>'"
+```
+
 **示例：**
 
 ```bash
@@ -80,6 +86,7 @@ cargo run -p cms-test-cli -- --config my-config.toml --command 'scenario two-nod
 
 ```toml
 [connection]
+cid = 1                              # vsock CID（可选，默认1=VMADDR_CID_LOCAL）
 port = 6174
 
 [tls_client]
@@ -87,11 +94,6 @@ ca_cert = "/tmp/test-certs/tls/lcne/node-a/ca_root.crt"
 client_cert = "/tmp/test-certs/tls/lcne/node-a/certificate.crt"
 client_key = "/tmp/test-certs/tls/lcne/node-a/private.key"
 client_key_pwd = "/tmp/test-certs/tls/lcne/node-a/key_pwd.txt"  # 可选
-
-[cms_certs]
-ca_cert = "/tmp/test-certs/cms/node-a/ca.crt"
-signer_cert = "/tmp/test-certs/cms/node-a/signer.crt"
-signer_key = "/tmp/test-certs/cms/node-a/signer.key"
 
 [server]
 binary_path = "trustruntime"
@@ -102,7 +104,7 @@ binary_path = "trustruntime"
 ### 连接管理
 
 ```
-connect [port]                       # 连接服务（不指定端口时使用配置文件中的端口）
+connect [port] [--cid <n>]           # 连接服务（不指定时使用配置文件中的值）
 disconnect                           # 断开连接
 status                               # 显示连接状态
 ```
@@ -215,6 +217,11 @@ Type 'help' for available commands.
 
 > connect
 Connected to vsock://1:6174
+
+> status
+Status: Connected
+CID: 1
+Port: 6174
 
 > sign '{"to-sign":{"data":"hello world"}}'
 Response:

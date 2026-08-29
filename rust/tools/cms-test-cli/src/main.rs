@@ -43,12 +43,20 @@ struct Args {
     /// 单次执行命令（可选，不指定则进入交互式REPL）
     #[arg(short, long)]
     command: Option<String>,
+
+    /// vsock CID（可选，覆盖配置文件中的值）
+    #[arg(long)]
+    cid: Option<u32>,
 }
 
 fn main() {
     let args = Args::parse();
 
-    let config = CmsTestConfig::from_file(&args.config).expect("Failed to load config file");
+    let mut config = CmsTestConfig::from_file(&args.config).expect("Failed to load config file");
+
+    if let Some(cid) = args.cid {
+        config.connection.cid = cid;
+    }
 
     if let Some(cmd) = args.command {
         execute_single_command(config, &cmd);
