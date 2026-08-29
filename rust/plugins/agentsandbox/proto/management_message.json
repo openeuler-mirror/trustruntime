@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ManagementMessage",
+  "description": "SR.006 management message protocol for HC↔proxy communication over Unix socket + JSON",
+  "type": "object",
+  "required": ["msg_type", "payload", "request_id"],
+  "properties": {
+    "msg_type": {
+      "type": "string",
+      "enum": [
+        "cmd_start",
+        "cmd_stop",
+        "cmd_restart",
+        "health_check",
+        "set_log_level",
+        "refresh_policy",
+        "config_file",
+        "register_response_action",
+        "status_report"
+      ]
+    },
+    "payload": {
+      "type": "object",
+      "description": "Message content, structure depends on msg_type"
+    },
+    "request_id": {
+      "type": "string",
+      "description": "Unique request identifier for correlation"
+    }
+  }
+}
