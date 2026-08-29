@@ -35,7 +35,7 @@ impl CgroupMapping {
     /// Used to share mappings with proxy via virtio-fs.
     pub fn flush_to_file(&self, path: &str) -> Result<(), std::io::Error> {
         let m = self.inner.lock()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .unwrap_or_else(|e| e.into_inner());
         let json = serde_json::to_string_pretty(&*m)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         std::fs::write(path, json)

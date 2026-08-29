@@ -5,6 +5,7 @@ members = [
     "controller",
     "proxy",
     "security",
+    "tests",
 ]
 resolver = "2"
 

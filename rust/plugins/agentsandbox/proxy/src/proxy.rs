@@ -2,7 +2,7 @@ use crate::ca::CaProvider;
 use crate::error::ProxyError;
 use crate::filter_engine::{FilterEngine, FilterResult};
 use crate::group_config::GroupConfigMap;
-use crate::handler::HandlerRegistry;
+use crate::handler::{HandlerRegistry, HandlerResult, Phase, Target};
 use crate::mitm::MitmHandler;
 use crate::response_action::{FlowCtx, ResponseAction, ResponseActionRegistry};
 use crate::audit;
@@ -44,6 +44,16 @@ impl ProxyServer {
         let content = std::fs::read_to_string(&self.cgroup_path).map_err(|_| ProxyError::GroupIdNotFound)?;
         let map: HashMap<String, String> = serde_json::from_str(&content).map_err(|_| ProxyError::GroupIdNotFound)?;
         map.get(cid).cloned().ok_or(ProxyError::GroupIdNotFound)
+    }
+
+    /// Signs a dynamic certificate for the given domain via the MITM handler.
+    pub fn cert_for_domain(&self, domain: &str) -> Result<(Vec<u8>, Vec<u8>), ProxyError> {
+        self.mitm.get_cert_for_domain(domain)
+    }
+
+    /// Invokes a registered handler for (phase, target). Returns None if no handler.
+    pub fn invoke_handler(&self, p: Phase, t: Target, content: &[u8], gid: &str) -> Option<HandlerResult> {
+        self.handlers.invoke(p, t, content, gid)
     }
 
     /// Evaluates filter rules and response action for an incoming request.
