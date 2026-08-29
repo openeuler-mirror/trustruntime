@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "hookName": "startContainer",
+  "path": "/usr/bin/start_container.sh",
+  "args": ["startContainer"],
+  "envs": [
+    {"name": "HC_SOCK", "value": "/var/run/agentsandbox/hc.sock"}
+  ],
+  "timeout": 10
+}

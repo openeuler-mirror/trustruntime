@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AuditLogEntry",
+  "description": "SR.001 audit log entry (12 fields), written as JSON lines to audit.log",
+  "type": "object",
+  "required": [
+    "timestamp",
+    "group_id",
+    "scenario",
+    "protocol",
+    "domain",
+    "url_path",
+    "method",
+    "status_code",
+    "action",
+    "reason"
+  ],
+  "properties": {
+    "timestamp": { "type": "string", "description": "ISO 8601 timestamp" },
+    "group_id": { "type": "string", "description": "Container group identifier" },
+    "scenario": { "type": "string", "enum": ["kata", "lib"] },
+    "protocol": { "type": "string", "enum": ["http", "https"] },
+    "domain": { "type": "string", "description": "SNI domain or HTTP Host header" },
+    "url_path": { "type": "string" },
+    "method": { "type": "string" },
+    "status_code": { "type": "integer", "description": "Target response code, 0 if denied" },
+    "action": { "type": "string", "enum": ["allow", "deny"] },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "whitelist_match",
+        "blacklist_match",
+        "default_policy",
+        "config_not_found",
+        "ca_error",
+        "cert_error",
+        "log_error",
+        "target_tls_error",
+        "connection_refused",
+        "connection_timeout",
+        "group_not_found",
+        "response_action_block",
+        "cache_overflow",
+        "cache_timeout",
+        "policy_reset"
+      ]
+    },
+    "source_ip": { "type": ["string", "null"] },
+    "target_ip": { "type": ["string", "null"] }
+  }
+}

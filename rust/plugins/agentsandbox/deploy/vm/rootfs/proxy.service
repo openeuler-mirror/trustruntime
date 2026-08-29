@@ -1,0 +1,12 @@
+[Unit]
+Description=AgentSandbox Proxy
+After=agentsandbox.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/agentsandbox-proxy
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

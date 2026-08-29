@@ -1,0 +1,16 @@
+[package]
+name = "agentsandbox-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+agentsandbox-config = { path = "../config" }
+agentsandbox-log = { path = "../log" }
+aya = "0.13"

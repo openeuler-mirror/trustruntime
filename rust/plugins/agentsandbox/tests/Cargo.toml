@@ -1,0 +1,12 @@
+[package]
+name = "agentsandbox-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agentsandbox-config = { path = "../config" }
+agentsandbox-log = { path = "../log" }
+agentsandbox-proxy = { path = "../proxy" }
+agentsandbox-controller = { path = "../controller" }
+serde_json = { workspace = true }
