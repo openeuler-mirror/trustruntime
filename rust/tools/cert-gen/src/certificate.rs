@@ -143,6 +143,12 @@ pub fn create_ca_cert(group: &EcGroup, cn: &str) -> (X509, PKey<openssl::pkey::P
         .expect("Failed to build BC");
     builder.append_extension(bc).expect("Failed to append BC");
 
+    builder
+        .append_extension(build_key_usage_extension(
+            KeyUsageFlags::KEY_CERT_SIGN | KeyUsageFlags::CRL_SIGN,
+        ))
+        .expect("Failed to append KU");
+
     let context = builder.x509v3_context(None, None);
     let ski = SubjectKeyIdentifier::new()
         .build(&context)
@@ -304,11 +310,7 @@ pub fn create_expired_cert(
     let ku = ku_builder.build().expect("Failed to build KU");
     builder.append_extension(ku).expect("Failed to append KU");
 
-    let context = builder.x509v3_context(Some(ca_cert), None);
-    let ski = SubjectKeyIdentifier::new()
-        .build(&context)
-        .expect("Failed to build SKI");
-    builder.append_extension(ski).expect("Failed to append SKI");
+    add_key_identifiers(&mut builder, ca_cert);
 
     builder
         .sign(ca_pkey, MessageDigest::sha256())
@@ -370,11 +372,7 @@ pub fn create_not_yet_valid_cert(
     let ku = ku_builder.build().expect("Failed to build KU");
     builder.append_extension(ku).expect("Failed to append KU");
 
-    let context = builder.x509v3_context(None, None);
-    let ski = SubjectKeyIdentifier::new()
-        .build(&context)
-        .expect("Failed to build SKI");
-    builder.append_extension(ski).expect("Failed to append SKI");
+    add_key_identifiers(&mut builder, ca_cert);
 
     builder
         .sign(ca_pkey, MessageDigest::sha256())

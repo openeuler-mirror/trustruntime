@@ -77,9 +77,9 @@ fn get_group() -> EcGroup {
 /// - 签名者私钥PEM（PKCS8格式）
 pub fn generate_ca_and_signer() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let group = get_group();
-    let (ca_cert, ca_pkey, _ca_id) = create_ca_cert(&group, "Test CA");
+    let (ca_cert, ca_pkey, _ca_id) = create_ca_cert(&group, "localhost");
     let (signer_cert, signer_pkey, _signer_id) =
-        create_signer_cert(&group, &ca_cert, &ca_pkey, "Test Signer".to_string());
+        create_signer_cert(&group, &ca_cert, &ca_pkey, "localhost".to_string());
     (
         ca_cert.to_pem().unwrap(),
         signer_cert.to_pem().unwrap(),
@@ -103,11 +103,11 @@ pub fn generate_ca_and_signer() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 /// - 过期签名者私钥PEM
 pub fn generate_expired_signer_cert() -> CertBundle {
     let group = get_group();
-    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "localhost");
     let (valid_cert, valid_pkey, _) =
-        create_signer_cert(&group, &ca_cert, &ca_pkey, "Test Valid Signer".to_string());
+        create_signer_cert(&group, &ca_cert, &ca_pkey, "localhost".to_string());
     let (expired_cert, expired_pkey, _) =
-        create_expired_cert(&group, &ca_cert, &ca_pkey, "Test Expired Signer");
+        create_expired_cert(&group, &ca_cert, &ca_pkey, "localhost");
     (
         ca_cert.to_pem().unwrap(),
         valid_cert.to_pem().unwrap(),
@@ -131,11 +131,11 @@ pub fn generate_expired_signer_cert() -> CertBundle {
 /// - 未生效签名者私钥PEM
 pub fn generate_not_yet_valid_signer_cert() -> CertBundle {
     let group = get_group();
-    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "localhost");
     let (valid_cert, valid_pkey, _) =
-        create_signer_cert(&group, &ca_cert, &ca_pkey, "Test Valid Signer".to_string());
+        create_signer_cert(&group, &ca_cert, &ca_pkey, "localhost".to_string());
     let (not_yet_valid_cert, not_yet_valid_pkey, _) =
-        create_not_yet_valid_cert(&group, &ca_cert, &ca_pkey, "Test Not Yet Valid Signer");
+        create_not_yet_valid_cert(&group, &ca_cert, &ca_pkey, "localhost");
     (
         ca_cert.to_pem().unwrap(),
         valid_cert.to_pem().unwrap(),
@@ -163,16 +163,16 @@ pub fn generate_not_yet_valid_signer_cert() -> CertBundle {
 /// - CA私钥PEM（用于签名CRL）
 pub fn generate_revoked_signer_cert() -> RevokedCertBundle {
     let group = get_group();
-    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "localhost");
     let (valid_cert, valid_pkey, _) =
-        create_signer_cert(&group, &ca_cert, &ca_pkey, "Test Valid Signer".to_string());
+        create_signer_cert(&group, &ca_cert, &ca_pkey, "localhost".to_string());
 
     let revoked_signer_key = openssl::ec::EcKey::generate(&group).unwrap();
     let revoked_signer_pkey = PKey::from_ec_key(revoked_signer_key.clone()).unwrap();
 
     let mut revoked_signer_name = X509NameBuilder::new().unwrap();
     revoked_signer_name
-        .append_entry_by_text("CN", "Test Revoked Signer")
+        .append_entry_by_text("CN", "localhost")
         .unwrap();
     let revoked_signer_name = revoked_signer_name.build();
 
@@ -245,7 +245,7 @@ pub fn generate_revoked_signer_cert() -> RevokedCertBundle {
 /// - 私钥PEM
 pub fn generate_self_signed_signer_cert() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let group = get_group();
-    let (cert, pkey, _) = create_self_signed_cert(&group, "Test Self-Signed Signer");
+    let (cert, pkey, _) = create_self_signed_cert(&group, "localhost");
     (
         cert.to_pem().unwrap(),
         cert.to_pem().unwrap(),
@@ -281,13 +281,13 @@ pub fn extract_cert_id_from_pem(cert_pem: &[u8]) -> Vec<u8> {
 /// - 测试签名者私钥PEM
 pub fn generate_signer_cert_exact_match() -> CertBundle {
     let group = get_group();
-    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "localhost");
 
     let (valid_cert, valid_pkey, _) = create_cert_with_usage(
         &group,
         &ca_cert,
         &ca_pkey,
-        "Valid Signer",
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE,
         None,
     );
@@ -296,7 +296,7 @@ pub fn generate_signer_cert_exact_match() -> CertBundle {
         &group,
         &ca_cert,
         &ca_pkey,
-        "Test Signer",
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE,
         None,
     );
@@ -324,13 +324,13 @@ pub fn generate_signer_cert_exact_match() -> CertBundle {
 /// - 测试签名者私钥PEM
 pub fn generate_signer_cert_with_extra_usage() -> CertBundle {
     let group = get_group();
-    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "localhost");
 
     let (valid_cert, valid_pkey, _) = create_cert_with_usage(
         &group,
         &ca_cert,
         &ca_pkey,
-        "Valid Signer",
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE,
         None,
     );
@@ -339,7 +339,7 @@ pub fn generate_signer_cert_with_extra_usage() -> CertBundle {
         &group,
         &ca_cert,
         &ca_pkey,
-        "Test Signer",
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
         None,
     );
@@ -367,13 +367,13 @@ pub fn generate_signer_cert_with_extra_usage() -> CertBundle {
 /// - 测试通信私钥PEM
 pub fn generate_comm_cert_full_usage() -> CertBundle {
     let group = get_group();
-    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "localhost");
 
     let (valid_cert, valid_pkey, _) = create_cert_with_usage(
         &group,
         &ca_cert,
         &ca_pkey,
-        "Valid Comm",
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
         Some(&["serverAuth"]),
     );
@@ -382,7 +382,7 @@ pub fn generate_comm_cert_full_usage() -> CertBundle {
         &group,
         &ca_cert,
         &ca_pkey,
-        "Test Comm",
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
         Some(&["serverAuth"]),
     );
@@ -410,13 +410,13 @@ pub fn generate_comm_cert_full_usage() -> CertBundle {
 /// - 测试通信私钥PEM
 pub fn generate_comm_cert_missing_key_usage() -> CertBundle {
     let group = get_group();
-    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "localhost");
 
     let (valid_cert, valid_pkey, _) = create_cert_with_usage(
         &group,
         &ca_cert,
         &ca_pkey,
-        "Valid Comm",
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
         Some(&["serverAuth"]),
     );
@@ -425,7 +425,7 @@ pub fn generate_comm_cert_missing_key_usage() -> CertBundle {
         &group,
         &ca_cert,
         &ca_pkey,
-        "Test Comm",
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE,
         Some(&["serverAuth"]),
     );
@@ -453,13 +453,13 @@ pub fn generate_comm_cert_missing_key_usage() -> CertBundle {
 /// - 测试通信私钥PEM
 pub fn generate_comm_cert_missing_eku() -> CertBundle {
     let group = get_group();
-    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "Test CA");
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "localhost");
 
     let (valid_cert, valid_pkey, _) = create_cert_with_usage(
         &group,
         &ca_cert,
         &ca_pkey,
-        "Valid Comm",
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
         Some(&["serverAuth"]),
     );
@@ -468,7 +468,7 @@ pub fn generate_comm_cert_missing_eku() -> CertBundle {
         &group,
         &ca_cert,
         &ca_pkey,
-        "Test Comm",
+        "localhost",
         KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
         None,
     );
@@ -488,7 +488,7 @@ fn build_expired_ca_cert(group: &EcGroup) -> (X509, PKey<openssl::pkey::Private>
     let ca_pkey = PKey::from_ec_key(ca_key).unwrap();
 
     let mut ca_name = X509NameBuilder::new().unwrap();
-    ca_name.append_entry_by_text("CN", "Expired CA").unwrap();
+    ca_name.append_entry_by_text("CN", "localhost").unwrap();
     let ca_name = ca_name.build();
 
     let mut ca_builder = X509Builder::new().unwrap();
@@ -510,6 +510,13 @@ fn build_expired_ca_cert(group: &EcGroup) -> (X509, PKey<openssl::pkey::Private>
     let ca_bc = BasicConstraints::new().critical().ca().build().unwrap();
     ca_builder.append_extension(ca_bc).unwrap();
 
+    use openssl::x509::extension::KeyUsage;
+    let mut ca_ku_builder = KeyUsage::new();
+    ca_ku_builder.key_cert_sign();
+    ca_ku_builder.crl_sign();
+    let ca_ku = ca_ku_builder.build().unwrap();
+    ca_builder.append_extension(ca_ku).unwrap();
+
     let ca_context = ca_builder.x509v3_context(None, None);
     let ca_ski = SubjectKeyIdentifier::new().build(&ca_context).unwrap();
     ca_builder.append_extension(ca_ski).unwrap();
@@ -530,9 +537,7 @@ fn build_signer_cert_for_ca(
     let signer_pkey = PKey::from_ec_key(signer_key).unwrap();
 
     let mut signer_name = X509NameBuilder::new().unwrap();
-    signer_name
-        .append_entry_by_text("CN", "Valid Signer")
-        .unwrap();
+    signer_name.append_entry_by_text("CN", "localhost").unwrap();
     let signer_name = signer_name.build();
 
     let mut signer_builder = X509Builder::new().unwrap();
