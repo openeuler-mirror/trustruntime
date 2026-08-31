@@ -93,8 +93,12 @@ fn c01_tls_mutual_auth_success() {
 ///
 /// 测试场景：客户端使用已吊销证书进行TLS握手
 ///
-/// 预期结果：TLS握手失败，返回TLS错误
+/// 预期结果：TLS握手失败或数据传输失败
 /// 原因：客户端证书在服务端CRL列表中
+///
+/// TLS版本差异：
+/// - TLS 1.2：握手阶段失败，connect()返回错误
+/// - TLS 1.3：握手阶段成功，服务端验证后发送alert，首次数据传输失败
 ///
 /// 测试依赖：Linux环境、vsock、TLS证书链、CRL文件
 #[cfg(target_os = "linux")]
@@ -127,17 +131,22 @@ fn c02_client_cert_crl_revoked() {
         paths.tls_key_password().as_deref(),
     );
 
-    assert!(
-        result.is_err(),
-        "Expected TLS handshake failure with revoked cert"
-    );
-    if let Err(e) = result {
-        let err_msg = e.to_string();
-        assert!(
-            err_msg.contains("tls handshake") || err_msg.contains("TLS"),
-            "Expected TLS handshake error, got: {}",
-            err_msg
-        );
+    match result {
+        Err(e) => {
+            let err_msg = e.to_string();
+            assert!(
+                err_msg.contains("tls handshake") || err_msg.contains("TLS"),
+                "Expected TLS handshake error, got: {}",
+                err_msg
+            );
+        }
+        Ok(mut client) => {
+            let sign_result = client.sign("test data");
+            assert!(
+                sign_result.is_err(),
+                "Expected data transfer failure with revoked cert (TLS 1.3 post-handshake rejection)"
+            );
+        }
     }
 
     manager.stop_all().expect("Failed to stop processes");
@@ -147,8 +156,12 @@ fn c02_client_cert_crl_revoked() {
 ///
 /// 测试场景：客户端使用其他CA签发的证书进行TLS握手
 ///
-/// 预期结果：TLS握手失败，返回TLS错误
+/// 预期结果：TLS握手失败或数据传输失败
 /// 原因：证书签发CA与服务端信任CA不匹配
+///
+/// TLS版本差异：
+/// - TLS 1.2：握手阶段失败，connect()返回错误
+/// - TLS 1.3：握手阶段成功，服务端验证后发送alert，首次数据传输失败
 ///
 /// 测试依赖：Linux环境、vsock、TLS证书链
 #[cfg(target_os = "linux")]
@@ -181,17 +194,22 @@ fn c03_client_cert_wrong_ca() {
         paths.tls_key_password().as_deref(),
     );
 
-    assert!(
-        result.is_err(),
-        "Expected TLS handshake failure with wrong CA cert"
-    );
-    if let Err(e) = result {
-        let err_msg = e.to_string();
-        assert!(
-            err_msg.contains("tls handshake") || err_msg.contains("TLS"),
-            "Expected TLS handshake error, got: {}",
-            err_msg
-        );
+    match result {
+        Err(e) => {
+            let err_msg = e.to_string();
+            assert!(
+                err_msg.contains("tls handshake") || err_msg.contains("TLS"),
+                "Expected TLS handshake error, got: {}",
+                err_msg
+            );
+        }
+        Ok(mut client) => {
+            let sign_result = client.sign("test data");
+            assert!(
+                sign_result.is_err(),
+                "Expected data transfer failure with wrong CA cert (TLS 1.3 post-handshake rejection)"
+            );
+        }
     }
 
     manager.stop_all().expect("Failed to stop processes");
