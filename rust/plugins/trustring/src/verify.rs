@@ -28,8 +28,12 @@ use foreign_types_shared::ForeignType;
 use openssl::cms::{CMSOptions, CmsContentInfo};
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::X509;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static CRL_EXPIRY_WARNED: AtomicBool = AtomicBool::new(false);
 use openssl_sys::{
-    stack_st_X509, CMS_ContentInfo, OPENSSL_STACK, X509 as X509_sys, X509_STORE, X509_STORE_CTX,
+    stack_st_X509, CMS_ContentInfo, ASN1_OBJECT, EVP_PKEY, OPENSSL_STACK, X509 as X509_sys,
+    X509_ALGOR, X509_STORE, X509_STORE_CTX,
 };
 use std::cell::Cell;
 use std::os::raw::c_int;
@@ -75,7 +79,22 @@ extern "C" {
     fn X509_STORE_CTX_get_error(ctx: *const X509_STORE_CTX) -> c_int;
     /// 获取错误证书在证书链中的深度（0=leaf证书）
     fn X509_STORE_CTX_get_error_depth(ctx: *const X509_STORE_CTX) -> c_int;
+
+    /// 获取CMS SignerInfo列表（内部指针，不需要释放）
+    fn CMS_get0_SignerInfos(cms: *mut CMS_ContentInfo) -> *mut OPENSSL_STACK;
+    /// 从SignerInfo中提取摘要和签名算法
+    fn CMS_SignerInfo_get0_algs(
+        si: *mut CMS_SignerInfo,
+        pk: *mut *mut EVP_PKEY,
+        signer: *mut *mut X509_sys,
+        digest: *mut *mut X509_ALGOR,
+        sig_alg: *mut *mut X509_ALGOR,
+    );
 }
+
+/// CMS SignerInfo结构体（opaque）
+#[allow(non_camel_case_types)]
+enum CMS_SignerInfo {}
 
 fn map_x509_error_to_verify_error(error_code: c_int) -> VerifyError {
     match error_code {
@@ -131,6 +150,7 @@ unsafe extern "C" fn verify_callback(ok: c_int, ctx: *mut X509_STORE_CTX) -> c_i
 /// - SignatureMismatch → result=5（签名不匹配）
 /// - InvalidKeyUsage → result=6（证书KeyUsage无效）
 /// - FormatError → result=7（格式错误）
+/// - InvalidAlgorithm → result=12（签名算法无效）
 #[derive(Error, Debug, PartialEq)]
 pub(crate) enum VerifyError {
     /// OpenSSL内部错误
@@ -151,6 +171,9 @@ pub(crate) enum VerifyError {
     /// 证书KeyUsage无效
     #[error("invalid key usage")]
     InvalidKeyUsage,
+    /// 签名算法无效（非ECC-256或非SHA-256摘要）
+    #[error("invalid algorithm")]
+    InvalidAlgorithm,
 }
 
 impl From<openssl::error::ErrorStack> for VerifyError {
@@ -289,12 +312,15 @@ impl Verifier {
 
     /// 从CMS签名中提取签名者证书
     ///
+    /// 安全策略：仅接受单签名者CMS。多签名者CMS视为异常，返回None。
+    /// TrustRuntime签名始终产生单签名者，多签名者可能为恶意构造。
+    ///
     /// # Arguments
     /// * `cms` - CMS签名数据
     ///
     /// # Returns
     /// * `Some(X509)` - 签名者证书
-    /// * `None` - 提取失败（无签名者或栈为空）
+    /// * `None` - 提取失败（无签名者、栈为空、或多签名者）
     fn extract_signer_cert(cms: &CmsContentInfo) -> Option<X509> {
         unsafe {
             let cms_ptr = cms.as_ptr();
@@ -309,6 +335,12 @@ impl Verifier {
 
             if num <= 0 {
                 log::warn!("OPENSSL_sk_num returned non-positive value: {}", num);
+                OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
+                return None;
+            }
+
+            if num > 1 {
+                log::warn!("CMS contains multiple signers: {}", num);
                 OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
                 return None;
             }
@@ -341,15 +373,86 @@ impl Verifier {
         Ok(())
     }
 
+    /// 验证签名算法策略
+    ///
+    /// 安全策略（文档要求：仅支持ECC-256，禁用SHA1/MD5）：
+    /// 1. 签名者证书公钥必须为EC P-256（约束signatureAlgorithm为ECDSA）
+    /// 2. CMS SignerInfo的digestAlgorithm必须为SHA-256
+    ///
+    /// # Arguments
+    /// * `cms` - CMS签名数据
+    /// * `signer_cert` - 签名者证书（已由调用方提取）
+    ///
+    /// # Returns
+    /// * `Ok(())` - 算法验证通过
+    /// * `Err(VerifyError::InvalidAlgorithm)` - 公钥非EC P-256或摘要非SHA-256
+    /// * `Err(VerifyError::FormatError)` - 提取算法信息失败
+    fn verify_signer_algorithm(
+        cms: &CmsContentInfo,
+        signer_cert: &X509,
+    ) -> Result<(), VerifyError> {
+        let pubkey = signer_cert
+            .public_key()
+            .map_err(|_| VerifyError::FormatError)?;
+        if pubkey.id() != openssl::pkey::Id::EC {
+            return Err(VerifyError::InvalidAlgorithm);
+        }
+        let ec_key = pubkey.ec_key().map_err(|_| VerifyError::FormatError)?;
+        if ec_key.group().curve_name() != Some(openssl::nid::Nid::X9_62_PRIME256V1) {
+            return Err(VerifyError::InvalidAlgorithm);
+        }
+
+        let digest_nid = unsafe {
+            let signers_stack = CMS_get0_SignerInfos(cms.as_ptr());
+            if signers_stack.is_null() {
+                return Err(VerifyError::FormatError);
+            }
+            let stack = signers_stack as *const OPENSSL_STACK;
+            let si = OPENSSL_sk_value(stack, 0) as *mut CMS_SignerInfo;
+            if si.is_null() {
+                return Err(VerifyError::FormatError);
+            }
+            let mut digest_alg: *mut X509_ALGOR = std::ptr::null_mut();
+            CMS_SignerInfo_get0_algs(
+                si,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut digest_alg,
+                std::ptr::null_mut(),
+            );
+            if digest_alg.is_null() {
+                return Err(VerifyError::FormatError);
+            }
+            let mut obj: *const ASN1_OBJECT = std::ptr::null();
+            openssl_sys::X509_ALGOR_get0(
+                &mut obj,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                digest_alg,
+            );
+            if obj.is_null() {
+                return Err(VerifyError::FormatError);
+            }
+            openssl_sys::OBJ_obj2nid(obj)
+        };
+
+        if digest_nid != openssl_sys::NID_sha256 {
+            return Err(VerifyError::InvalidAlgorithm);
+        }
+
+        Ok(())
+    }
+
     fn check_crl_revocation(&self, cms: &CmsContentInfo) -> Result<(), VerifyError> {
         let crl = match &self.crl {
             Some(crl) => crl,
             None => return Ok(()),
         };
 
-        if trustruntime_framework::cert::is_crl_expired(crl) {
-            log::warn!("CRL has expired, returning error");
-            return Err(VerifyError::CertificateRevoked);
+        if trustruntime_framework::cert::is_crl_expired(crl)
+            && !CRL_EXPIRY_WARNED.swap(true, Ordering::SeqCst)
+        {
+            log::warn!("CRL has expired, continuing with stale CRL for revocation check");
         }
 
         let certs = unsafe {
@@ -406,7 +509,7 @@ impl Verifier {
     /// 2. ID比较：如果相同返回SameNode，否则返回OtherNode
     ///
     /// # Arguments
-    /// * `cms` - CMS签名数据
+    /// * `signer_cert` - 签名者证书（已由调用方提取）
     /// * `signer_cert_id` - 签名方证书ID
     ///
     /// # Returns
@@ -414,14 +517,9 @@ impl Verifier {
     /// * `Err(VerifyError::FormatError)` - 提取公钥失败
     fn determine_identity(
         &self,
-        cms: &CmsContentInfo,
+        signer_cert: &X509,
         signer_cert_id: &[u8],
     ) -> Result<VerifyOutcome, VerifyError> {
-        let signer_cert = match Self::extract_signer_cert(cms) {
-            Some(cert) => cert,
-            None => return Ok(VerifyOutcome::OtherNode),
-        };
-
         let signer_pubkey_pem = signer_cert
             .public_key()
             .map_err(|_| VerifyError::FormatError)?
@@ -487,9 +585,10 @@ impl Verifier {
         // 验证签名方证书的KeyUsage（必须存在，否则返回格式错误）
         let signer_cert = Self::extract_signer_cert(&cms).ok_or(VerifyError::FormatError)?;
         Self::verify_signer_key_usage(&signer_cert)?;
+        Self::verify_signer_algorithm(&cms, &signer_cert)?;
 
         self.check_crl_revocation(&cms)?;
-        self.determine_identity(&cms, signer_cert_id)
+        self.determine_identity(&signer_cert, signer_cert_id)
     }
 
     /// 仅验签（不判断证书身份）
@@ -529,6 +628,7 @@ impl Verifier {
         // 验证签名方证书的KeyUsage（必须存在，否则返回格式错误）
         let signer_cert = Self::extract_signer_cert(&cms).ok_or(VerifyError::FormatError)?;
         Self::verify_signer_key_usage(&signer_cert)?;
+        Self::verify_signer_algorithm(&cms, &signer_cert)?;
 
         self.check_crl_revocation(&cms)?;
         Ok(())

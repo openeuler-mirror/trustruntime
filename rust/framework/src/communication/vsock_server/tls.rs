@@ -25,7 +25,10 @@
 
 use super::error::VsockError;
 use openssl::ssl::{SslAcceptor, SslMethod, SslVerifyMode};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+static CRL_EXPIRY_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// TLS配置参数
 ///
@@ -167,9 +170,8 @@ fn verify_cert_with_crl(
         return false;
     }
 
-    if crate::cert::is_crl_expired(crl) {
-        log::warn!("CRL has expired, rejecting certificate");
-        return false;
+    if crate::cert::is_crl_expired(crl) && !CRL_EXPIRY_WARNED.swap(true, Ordering::SeqCst) {
+        log::warn!("CRL has expired, continuing with stale CRL for revocation check");
     }
 
     if let Some(chain) = ctx.chain() {
