@@ -58,7 +58,7 @@ const ALLOWED_CERT_DIRS: &[&str] = &["/etc/cert/"];
 ///
 /// # Debug构建
 /// 跳过路径验证，仅用于测试环境
-fn validate_cert_path(path: &str) -> Result<PathBuf, CertLoadError> {
+pub fn validate_cert_path(path: &str) -> Result<PathBuf, CertLoadError> {
     #[cfg(debug_assertions)]
     {
         Path::new(path)
