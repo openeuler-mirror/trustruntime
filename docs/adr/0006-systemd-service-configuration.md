@@ -47,6 +47,14 @@ accepted
 - `ProtectSystem=strict`：只读系统目录
 - `ReadWritePaths=/var/log/trustruntime`：仅允许日志目录写入
 - `NoNewPrivileges=yes`：禁止提权
+- `PrivateTmp=yes`：私有 /tmp，防止 symlink 攻击和信息泄露
+- `ProtectHome=yes`：禁止访问 /home、/root
+- `ProtectKernelTunables=yes`：禁止修改 /proc/sys 内核参数
+- `ProtectKernelModules=yes`：禁止加载内核模块（防 rootkit）
+- `ProtectKernelLogs=yes`：禁止读取内核日志
+- `ProtectClock=yes`：禁止修改系统时钟（保护证书/CRL 有效期判断）
+- `CapabilityBoundingSet=`（空）：丢弃全部 Linux capability（服务仅需 vsock 绑定，不需要特殊 capability）
+- `SystemCallFilter=@system-service`：仅允许系统服务所需系统调用，收敛攻击面
 
 ### 日志配置
 

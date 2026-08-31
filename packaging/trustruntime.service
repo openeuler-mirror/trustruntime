@@ -17,6 +17,14 @@ MemoryMax=30M
 ProtectSystem=strict
 ReadWritePaths=/var/log/trustruntime
 NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
 
 [Install]
 WantedBy=multi-user.target
