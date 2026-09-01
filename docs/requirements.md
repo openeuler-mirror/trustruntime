@@ -310,6 +310,23 @@ MemoryMax=30M
 ProtectSystem=strict
 ReadWritePaths=/var/log/trustruntime
 NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+ProtectHostname=yes
+RemoveIPC=yes
+LockPersonality=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+ProtectProc=invisible
 
 [Install]
 WantedBy=multi-user.target
@@ -322,6 +339,23 @@ WantedBy=multi-user.target
   - RestartPreventExitStatus=1：退出码为1时不重启（正常退出）
   - ProtectSystem=strict + ReadWritePaths：仅允许写入日志目录
   - NoNewPrivileges=yes：禁止进程获取新权限
+  - PrivateTmp=yes：私有 /tmp 命名空间
+  - ProtectHome=yes：禁止访问 /home、/root
+  - ProtectKernelTunables=yes：禁止修改内核参数
+  - ProtectKernelModules=yes：禁止加载内核模块
+  - ProtectKernelLogs=yes：禁止读取内核日志
+  - ProtectClock=yes：禁止修改系统时钟
+  - CapabilityBoundingSet=（空）：丢弃全部 capability
+  - SystemCallFilter=@system-service：仅允许系统服务所需系统调用
+  - ProtectControlGroups=yes：禁止操作 cgroup
+  - RestrictNamespaces=yes：禁止创建 namespace
+  - RestrictSUIDSGID=yes：禁止创建 setuid/setgid 文件
+  - ProtectHostname=yes：禁止修改 hostname
+  - RemoveIPC=yes：退出时清理 IPC
+  - LockPersonality=yes：锁定进程执行模式
+  - RestrictRealtime=yes：禁止实时调度
+  - MemoryDenyWriteExecute=yes：禁止 W+X 内存映射
+  - ProtectProc=invisible：隐藏其他用户进程
 
 ---
 

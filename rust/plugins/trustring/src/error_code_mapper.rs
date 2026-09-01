@@ -254,6 +254,7 @@ pub(crate) fn map_sign_error(err: &SignError) -> BusinessError {
 /// - VerifyError::SignatureMismatch → SignatureMismatch（result=5）
 /// - VerifyError::InvalidKeyUsage → InvalidKeyUsage（result=6）
 /// - VerifyError::FormatError → FormatError（result=7）
+/// - VerifyError::InvalidAlgorithm → SigningAlgorithmError（result=12）
 ///
 /// 注意：VerifyError已在verify模块通过X509错误码完成分类，此处仅做类型转换。
 ///
@@ -270,6 +271,7 @@ pub(crate) fn map_verify_error(err: &VerifyError) -> BusinessError {
         VerifyError::SignatureMismatch => BusinessError::SignatureMismatch,
         VerifyError::FormatError => BusinessError::FormatError,
         VerifyError::InvalidKeyUsage => BusinessError::InvalidKeyUsage,
+        VerifyError::InvalidAlgorithm => BusinessError::SigningAlgorithmError,
     }
 }
 

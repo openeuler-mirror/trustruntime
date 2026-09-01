@@ -136,8 +136,11 @@ fn create_transport(config: &AppConfig) -> Result<Arc<VsockTransport>, String> {
     };
 
     let key_password = if Path::new(COMM_KEY_PWD_PATH).exists() {
+        let validated_pwd_path =
+            trustruntime_framework::cert::validate_cert_path(COMM_KEY_PWD_PATH)
+                .map_err(|e| format!("Failed to validate key password path: {}", e))?;
         Some(
-            std::fs::read_to_string(COMM_KEY_PWD_PATH)
+            std::fs::read_to_string(&validated_pwd_path)
                 .map(|content| content.trim().to_string())
                 .map_err(|e| format!("Failed to read private key password file: {}", e))?,
         )
@@ -148,6 +151,7 @@ fn create_transport(config: &AppConfig) -> Result<Arc<VsockTransport>, String> {
     let crl_path = if Path::new(COMM_CRL_PATH).exists() {
         Some(COMM_CRL_PATH.to_string())
     } else {
+        log::warn!("Communication CRL file not found, certificate revocation checking is disabled");
         None
     };
 
@@ -178,6 +182,7 @@ fn setup_plugins(
     let cms_crl_path = if Path::new(CMS_CRL_PATH).exists() {
         Some(CMS_CRL_PATH)
     } else {
+        log::warn!("CMS CRL file not found, certificate revocation checking is disabled");
         None
     };
 
