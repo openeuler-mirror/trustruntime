@@ -25,6 +25,15 @@ ProtectKernelLogs=yes
 ProtectClock=yes
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+ProtectHostname=yes
+RemoveIPC=yes
+LockPersonality=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+ProtectProc=invisible
 
 [Install]
 WantedBy=multi-user.target
