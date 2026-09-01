@@ -171,7 +171,7 @@ max_roll_count = 10
 [certificate]
 signer_cert = "{{CMS_DIR}}/signer.crt"
 signer_key = "{{CMS_DIR}}/signer.key"
-ca_root_cert = "test-certs/cms/ca.crt"
+ca_root_cert = "test-certs/cms/ca_root.crt"
 cms_crl = "test-certs/cms/cms.crl"
 
 comm_cert = "{{TLS_DIR}}/node.crt"

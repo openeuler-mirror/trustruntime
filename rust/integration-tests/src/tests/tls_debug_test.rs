@@ -162,7 +162,7 @@ max_roll_count = 10
 [certificate]
 signer_cert = "{}/cms/node-a/signer.crt"
 signer_key = "{}/cms/node-a/signer.key"
-ca_root_cert = "{}/cms/ca.crt"
+ca_root_cert = "{}/cms/ca_root.crt"
 
 comm_cert = "{}"
 comm_key = "{}"

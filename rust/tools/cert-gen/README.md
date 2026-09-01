@@ -18,24 +18,24 @@ cargo run -p cert-gen -- --output-dir <OUTPUT_DIR> [--force]
 
 ```
 cms/
-├── ca.crt, ca.key              # CA 根证书和私钥
+├── ca_root.crt, ca.key          # CA 根证书和私钥
 ├── cms.crl                     # CRL（含吊销证书）
 ├── node-a/, node-b/, node-c/   # 有效节点证书
 │   ├── signer.crt              # 签名证书
 │   ├── signer.key              # 签名私钥
-│   ├── ca.crt                  # CA 根证书副本
+│   ├── ca_root.crt             # CA 根证书副本
 │   └── cms.crl                 # CRL 副本
 ├── expired/                    # 过期证书（2000-2010年）
 │   ├── signer.crt, signer.key
-│   ├── ca.crt
+│   ├── ca_root.crt
 │   └── cms.crl
 ├── revoked/                    # 被吊销证书
 │   ├── signer.crt, signer.key
-│   ├── ca.crt
+│   ├── ca_root.crt
 │   └── cms.crl
 └── self-signed/                # 自签名证书
     ├── signer.crt, signer.key
-    └── ca.crt
+    └── ca_root.crt
 ```
 
 **每个节点目录都包含完整的证书集**：
@@ -109,7 +109,7 @@ cargo run -p cert-gen -- --output-dir ~/my-certs --force
 # 使用 node-a 的签名证书
 signer_cert=/tmp/test-certs/cms/node-a/signer.crt
 signer_key=/tmp/test-certs/cms/node-a/signer.key
-ca_cert=/tmp/test-certs/cms/node-a/ca.crt
+ca_cert=/tmp/test-certs/cms/node-a/ca_root.crt
 ```
 
 **TLS 客户端证书**：

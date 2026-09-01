@@ -48,7 +48,7 @@ sudo mkdir -p /etc/cert/cms /etc/cert/server
 # 复制 CMS 证书
 sudo cp /tmp/test-certs/cms/node-a/signer.crt /etc/cert/cms/signer.crt
 sudo cp /tmp/test-certs/cms/node-a/signer.key /etc/cert/cms/signer.key
-sudo cp /tmp/test-certs/cms/node-a/ca.crt /etc/cert/cms/ca_root.crt
+sudo cp /tmp/test-certs/cms/node-a/ca_root.crt /etc/cert/cms/ca_root.crt
 
 # 复制 TLS 证书
 sudo cp /tmp/test-certs/tls/server/node-a/certificate.crt /etc/cert/server/certificate.crt
@@ -111,7 +111,7 @@ client_key = "/tmp/test-certs/tls/lcne/node-a/private.key"
 client_key_pwd = "/tmp/test-certs/tls/lcne/node-a/key_pwd.txt"
 
 [cms_certs]
-ca_cert = "/tmp/test-certs/cms/node-a/ca.crt"
+ca_cert = "/tmp/test-certs/cms/node-a/ca_root.crt"
 signer_cert = "/tmp/test-certs/cms/node-a/signer.crt"
 signer_key = "/tmp/test-certs/cms/node-a/signer.key"
 

@@ -421,7 +421,7 @@ client_key = "/tmp/test-certs/tls/lcne/node-a/private.key"
 client_key_pwd = "/tmp/test-certs/tls/lcne/node-a/key_pwd.txt"  # 可选
 
 [cms_certs]
-ca_cert = "/tmp/test-certs/cms/node-a/ca.crt"
+ca_cert = "/tmp/test-certs/cms/node-a/ca_root.crt"
 signer_cert = "/tmp/test-certs/cms/node-a/signer.crt"
 signer_key = "/tmp/test-certs/cms/node-a/signer.key"
 expired_cert = "/tmp/test-certs/cms/expired/signer.crt"  # 可选

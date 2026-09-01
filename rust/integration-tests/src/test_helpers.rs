@@ -103,7 +103,7 @@ impl TestPaths {
 
     /// CMS CA证书路径
     pub fn cms_ca_cert(&self) -> PathBuf {
-        self.cert_base.join("cms/ca.crt")
+        self.cert_base.join("cms/ca_root.crt")
     }
 
     /// CMS CRL吊销列表路径

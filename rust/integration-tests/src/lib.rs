@@ -30,7 +30,7 @@
 //! ```text
 //! test-certs/
 //! ├── cms/
-//! │   ├── ca.crt           # CMS CA证书
+//! │   ├── ca_root.crt      # CMS CA证书
 //! │   ├── cms.crl          # CRL吊销列表
 //! │   ├── node1/signer.crt # 节点1签名证书
 //! │   ├── node2/signer.crt # 节点2签名证书
@@ -50,7 +50,7 @@ pub mod test_helpers;
 pub mod vsock_client;
 
 /// CMS CA证书相对路径
-pub const CMS_CA_CERT: &str = "cms/ca.crt";
+pub const CMS_CA_CERT: &str = "cms/ca_root.crt";
 
 /// CMS CRL吊销列表相对路径
 pub const CMS_CRL: &str = "cms/cms.crl";

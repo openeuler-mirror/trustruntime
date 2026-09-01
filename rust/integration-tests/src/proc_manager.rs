@@ -292,7 +292,7 @@ impl ProcessManager {
         )?;
         self.copy_file(&config.cms_key_path, "/etc/cert/cms/signer.key", "CMS key")?;
         self.copy_file(
-            &self.cert_base_path.join("cms/ca.crt"),
+            &self.cert_base_path.join("cms/ca_root.crt"),
             "/etc/cert/cms/ca_root.crt",
             "CMS CA",
         )?;
@@ -358,7 +358,7 @@ impl ProcessManager {
             let cms_ca_pkey = PKey::private_key_from_pem(&cms_ca_key_pem)
                 .map_err(|e| ProcessError::ConfigError(e.to_string()))?;
             let cms_ca_cert = openssl::x509::X509::from_pem(
-                &fs::read(self.cert_base_path.join("cms/ca.crt"))
+                &fs::read(self.cert_base_path.join("cms/ca_root.crt"))
                     .map_err(|e| ProcessError::ConfigError(e.to_string()))?,
             )
             .map_err(|e| ProcessError::ConfigError(e.to_string()))?;

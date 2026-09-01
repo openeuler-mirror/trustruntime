@@ -28,7 +28,7 @@ pub fn generate_cms_certificates(output_path: &Path, group: &EcGroup) {
 
     let (ca_cert, ca_pkey, _ca_id) = create_ca_cert(group, "localhost");
     fs::write(
-        cms_dir.join("ca.crt"),
+        cms_dir.join("ca_root.crt"),
         ca_cert.to_pem().expect("Failed to PEM encode CA cert"),
     )
     .expect("Failed to write CA cert");
@@ -63,7 +63,7 @@ pub fn generate_cms_certificates(output_path: &Path, group: &EcGroup) {
         )
         .expect("Failed to write key");
 
-        fs::write(node_dir.join("ca.crt"), &ca_cert_pem)
+        fs::write(node_dir.join("ca_root.crt"), &ca_cert_pem)
             .expect("Failed to write CA cert to node directory");
 
         println!("Generated CMS certificate for {}", node);
@@ -85,7 +85,7 @@ pub fn generate_cms_certificates(output_path: &Path, group: &EcGroup) {
             .expect("Failed to PEM encode"),
     )
     .expect("Failed to write expired key");
-    fs::write(expired_dir.join("ca.crt"), &ca_cert_pem)
+    fs::write(expired_dir.join("ca_root.crt"), &ca_cert_pem)
         .expect("Failed to write CA cert to expired directory");
     println!("Generated expired CMS certificate");
 
@@ -105,7 +105,7 @@ pub fn generate_cms_certificates(output_path: &Path, group: &EcGroup) {
             .expect("Failed to PEM encode"),
     )
     .expect("Failed to write revoked key");
-    fs::write(revoked_dir.join("ca.crt"), &ca_cert_pem)
+    fs::write(revoked_dir.join("ca_root.crt"), &ca_cert_pem)
         .expect("Failed to write CA cert to revoked directory");
     revoked_certs.push((revoked_cert, revoked_id));
     println!("Generated revoked CMS certificate");
