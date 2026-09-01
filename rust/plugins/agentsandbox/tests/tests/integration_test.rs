@@ -13,7 +13,7 @@ whitelist = [
 ]
 blacklist = [
   { domain = "*.internal.com", method = "DELETE", uri = "*" },
-  { domain = "*", method = "*", uri = "*" },
+  { domain = "api.example.com", method = "DELETE", uri = "*" },
 ]
 [security]
 enforcement_mode = "block"
@@ -64,6 +64,7 @@ fn test_filter_engine_whitelist_match() {
 #[test]
 fn test_filter_engine_blacklist_overrides_whitelist() {
     let fc = parse_proxy_policy(SAMPLE_TOML).unwrap();
-    let result = FilterEngine::evaluate(&fc, "*", "DELETE", "/admin/*");
-    assert!(matches!(result, FilterResult::Deny(_)));
+    // Matches whitelist (*.example.com) AND blacklist (api.example.com DELETE *): blacklist wins.
+    let result = FilterEngine::evaluate(&fc, "api.example.com", "DELETE", "/admin/*");
+    assert!(matches!(result, FilterResult::Deny(ref r) if r == "blacklist_match"));
 }

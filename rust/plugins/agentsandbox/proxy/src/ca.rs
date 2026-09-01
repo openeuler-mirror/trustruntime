@@ -1,4 +1,3 @@
-use rcgen::Certificate;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -17,7 +16,7 @@ pub struct CaProvider {
 
 impl CaProvider {
     /// Loads CA from local pre-made PEM files (scenario 1).
-    pub fn from_local(cert_path: &str, key_path: &str) -> Result<Self, CaError> {
+    pub fn from_local(_cert_path: &str, key_path: &str) -> Result<Self, CaError> {
         let key_pem = std::fs::read(key_path).map_err(|_| CaError::ReadError)?;
         Self::from_pem(&key_pem)
     }
@@ -32,11 +31,12 @@ impl CaProvider {
     /// Signs a dynamic certificate for the given domain using the CA key.
     /// Returns (cert_der, key_der) bytes for TLS server config.
     pub fn sign_domain_cert(&self, domain: &str) -> Result<(Vec<u8>, Vec<u8>), CaError> {
-        let mut params = rcgen::CertificateParams::new(vec![domain.to_string()]);
+        let mut params = rcgen::CertificateParams::new(vec![domain.to_string()])
+            .map_err(|_| CaError::Invalid)?;
         params.distinguished_name = rcgen::DistinguishedName::new();
-        let cert = Certificate::with_signer(&params, &self.signer).map_err(|_| CaError::Invalid)?;
+        let cert = params.self_signed(&self.signer).map_err(|_| CaError::Invalid)?;
         let cert_der = cert.der().to_vec();
-        let key_der = cert.serialize_private_key_der();
+        let key_der = self.signer.serialize_der();
         Ok((cert_der, key_der))
     }
 }

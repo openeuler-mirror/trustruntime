@@ -3,6 +3,7 @@ use notify::{Event, RecursiveMode, Watcher};
 use std::path::PathBuf;
 
 /// Watches virtio-fs config directory for TOML file changes.
+#[derive(Clone)]
 pub struct ConfigMonitor {
     watch_dir: PathBuf,
 }

@@ -2,7 +2,6 @@ use crate::cgroup_mapping::CgroupMapping;
 use crate::config_monitor::ConfigMonitor;
 use crate::messaging::{ManagementMessage, MessageSender, MSG_REFRESH_POLICY};
 use std::sync::Arc;
-
 /// HiController management facade: lifecycle, health check, config distribution.
 pub struct Management {
     cgm: Arc<CgroupMapping>,
@@ -15,9 +14,12 @@ impl Management {
     }
 
     /// Starts config monitoring loop. On TOML change, distributes filter_config to proxy.
-    pub fn start_config_monitor(&self, sender: &dyn MessageSender) -> Result<(), String> {
-        self.cm.watch(|path| {
-            if let Ok((fc, _)) = self.cm.parse_file(path) {
+    /// Blocks the calling thread; spawn in a dedicated task.
+    pub fn start_config_monitor(&self, sender: Arc<dyn MessageSender>) -> Result<(), String> {
+        let cm = self.cm.clone();
+        let cm_inner = cm.clone();
+        cm.watch(move |path| {
+            if let Ok((fc, _)) = cm_inner.parse_file(path) {
                 if let Some(cfg) = fc {
                     let rid = format!("config-{}", std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));

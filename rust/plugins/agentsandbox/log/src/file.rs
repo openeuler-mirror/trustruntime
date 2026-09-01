@@ -13,7 +13,7 @@ pub fn write_line(log_type: &str, json_line: &str, config: &LogConfig) -> Result
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| LogError::WriteError)?;
     }
-    let file = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
