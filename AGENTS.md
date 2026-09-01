@@ -83,10 +83,10 @@ wsl bash -c "source ~/.cargo/env && cd <PROJECT_ROOT>/rust && ./scripts/run-inte
 
 ## Documentation
 
-- Design docs: `docs/detailed-design/` (7 files, one per functional domain)
-- ADRs: `docs/adr/` (architecture decisions)
-- Requirements: `docs/requirements.md`
 - Interface spec: `docs/interface.md`
+- User guide: `docs/user-guide.md`
+- FAQ: `docs/faq.md`
+- Contributing guide: `docs/contributing.md`
 
 ## Key Conventions
 

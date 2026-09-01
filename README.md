@@ -13,12 +13,11 @@ trustruntime/
 │   ├── integration-tests/   # 集成测试
 │   ├── tools/cert-gen/      # 测试证书生成工具
 │   └── scripts/             # 开发测试脚本
-├── docs/                    # 设计文档
-│   ├── adr/                 # 架构决策记录
-│   ├── detailed-design/     # 详细设计
-│   ├── requirements.md      # 需求设计文档
+├── docs/                    # 文档
 │   ├── interface.md         # 接口文档
-│   └── functional-design.md # 功能设计文档
+│   ├── user-guide.md        # 使用指南
+│   ├── faq.md               # FAQ
+│   └── contributing.md      # 开发指南
 ├── conf/                    # 默认配置
 ├── packaging/               # RPM打包
 ├── CONTEXT.md               # 术语表
@@ -177,13 +176,9 @@ pkill -f trustruntime
 ### 开发者
 
 - [开发指南](docs/contributing.md) - 贡献流程、编码规范
-- [架构设计](docs/architecture.md) - 系统架构图、数据流
-- [详细设计](docs/detailed-design/) - 各模块详细设计
-- [架构决策](docs/adr/) - ADR 记录
 
 ### 其他
 
-- [需求文档](docs/requirements.md) - 需求规格
 - [术语表](CONTEXT.md) - 项目术语
 - [变更日志](CHANGELOG.md) - 版本历史
 - [示例代码](rust/examples/) - 使用示例

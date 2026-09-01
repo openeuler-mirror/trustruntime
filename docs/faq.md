@@ -462,4 +462,3 @@ grep "expired" /var/log/trustruntime/trustruntime.log
 - [使用指南](user-guide.md)
 - [接口文档](interface.md) - 完整结果码定义
 - [术语表](../CONTEXT.md) - 术语解释
-- [架构设计](architecture.md)

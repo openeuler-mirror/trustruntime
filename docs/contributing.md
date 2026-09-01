@@ -111,11 +111,10 @@ trustruntime/
 │   ├── tools/cert-gen/      # 测试证书生成工具
 │   └── scripts/             # 开发测试脚本
 ├── docs/                    # 设计文档
-│   ├── adr/                 # 架构决策记录
-│   ├── detailed-design/     # 详细设计
-│   ├── requirements.md      # 需求文档
 │   ├── interface.md         # 接口文档
-│   └── functional-design.md # 功能设计
+│   ├── user-guide.md        # 使用指南
+│   ├── faq.md               # FAQ
+│   └── contributing.md      # 开发指南
 ├── conf/                    # 默认配置
 ├── packaging/               # RPM 打包
 ├── CONTEXT.md               # 术语表
@@ -229,41 +228,6 @@ error!("Failed to load certificate: {}", cert_path);
 // 正确示例（固定描述）
 error!("Failed to load certificate");
 ```
-
-### 3.4 模块职责边界
-
-#### message 模块（纯数据层）
-
-- 负责：报文结构定义、序列化/反序列化
-- **不负责**：业务校验（version 匹配、长度限制）、错误响应构造
-- 校验逻辑归属 `vsock_server`（通信层）
-
-#### config 模块
-
-- 负责：TOML 配置解析、结构体映射
-- 不负责：配置文件存在性检查、文件权限校验、热更新
-- 可选字段使用 `Option<T>` 或 `#[serde(default)]`
-
-#### plugin 模块
-
-- 插件在 `init()` 中通过 `ctx.register_handler(type)` 注册消息类型
-- Handler panic recovery：`catch_unwind` 返回错误类型 0x00，None 返回 0x01
-
-### 3.5 字节序
-
-所有消息序列化使用 **小端序（Little Endian）**。
-
-```rust
-// VsockHeader 序列化示例
-let seq_bytes = seq.to_le_bytes();  // 小端序
-```
-
-### 3.6 异步架构
-
-- `TransportLayer` trait（定义于 `transport` 模块）使用 `async-trait`
-- `main.rs` 使用 `#[tokio::main(worker_threads = 4)]`
-- 并发连接使用 `tokio::sync::Semaphore`（16 permits）
-- 线程数限制为 4，足够处理最大 16 个并发连接
 
 ---
 
@@ -463,10 +427,8 @@ cd rust/scripts
 
 | 文档类型 | 路径 |
 |----------|------|
-| 需求文档 | `docs/requirements.md` |
 | 接口文档 | `docs/interface.md` |
-| 架构决策 | `docs/adr/*.md` |
-| 详细设计 | `docs/detailed-design/*.md` |
+| 使用指南 | `docs/user-guide.md` |
 | 术语表 | `CONTEXT.md` |
 
 ### 6.2 ADR 格式
@@ -560,7 +522,6 @@ RPM 配置在 `rust/trustruntime/Cargo.toml` 的 `[package.metadata.generate-rpm
 ## 8. 相关文档
 
 - [使用指南](user-guide.md)
-- [架构设计](architecture.md)
 - [接口文档](interface.md)
 - [术语表](../CONTEXT.md)
 - [AGENTS.md](../AGENTS.md)（Agent 指令）
