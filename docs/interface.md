@@ -107,7 +107,7 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
 
 ## 6. 结果码
 
-三种接口（0x11、0x13、0x15）统一使用以下结果码表。编码错开设计：每个数值全局唯一含义，无需按接口类型切换解读逻辑。决策依据见 [ADR-0001](./adr/0001-unified-result-code-encoding.md)。
+三种接口（0x11、0x13、0x15）统一使用以下结果码表。编码错开设计：每个数值全局唯一含义，无需按接口类型切换解读逻辑。
 
 | result | 含义 | 适用接口 |
 |--------|------|----------|
@@ -293,105 +293,12 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
 
 ---
 
-## 10. 内部接口定义
-
-### 10.1 VsockHeader
-
-```rust
-#[repr(C)]
-pub struct VsockHeader {
-    seq: u32,
-    version: u32,
-    msg_type: u32,
-    len: u32,
-}
-```
-
-### 10.2 VsockMessage
-
-```rust
-pub struct VsockMessage {
-    header: VsockHeader,
-    data: Vec<u8>,
-}
-```
-
-### 10.3 Plugin trait
-
-```rust
-pub trait Plugin: Send + Sync {
-    fn name(&self) -> &str;
-    fn init(&mut self, ctx: &PluginContext) -> Result<(), PluginError>;
-    fn shutdown(&mut self) -> Result<(), PluginError>;
-}
-```
-
-### 10.4 PluginContext
-
-```rust
-pub struct PluginContext {
-    pub config: Arc<AppConfig>,
-    pub transport: Arc<dyn TransportLayer>,
-}
-```
-
-### 10.5 TransportLayer trait
-
-定义于 `framework::transport` 模块。
-
-```rust
-#[async_trait]
-pub trait TransportLayer: Send + Sync {
-    fn register_handler(&self, msg_type: u32, handler: Box<dyn DataHandler>);
-    async fn start(&self) -> Result<(), TransportError>;
-    async fn stop(&self);
-}
-```
-
-### 10.6 DataHandler trait
-
-定义于 `framework::transport` 模块。
-
-```rust
-pub trait DataHandler: Send + Sync {
-    fn handle(&self, data: &[u8]) -> Option<Vec<u8>>;
-}
-```
-
-### 10.7 日志
-
-各模块直接使用 `log` crate 宏写日志，无 trait 封装：
-
-```rust
-log::info!("message");
-log::warn!("message");
-log::error!("message");
-log::debug!("message");
-```
-
-日志系统由 `logger::init_logger(&config.log)` 在启动时初始化（基于 `log4rs`）。
-
-### 10.8 Handler 回调注册
-
-| type | DataHandler 实现 | 说明 |
-|------|------------------|------|
-| 0x10 | SignHandler | 签名请求 |
-| 0x12 | VerifySignHandler | 验签+签名请求 |
-| 0x14 | VerifyHandler | 验签请求 |
-
-插件在 init 中通过 ctx.transport.register_handler() 注册 DataHandler。Transport 收到 vsock 消息后，根据 header.type 查找已注册的 handler 并调用 handle()。type=0x00/0x01/0x02 由 Transport 层直接处理，不经过 DataHandler。
-
----
-
-## 11. 附录
+## 10. 附录
 
 | 项目 | 说明 |
 |------|------|
 | 签名算法 | 仅支持 ECC-256 |
-| 签名密钥保护 | 签名私钥无密码保护，由 trt_launcher 映射注入，进程直接读取 |
-| 通信私钥密码 | 通信私钥支持密码保护（key_pwd.txt），由 trt_launcher 映射注入 |
 | 证书格式 | 所有证书支持 PEM / DER 双格式自动识别 |
-| 证书注入方式 | trt_launcher 拉起机密虚机时通过目录映射注入 |
 | 证书热更新 | 不支持热更新，需更新证书时通过重启进程生效 |
 | 证书过期巡检 | 后台线程每 24h 检查所有证书有效期，过期时打印 warn 日志 |
 

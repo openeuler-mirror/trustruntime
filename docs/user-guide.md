@@ -489,6 +489,5 @@ cargo run --example verify_and_sign_example
 ## 9. 相关文档
 
 - [接口文档](interface.md)
-- [架构设计](architecture.md)
 - [FAQ](faq.md)
 - [术语表](../CONTEXT.md)

@@ -13,7 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/user-guide.md` - 使用指南（安装/配置/运维）
   - `docs/contributing.md` - 开发指南（贡献流程/编码规范）
   - `docs/faq.md` - FAQ 常见问题
-  - `docs/architecture.md` - 架构设计（系统架构图、数据流图、时序图）
 
 ---
 
@@ -69,10 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 文档
   - `CONTEXT.md` - 术语表
   - `docs/interface.md` - 接口文档
-  - `docs/requirements.md` - 需求文档
-  - `docs/functional-design.md` - 功能设计
-  - `docs/detailed-design/` - 详细设计（7 个模块）
-  - `docs/adr/` - 架构决策记录（8 个 ADR）
+  - `docs/user-guide.md` - 使用指南
+  - `docs/faq.md` - FAQ
+  - `docs/contributing.md` - 开发指南
 
 - 测试
   - 单元测试

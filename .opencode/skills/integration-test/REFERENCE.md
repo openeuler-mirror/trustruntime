@@ -5,7 +5,7 @@
 ```
 <HOME>/test-certs/
 ├── cms/
-│   ├── ca.crt, cms.crl        # CA root + CRL
+│   ├── ca_root.crt, cms.crl   # CA root + CRL
 │   ├── node-a,b,c/            # Valid node certs
 │   ├── expired/, revoked/     # Error scenario certs
 │   └── self-signed/           # Chain invalid cert

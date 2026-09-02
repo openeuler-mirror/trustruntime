@@ -316,10 +316,6 @@ Concurrent Test Report:
   Throughput: 52.6 QPS
 ```
 
-## 详细设计
-
-参见 `docs/cms-test-cli-design.md`。
-
 ## 依赖
 
 - `integration-tests`: 复用 VsockClient、ProcessManager、test_utils

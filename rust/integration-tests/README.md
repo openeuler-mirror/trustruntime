@@ -118,4 +118,4 @@ cd ../scripts && ./run-integration-tests.sh --cert-dir ~/my-certs
 
 ## 详细设计
 
-参见 `docs/integration-test-design.md` 和 `.opencode/skills/integration-test/SKILL.md`。
+参见 `.opencode/skills/integration-test/SKILL.md`。

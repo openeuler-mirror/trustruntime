@@ -69,4 +69,3 @@ cargo test --release -p integration-tests -- --include-ignored --test-threads=1
 ## Reference
 
 - Detailed test scenarios: See [REFERENCE.md](REFERENCE.md)
-- Test design: See `docs/integration-test-design.md`

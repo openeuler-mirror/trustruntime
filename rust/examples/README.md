@@ -98,4 +98,3 @@ base64 = "0.22"
 
 - [接口文档](../docs/interface.md)
 - [使用指南](../docs/user-guide.md)
-- [架构设计](../docs/architecture.md)
