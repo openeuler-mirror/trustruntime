@@ -3,9 +3,9 @@ members = [
     "config",
     "log",
     "controller",
+    "hook",
     "proxy",
     "security",
-    "tests",
 ]
 resolver = "2"
 

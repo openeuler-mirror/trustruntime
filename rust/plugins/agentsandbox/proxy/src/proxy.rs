@@ -2,29 +2,42 @@ use crate::ca::CaProvider;
 use crate::error::ProxyError;
 use crate::filter_engine::{FilterEngine, FilterResult};
 use crate::group_config::GroupConfigMap;
-use crate::handler::{HandlerRegistry, HandlerResult, Phase, Target};
+use crate::handler::{HandlerRegistry, HandlerResult};
 use crate::mitm::MitmHandler;
 use crate::response_action::{FlowCtx, ResponseAction, ResponseActionRegistry};
 use crate::audit;
 use agentsandbox_config::FilterConfig;
 use agentsandbox_log::{AuditLogEntry, LogConfig};
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Scenario 1 proxy: TCP + SO_PEERCRED pid → /proc cgroup_id → virtio-fs mapping → group_id.
+/// Result of full request evaluation: rules → response action → handler chain.
+#[derive(Debug, Clone)]
+pub enum EvaluateResult {
+    /// Request fully allowed, ready to forward.
+    Allow { reason: String, modified_header: Option<Vec<u8>>, modified_body: Option<Vec<u8>> },
+    /// Request allowed but bypass handler chain, forward as-is.
+    Bypass { reason: String },
+    /// Request blocked.
+    Block { reason: String },
+    /// Request forwarded to alternative target (handler Forward result).
+    Forward { reason: String, target_url: String },
+}
+
+/// Scenario 1 proxy: TCP + SO_PEERCRED pid → /proc cgroup_id → filter_config by cgroup_id.
 pub struct ProxyServer {
     cfg: Arc<GroupConfigMap>,
+    #[allow(dead_code)]
     mitm: MitmHandler,
     actions: Arc<ResponseActionRegistry>,
     handlers: Arc<HandlerRegistry>,
     log_cfg: LogConfig,
-    cgroup_path: String,
 }
 
 impl ProxyServer {
-    pub fn new(ca: CaProvider, cfg: Arc<GroupConfigMap>, actions: Arc<ResponseActionRegistry>,
-               handlers: Arc<HandlerRegistry>, log_cfg: LogConfig, cgroup_path: &str) -> Self {
-        Self { mitm: MitmHandler::new(ca), cfg, actions, handlers, log_cfg, cgroup_path: cgroup_path.to_string() }
+    /// Creates a new ProxyServer with CA provider, config map, response action registry, handler registry, and log config.
+    pub fn new(ca: CaProvider, cfg: Arc<GroupConfigMap>, actions: Arc<ResponseActionRegistry>, handlers: Arc<HandlerRegistry>, log_cfg: LogConfig) -> Self {
+        Self { mitm: MitmHandler::new(ca), cfg, actions, handlers, log_cfg }
     }
 
     /// Reads /proc/<pid>/cgroup and extracts cgroup_id path.
@@ -39,39 +52,47 @@ impl ProxyServer {
         Err(ProxyError::GroupIdNotFound)
     }
 
-    /// Looks up group_id from virtio-fs shared mapping file by cgroup_id.
-    pub fn lookup_group_id(&self, cid: &str) -> Result<String, ProxyError> {
-        let content = std::fs::read_to_string(&self.cgroup_path).map_err(|_| ProxyError::GroupIdNotFound)?;
-        let map: HashMap<String, String> = serde_json::from_str(&content).map_err(|_| ProxyError::GroupIdNotFound)?;
-        map.get(cid).cloned().ok_or(ProxyError::GroupIdNotFound)
+    /// Full evaluation: filter rules → response action → handler chain.
+    /// Returns EvaluateResult with final decision and any modified content.
+    pub fn evaluate_full(&self, cid: &str, domain: &str, method: &str, uri: &str, header: &[u8], body: &[u8]) -> EvaluateResult {
+        let fc = match self.cfg.get(cid) {
+            Some(fc) => fc,
+            None => return EvaluateResult::Block { reason: "config_not_found".to_string() },
+        };
+
+        let rule_result = FilterEngine::evaluate(&fc, domain, method, uri);
+        let rule_reason = match rule_result {
+            FilterResult::Deny(r) => return EvaluateResult::Block { reason: r },
+            FilterResult::Allow(r) => r,
+        };
+
+        let ctx = self.build_flow_ctx(cid, domain, method, uri);
+        match self.actions.evaluate(&ctx) {
+            ResponseAction::Allow => {
+                let result = self.handlers.run_request_chain(header, body, cid);
+                match result {
+                    HandlerResult::Allow => EvaluateResult::Allow { reason: rule_reason, modified_header: None, modified_body: None },
+                    HandlerResult::Deny => EvaluateResult::Block { reason: "handler_deny".to_string() },
+                    HandlerResult::Modify { content } => EvaluateResult::Allow { reason: rule_reason, modified_header: Some(content), modified_body: None },
+                    HandlerResult::Forward { target_url } => EvaluateResult::Forward { reason: rule_reason, target_url },
+                }
+            }
+            ResponseAction::Bypass => EvaluateResult::Bypass { reason: rule_reason },
+            ResponseAction::Cache => EvaluateResult::Bypass { reason: "cache".to_string() },
+            ResponseAction::Block { reason, .. } => EvaluateResult::Block { reason },
+        }
     }
 
-    /// Signs a dynamic certificate for the given domain via the MITM handler.
-    pub fn cert_for_domain(&self, domain: &str) -> Result<(Vec<u8>, Vec<u8>), ProxyError> {
-        self.mitm.get_cert_for_domain(domain)
-    }
-
-    /// Invokes a registered handler for (phase, target). Returns None if no handler.
-    pub fn invoke_handler(&self, p: Phase, t: Target, content: &[u8], gid: &str) -> Option<HandlerResult> {
-        self.handlers.invoke(p, t, content, gid)
-    }
-
-    /// Evaluates filter rules and response action for an incoming request.
-    pub fn evaluate(&self, gid: &str, domain: &str, method: &str, uri: &str) -> (bool, String) {
-        let fc = match self.cfg.get(gid) {
+    /// Simple evaluation without handler chain (compat with old API).
+    pub fn evaluate(&self, cid: &str, domain: &str, method: &str, uri: &str) -> (bool, String) {
+        let fc = match self.cfg.get(cid) {
             Some(fc) => fc,
             None => return (false, "config_not_found".to_string()),
         };
         match FilterEngine::evaluate(&fc, domain, method, uri) {
             FilterResult::Deny(r) => (false, r),
             FilterResult::Allow(r) => {
-                let ctx = FlowCtx {
-                    flow_id: format!("flow-{}", std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)),
-                    group_id: gid.to_string(), domain: domain.to_string(),
-                    method: method.to_string(), url_path: uri.to_string(),
-                    source_ip: None, scenario: "kata".to_string(),
-                };
+                let ctx = self.build_flow_ctx(cid, domain, method, uri);
                 match self.actions.evaluate(&ctx) {
                     ResponseAction::Allow => (true, r),
                     ResponseAction::Bypass => (true, "bypass".to_string()),
@@ -85,5 +106,18 @@ impl ProxyServer {
     /// Writes audit log for a request decision.
     pub fn audit(&self, fc: &FilterConfig, entry: &AuditLogEntry) {
         let _ = audit::write_audit_if_enabled(fc, entry, &self.log_cfg);
+    }
+
+    fn build_flow_ctx(&self, cid: &str, domain: &str, method: &str, uri: &str) -> FlowCtx {
+        FlowCtx {
+            flow_id: format!("flow-{}", SystemTime::now()
+                .duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)),
+            group_id: cid.to_string(),
+            domain: domain.to_string(),
+            method: method.to_string(),
+            url_path: uri.to_string(),
+            source_ip: None,
+            scenario: "kata".to_string(),
+        }
     }
 }

@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "agentsandbox_security"
+path = "src/lib.rs"
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -19,4 +19,5 @@ pub use group_config::GroupConfigMap;
 pub use handler::{HandlerRegistry, HandlerResult, Phase, Target};
 pub use lib_api::ProxyLib;
 pub use log_sink::LogSinkRegistry;
+pub use proxy::{ProxyServer, EvaluateResult};
 pub use response_action::{ResponseAction, ResponseActionRegistry, FlowCtx};
