@@ -68,8 +68,7 @@ pub fn write_security_log(e: &SecurityEvent, cfg: &LogConfig) -> Result<(), LogE
 }
 
 /// Writes a debug log entry to debug.log if level >= configured minimum.
-pub fn write_debug_log(lvl: &str, mod_name: &str, msg: &str,
-                       ctx: Option<serde_json::Value>, cfg: &LogConfig) -> Result<(), LogError> {
+pub fn write_debug_log(lvl: &str, mod_name: &str, msg: &str, ctx: Option<serde_json::Value>, cfg: &LogConfig) -> Result<(), LogError> {
     let upper = lvl.to_uppercase();
     if level_idx(&upper) < level_idx(&cfg.debug_level.to_uppercase()) {
         return Ok(());

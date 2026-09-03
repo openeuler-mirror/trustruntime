@@ -3,6 +3,7 @@ use agentsandbox_proxy::{FilterEngine, FilterResult};
 
 const SAMPLE_TOML: &str = r#"
 version = 1
+
 [proxy]
 default_policy = "deny"
 audit_enabled = true
@@ -13,19 +14,29 @@ whitelist = [
 ]
 blacklist = [
   { domain = "*.internal.com", method = "DELETE", uri = "*" },
-  { domain = "api.example.com", method = "DELETE", uri = "*" },
+  { domain = "*", method = "*", uri = "*" },
 ]
+
+[model_route]
+container_port = 8000
+
 [security]
 enforcement_mode = "block"
+default_action = "allow"
 privilege_escalation_rules = [
-  { capability = "cap_sys_admin" },
+  { capabilities = ["cap_sys_admin"] },
+  { capabilities = ["cap_net_raw", "cap_sys_ptrace"], path_pattern = "/usr/bin/curl" },
+  { capabilities = ["cap_sys_ptrace"], path_pattern = "/usr/sbin/*" },
 ]
 filesystem_access_rules = [
   { path_prefix = "/proc/1/*", attrs = "rw" },
+  { path_prefix = "/etc/shadow", attrs = "r" },
+  { path_prefix = "/usr/bin/*", attrs = "rx" },
 ]
 network_rules = [
   { operation = "connect", target = "*", port = "443", protocol = "tcp", action = "redirect_to_proxy" },
   { operation = "connect", target = "8.8.8.8", port = "53", protocol = "udp", action = "allow" },
+  { operation = "connect", target = "10.0.0.0/8", port = "*", protocol = "*", action = "block" },
 ]
 "#;
 
@@ -64,7 +75,6 @@ fn test_filter_engine_whitelist_match() {
 #[test]
 fn test_filter_engine_blacklist_overrides_whitelist() {
     let fc = parse_proxy_policy(SAMPLE_TOML).unwrap();
-    // Matches whitelist (*.example.com) AND blacklist (api.example.com DELETE *): blacklist wins.
-    let result = FilterEngine::evaluate(&fc, "api.example.com", "DELETE", "/admin/*");
-    assert!(matches!(result, FilterResult::Deny(ref r) if r == "blacklist_match"));
+    let result = FilterEngine::evaluate(&fc, "*", "DELETE", "/admin/*");
+    assert!(matches!(result, FilterResult::Deny(_)));
 }

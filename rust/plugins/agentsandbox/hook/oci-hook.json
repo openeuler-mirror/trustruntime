@@ -1,0 +1,22 @@
+{
+  "version": "1.0.0",
+  "hook": {
+    "path": "/usr/bin/agentsandbox-hook",
+    "args": [
+      "agentsandbox-hook"
+    ],
+    "env": [
+      "AGENTSANDBOX_SOCK_PATH=/run/agentsandbox/agentsandbox.sock",
+      "AGENTSANDBOX_CONFIG_PATH=${config_path}"
+    ]
+  },
+  "when": {
+    "always": true,
+    "commands": [
+      ".*"
+    ]
+  },
+  "stages": [
+    "prestart"
+  ]
+}

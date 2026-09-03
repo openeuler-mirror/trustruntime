@@ -10,4 +10,3 @@ agentsandbox-log = { path = "../log" }
 agentsandbox-proxy = { path = "../proxy" }
 agentsandbox-controller = { path = "../controller" }
 serde_json = { workspace = true }
-rcgen = "0.13"

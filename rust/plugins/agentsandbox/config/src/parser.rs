@@ -36,6 +36,12 @@ pub fn parse_proxy_policy(toml_content: &str) -> Result<FilterConfig, ParseError
     Ok(fc)
 }
 
+/// Parses [model_route] section from TOML and returns container_port (0 if absent).
+pub fn parse_container_port(toml_content: &str) -> Result<u16, ParseError> {
+    let config = parse_toml(toml_content)?;
+    Ok(config.model_route.map(|r| r.container_port).unwrap_or(0))
+}
+
 /// Parses [security] section from TOML content and returns validated SecurityPolicy.
 /// Validates enforcement_mode (block/alert) and network_rules action values
 /// (allow/block/redirect_to_proxy, redirect_to_proxy requires tcp). Returns ParseError on failure.

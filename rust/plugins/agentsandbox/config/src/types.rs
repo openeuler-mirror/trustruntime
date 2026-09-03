@@ -23,13 +23,14 @@ pub struct MatchRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelRoute {
-    pub listen_port: u16,
     pub container_port: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityPolicy {
     pub enforcement_mode: String,
+    #[serde(default = "default_action")]
+    pub default_action: String,
     #[serde(default)]
     pub privilege_escalation_rules: Vec<CapabilityRule>,
     #[serde(default)]
@@ -40,7 +41,9 @@ pub struct SecurityPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityRule {
-    pub capability: String,
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub path_pattern: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,4 +83,8 @@ fn default_drain() -> String {
 
 fn default_star() -> String {
     "*".to_string()
+}
+
+fn default_action() -> String {
+    "block".to_string()
 }
