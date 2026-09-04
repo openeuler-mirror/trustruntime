@@ -1,0 +1,11 @@
+[package]
+name = "agentsandbox-inference"
+description = "AgentSandbox 推理路由外部库（mock 占位实现——真实库落地后替换）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+http = "1"
+bytes = "1"

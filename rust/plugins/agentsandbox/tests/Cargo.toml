@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 agentsandbox-config = { path = "../config" }
 agentsandbox-log = { path = "../log" }
-agentsandbox-proxy = { path = "../proxy" }
+agentsandbox-proxy = { path = "../proxy", features = ["test-util"] }
 agentsandbox-controller = { path = "../controller" }
 serde_json = { workspace = true }
+tokio = { workspace = true }
+rcgen = "0.13"
