@@ -63,6 +63,12 @@ pub struct RequestMeta<'a> {
     pub target_port: u16,
 }
 
+/// 单星 glob 匹配（大小写敏感——binaryrules 路径匹配用；语义同
+/// method/uri 维度：无星精确、单星任意序列含空串）。
+pub(crate) fn star_glob_match(pattern: &str, text: &str) -> bool {
+    glob::glob_match(pattern, text, false)
+}
+
 /// 维度匹配器抽象（D1：输入请求元组 + 条目维度条件 → bool）。
 ///
 /// 实现为无状态纯函数（`Send + Sync` 供求值侧共享）。
@@ -165,29 +171,6 @@ impl DimensionMatcher for UriMatcher {
     }
 }
 
-/// binary 维度匹配器（进程二进制路径精确全等——与 resolver 输出的
-/// `binary_path` 比较；未解析 None 时条件永真：忽略维度而非跳过条目）。
-pub struct BinaryMatcher;
-
-impl DimensionMatcher for BinaryMatcher {
-    fn matches(&self, req: &RequestMeta<'_>, cond: Option<&str>) -> bool {
-        let Some(pattern) = cond else {
-            return true; // 未声明维度等同 "*"。
-        };
-        if pattern == "*" {
-            return true; // 显式通配。
-        }
-        match req.binary_path {
-            // 未解析：忽略该维度条件（视为匹配通过——条件永真而非跳过
-            // 条目；含 binary 条件规则的未解析拒绝在服务管道前置收敛为
-            // binary_not_found，不进入匹配）。
-            None => true,
-            // 已解析：二进制路径精确匹配。
-            Some(path) => path == pattern,
-        }
-    }
-}
-
 /// 目标 IP 维度匹配器（2026-09-09）：CIDR 网段或精确 IP（IPv4/IPv6）。
 ///
 /// 求值输入 = 请求域名经 DNS 预解析的全部 IP——**任一命中即命中**
@@ -267,46 +250,6 @@ fn ip_in_network(ip: &std::net::IpAddr, network: &CidrNetwork) -> bool {
         u128::MAX << (128 - network.prefix)
     };
     (addr & mask) == (network.addr & mask)
-}
-
-/// 目标端口维度匹配器（2026-09-09）：精确（`8443`）或范围
-///（`8000-9000`，含两端）。语法合法性由 K10 校验器注入口保证
-///（非法模式不会进入匹配——此处防御性不命中）。
-pub struct PortMatcher;
-
-impl DimensionMatcher for PortMatcher {
-    fn matches(&self, req: &RequestMeta<'_>, cond: Option<&str>) -> bool {
-        let Some(pattern) = cond else {
-            return true; // 未声明维度等同 "*"。
-        };
-        if pattern == "*" {
-            return true; // 显式通配。
-        }
-        match parse_port_pattern(pattern) {
-            Some((lo, hi)) => req.target_port >= lo && req.target_port <= hi,
-            // 防御性：非法模式（K10 已拒——不可达路径）。
-            None => false,
-        }
-    }
-}
-
-/// 解析端口模式：精确 `8443` → (8443, 8443)；范围 `8000-9000` →
-/// (8000, 9000)（含两端；序倒置非法）。
-fn parse_port_pattern(pattern: &str) -> Option<(u16, u16)> {
-    match pattern.split_once('-') {
-        Some((lo, hi)) => {
-            let lo: u16 = lo.parse().ok()?;
-            let hi: u16 = hi.parse().ok()?;
-            if lo > hi {
-                return None; // 范围倒置非法。
-            }
-            Some((lo, hi))
-        }
-        None => {
-            let p: u16 = pattern.parse().ok()?;
-            Some((p, p))
-        }
-    }
 }
 
 #[cfg(test)]
@@ -499,23 +442,6 @@ mod tests {
         assert!(!m.matches(&req("a.com", "PUT", "/", None), Some("GET*")));
     }
 
-    // binary 维度语义（D2 场景差异的条件级行为；TC5/TC-015 的求值级断言归 T2）。
-    #[test]
-    fn binary_matcher_dimension_semantics() {
-        let m = BinaryMatcher;
-        // 场景一（无 binary_path）：含条件条目的该维度恒通过（忽略=条件永真）。
-        assert!(m.matches(&req("a.com", "GET", "/", None), Some("python3")));
-        // 场景二：精确匹配。
-        assert!(m.matches(
-            &req("a.com", "GET", "/", Some("python3")),
-            Some("python3")
-        ));
-        assert!(!m.matches(&req("a.com", "GET", "/", Some("curl")), Some("python3")));
-        // 显式通配与未声明：全匹配。
-        assert!(m.matches(&req("a.com", "GET", "/", Some("curl")), Some("*")));
-        assert!(m.matches(&req("a.com", "GET", "/", Some("curl")), None));
-    }
-
     // 目标 IP 维度（2026-09-09）：CIDR/精确、任一命中、族不互通、
     // 未声明全匹配、非法模式防御性不命中。
     #[test]
@@ -547,28 +473,5 @@ mod tests {
         // 非法模式防御性不命中（K10 注入口已拒——不可达路径）。
         assert!(!m.matches(&req_net(&ips, 443), Some("10.0.0.0/33")));
         assert!(!m.matches(&req_net(&ips, 443), Some("not-an-ip")));
-    }
-
-    // 目标端口维度（2026-09-09）：精确/范围含端点/未声明全匹配/
-    // 非法模式防御性不命中。
-    #[test]
-    fn port_matcher_semantics() {
-        let m = PortMatcher;
-        // 精确。
-        assert!(m.matches(&req_net(&[], 8443), Some("8443")));
-        assert!(!m.matches(&req_net(&[], 8443), Some("443")));
-        // 范围（含两端）。
-        assert!(m.matches(&req_net(&[], 8000), Some("8000-9000")));
-        assert!(m.matches(&req_net(&[], 9000), Some("8000-9000")));
-        assert!(m.matches(&req_net(&[], 8443), Some("8000-9000")));
-        assert!(!m.matches(&req_net(&[], 7999), Some("8000-9000")));
-        assert!(!m.matches(&req_net(&[], 9001), Some("8000-9000")));
-        // 未声明/显式通配：全匹配。
-        assert!(m.matches(&req_net(&[], 1), None));
-        assert!(m.matches(&req_net(&[], 65535), Some("*")));
-        // 非法模式防御性不命中。
-        assert!(!m.matches(&req_net(&[], 8443), Some("abc")));
-        assert!(!m.matches(&req_net(&[], 8443), Some("9000-8000"))); // 倒置
-        assert!(!m.matches(&req_net(&[], 8443), Some("65536"))); // 越界
     }
 }

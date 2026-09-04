@@ -68,75 +68,135 @@ pub enum Reason {
     DnsResolveError,
 }
 
-/// 白名单/黑名单条目：条目内各维度 AND 匹配，未声明维度等同 "*"。
+/// 规则动作（2026-09-16 结构重设计）：deny=黑名单阻断 / alert=黑名单
+/// 告警（放行 + 审计标记 type=1）/ allow=白名单放行。
+///
+/// `deny` 接受别名 `"block"`（HC 侧安全模块术语——TOML 形态兼容）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleAction {
+    /// 黑名单阻断（403 + 审计 deny）。
+    #[serde(alias = "block")]
+    Deny,
+    /// 黑名单告警（放行 + 审计 type=1——不阻断）。
+    Alert,
+    /// 白名单放行。
+    Allow,
+}
+
+/// 规则集主机匹配类型：ip（目标 IP/CIDR）/ host（域名通配）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostType {
+    /// 按 DNS 预解析的目标 IP 匹配 `addr`（精确或 CIDR；任一命中即命中）。
+    Ip,
+    /// 按请求域名（SNI/Host 头）匹配 `context`（单星 glob，大小写不敏感）。
+    Host,
+}
+
+/// 规则集主机匹配条件（`{type, addr?, context?, prio}`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuleEntry {
-    /// 域名通配（ASCII 大小写不敏感，RFC 4343）：无星精确；单星任意
-    /// 位置通配——`*` 匹配任意字符序列含空串（`*.example.com` 不匹配
-    /// 裸域 `example.com`——模式含字面 `.` 分隔；`*example.com` 匹配
-    /// 裸域）；裸 `*` 全匹配；多星非法（K10）。
-    pub domain: String,
-    /// HTTP 方法（大小写敏感，RFC 9110）：无星精确；单星任意位置
-    /// 通配（`GET*`/`*ET`/`G*T`）；裸 `*` 全匹配；多星非法（K10）。
+pub struct HostRule {
+    /// 匹配类型（TOML 字段名 `type`）。
+    #[serde(rename = "type")]
+    pub host_type: HostType,
+    /// type=ip：目标 IP 或 CIDR（如 `169.254.169.254` / `10.0.0.0/8`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+    /// type=host：域名通配（如 `*.trusted.com`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// 优先级（**越大越优先**——rule_list 按 prio 降序求值）。
+    pub prio: u32,
+}
+
+/// 目标规则（method + path → action）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetRule {
+    /// HTTP 方法（单星 glob，大小写敏感：`GET` / `*` / `G*T`）。
     pub method: String,
-    /// URI 可选维度（大小写敏感；匹配路径部分不含 query string）：
-    /// 无星精确；单星任意位置通配（`/one/box/*/v1` 的 `*` 匹配任意
-    /// 序列含 `/` 与空串）；裸 `*` 全匹配；多星非法（K10）；缺省 "*"。
+    /// 请求路径（单星 glob，不含 query：`/v1/*` / `*`）。
+    pub path: String,
+    /// 命中动作。
+    pub action: RuleAction,
+}
+
+/// binary 规则（进程路径 → action）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryRule {
+    /// 进程二进制路径（单星 glob：`/usr/bin/curl` / `*`）。
+    pub path: String,
+    /// 命中动作（allow = 透传——继续匹配 targetrules）。
+    pub action: RuleAction,
+}
+
+/// 规则集（rule_list 元素——2026-09-16 结构重设计，替代原
+/// whitelist/blacklist 平铺条目）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleSet {
+    /// 规则集名（非空——观测/审计定位）。
+    pub name: String,
+    /// 主机匹配条件（含 prio 优先级）。
+    pub host: HostRule,
+    /// 目标规则（method+path → action）。
+    #[serde(default)]
+    pub targetrules: Vec<TargetRule>,
+    /// binary 规则（进程路径 → action；allow 透传）。
+    #[serde(default)]
+    pub binaryrules: Vec<BinaryRule>,
+    /// 目标端口约束（Some 时仅匹配该端口；None 任意端口）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub uri: Option<String>,
-    /// binary 可选维度：进程二进制路径精确（与 Resolver 输出的
-    /// `binary_path` 全等比较——如 `/usr/bin/python3`）；缺省 "*"。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binary: Option<String>,
-    /// 目标 IP 可选维度（2026-09-09）：CIDR 网段（`10.0.0.0/8`）或
-    /// 精确 IP（`1.2.3.4`，等同 /32；IPv4/IPv6 均支持）。求值输入 =
-    /// 请求域名经 DNS 预解析的全部 IP——**任一命中即命中**（deny
-    /// 保守：CDN 多 IP 场景任一 IP 在黑名单则拒）。缺省 "*" 全匹配。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_ip: Option<String>,
-    /// 目标端口可选维度（2026-09-09）：精确（`8443`）或范围
-    ///（`8000-9000`，含两端）。求值输入：明文路径 = Host 头端口
-    ///（无则 80）；TLS 路径 = 443。缺省 "*" 全匹配。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_port: Option<String>,
+    pub port: Option<u16>,
 }
 
 /// 过滤策略配置（单份结构，交付通道区分两场景）。
+///
+/// 求值顺序（2026-09-16）：rule_list 按 `host.prio` **降序**链式遍历——
+/// 首个主机匹配的规则集内先 binaryrules 后 targetrules（各按
+/// deny>alert>allow 排序），**首个规则命中即决策**；规则集内未命中则
+/// 继续下一规则集；全部未命中走 `default_policy`。排序由
+/// [`crate::registry::Registry::set_container_config`] 存储时归一化。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilterConfig {
-    /// 无规则匹配时默认策略。
+    /// 无规则命中时默认策略。
     pub default_policy: Policy,
-    /// 白名单：任一条目命中即 allow。
+    /// 规则集列表（按 host.prio 降序求值）。
     #[serde(default)]
-    pub whitelist: Vec<RuleEntry>,
-    /// 黑名单：白名单未命中后评估，任一条目命中即 deny。
-    #[serde(default)]
-    pub blacklist: Vec<RuleEntry>,
+    pub rule_list: Vec<RuleSet>,
+}
+
+/// 求值决策（K3 契约返回——2026-09-16 起 evaluate 返回此结构）。
+///
+/// `alert`：告警标记（alert 规则命中或 default_policy=alert）——审计
+/// 条目 type=1（放行 + 告警）；action 恒为真实流量动作（allow/deny）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decision {
+    /// 流量动作（allow=转发 / deny=阻断）。
+    pub action: Action,
+    /// 决策原因（审计 reason）。
+    pub reason: Reason,
+    /// 告警标记（审计条目 type=1）。
+    pub alert: bool,
 }
 
 impl FilterConfig {
-    /// 是否存在 binary 维度条件（任一白/黑名单条目声明 binary）。
+    /// 是否存在 binary 维度条件（任一规则集声明 binaryrules）。
     ///
-    /// 服务管道的条件性判定点（说明书 4.4.2：无 binary 条件不触发
-    /// binary_not_found fail-closed）：调用方以本方法决定 binary 维度
-    /// 未解析时是否拒绝。
+    /// 服务管道的条件性判定点：无 binary 条件不触发 binary_not_found
+    /// fail-closed；有 binaryrules 且 binary_path 未解析 → 拒绝。
     pub fn has_binary_condition(&self) -> bool {
-        self.whitelist
-            .iter()
-            .chain(self.blacklist.iter())
-            .any(|e| e.binary.is_some())
+        self.rule_list.iter().any(|rs| !rs.binaryrules.is_empty())
     }
 
-    /// 是否存在目标 IP 维度条件（任一条目声明 target_ip）。
+    /// 是否存在目标 IP 维度条件（任一规则集 host.type=ip）。
     ///
-    /// 服务管道的条件性判定点（与 binary 维度同模式——2026-09-09）：
-    /// 仅含 IP 条件的配置才触发 DNS 预解析（无 IP 条件零解析开销）；
-    /// 解析失败 fail-closed（`Reason::DnsResolveError`）。
+    /// 服务管道的条件性判定点（与 binary 维度同模式）：仅含 IP 条件的
+    /// 配置才触发 DNS 预解析（无 IP 条件零解析开销）；解析失败
+    /// fail-closed（`Reason::DnsResolveError`）。
     pub fn has_ip_condition(&self) -> bool {
-        self.whitelist
+        self.rule_list
             .iter()
-            .chain(self.blacklist.iter())
-            .any(|e| e.target_ip.is_some())
+            .any(|rs| rs.host.host_type == HostType::Ip)
     }
 }
 
@@ -246,46 +306,119 @@ fn iso8601_from_unix(secs: i64) -> String {
 mod tests {
     use super::*;
 
-    fn entry(binary: Option<&str>) -> RuleEntry {        RuleEntry {
-            domain: "api.example.com".to_string(),
-            method: "*".to_string(),
-            uri: None,
-            binary: binary.map(str::to_string),
-            target_ip: None,
-            target_port: None,
+    fn entry(binaryrules: u32) -> FilterConfig {
+        let mk_ruleset = |binaryrules: u32| RuleSet {
+            name: "rs".to_string(),
+            host: HostRule {
+                host_type: HostType::Host,
+                addr: None,
+                context: Some("a.com".to_string()),
+                prio: 100,
+            },
+            targetrules: vec![TargetRule {
+                method: "*".to_string(),
+                path: "*".to_string(),
+                action: RuleAction::Allow,
+            }],
+            binaryrules: (0..binaryrules)
+                .map(|_| BinaryRule {
+                    path: "*".to_string(),
+                    action: RuleAction::Deny,
+                })
+                .collect(),
+            port: None,
+        };
+        FilterConfig {
+            default_policy: Policy::Deny,
+            rule_list: vec![mk_ruleset(binaryrules)],
         }
     }
 
-    // has_binary_condition 判定面（4.4.2 条件性触发的生产判定点）。
+    // has_binary_condition 判定面（条件性触发的生产判定点——2026-09-16
+    // 新语义：任一规则集声明 binaryrules）。
     #[test]
-    fn has_binary_condition_across_lists() {
-        let none = FilterConfig {
+    fn has_binary_condition_rulesets() {
+        assert!(!entry(0).has_binary_condition());
+        assert!(entry(1).has_binary_condition());
+        assert!(entry(3).has_binary_condition());
+        // 空列表。
+        assert!(!FilterConfig {
             default_policy: Policy::Deny,
-            whitelist: vec![entry(None)],
-            blacklist: vec![entry(None)],
-        };
-        assert!(!none.has_binary_condition());
+            rule_list: vec![],
+        }
+        .has_binary_condition());
+    }
 
-        let empty = FilterConfig {
+    // has_ip_condition 判定面（新语义：任一规则集 host.type=ip → 触发
+    // DNS 预解析）。
+    #[test]
+    fn has_ip_condition_host_type() {
+        let mk = |host_type: HostType| FilterConfig {
             default_policy: Policy::Deny,
-            whitelist: vec![],
-            blacklist: vec![],
+            rule_list: vec![RuleSet {
+                name: "rs".to_string(),
+                host: HostRule {
+                    host_type,
+                    addr: Some("10.0.0.1".to_string()),
+                    context: Some("a.com".to_string()),
+                    prio: 100,
+                },
+                targetrules: vec![],
+                binaryrules: vec![],
+                port: None,
+            }],
         };
-        assert!(!empty.has_binary_condition());
+        assert!(mk(HostType::Ip).has_ip_condition());
+        assert!(!mk(HostType::Host).has_ip_condition());
+        // 空列表。
+        assert!(!FilterConfig {
+            default_policy: Policy::Deny,
+            rule_list: vec![],
+        }
+        .has_ip_condition());
+    }
 
-        let in_whitelist = FilterConfig {
+    // 规则结构 serde：JSON（UDS refresh_policy 通道）往返 + block 别名 +
+    // port 预留字段透传。
+    #[test]
+    fn ruleset_serde_roundtrip() {
+        let fc = FilterConfig {
             default_policy: Policy::Deny,
-            whitelist: vec![entry(Some("python3"))],
-            blacklist: vec![],
+            rule_list: vec![RuleSet {
+                name: "block-metadata-service".to_string(),
+                host: HostRule {
+                    host_type: HostType::Ip,
+                    addr: Some("169.254.169.254".to_string()),
+                    context: None,
+                    prio: 50,
+                },
+                targetrules: vec![TargetRule {
+                    method: "*".to_string(),
+                    path: "*".to_string(),
+                    action: RuleAction::Deny,
+                }],
+                binaryrules: vec![BinaryRule {
+                    path: "*".to_string(),
+                    action: RuleAction::Deny,
+                }],
+                port: Some(8843),
+            }],
         };
-        assert!(in_whitelist.has_binary_condition());
+        let json = serde_json::to_string(&fc).unwrap();
+        let back: FilterConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, fc);
+        assert!(json.contains("\"type\":\"ip\""));
+        assert!(json.contains("\"prio\":50"));
+        assert!(json.contains("\"port\":8843"));
 
-        let in_blacklist = FilterConfig {
-            default_policy: Policy::Deny,
-            whitelist: vec![],
-            blacklist: vec![entry(Some("curl"))],
-        };
-        assert!(in_blacklist.has_binary_condition());
+        // block 别名（HC 侧 TOML 术语）→ Deny。
+        let from_alias: RuleAction = serde_json::from_str("\"block\"").unwrap();
+        assert_eq!(from_alias, RuleAction::Deny);
+        // 标准值。
+        assert_eq!(
+            serde_json::to_string(&RuleAction::Alert).unwrap(),
+            "\"alert\""
+        );
     }
 
     // K3 契约序列化：Action/Reason 值与审计 JSON 常量一致。

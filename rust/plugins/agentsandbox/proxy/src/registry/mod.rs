@@ -85,11 +85,15 @@ impl Registry {
 
     /// 设置容器过滤配置（按 container_id 键控，同 id 覆盖）。
     ///
-    /// 语义：结构非法拒绝并保持该容器旧配置（fail-closed）。
+    /// 语义：结构非法拒绝并保持该容器旧配置（fail-closed）；**存储前
+    /// 归一化排序**（2026-09-16）——rule_list 按 host.prio 降序（稳定
+    /// 排序）、各规则集内 targetrules/binaryrules 按 action rank
+    ///（deny>alert>allow）排序——evaluate 的有序前置条件由本存储层
+    /// 单点保证（任意注入路径生效）。
     pub fn set_container_config(
         &self,
         container_id: &str,
-        fc: FilterConfig,
+        mut fc: FilterConfig,
     ) -> Result<(), ConfigError> {
         if container_id.is_empty() {
             return Err(ConfigError::Format);
@@ -101,6 +105,7 @@ impl Registry {
                 "config validator not injected; filter_config accepted without structure validation"
             ),
         }
+        normalize_rule_order(&mut fc);
         let mut configs = crate::lock_util::recovered(self.configs.write(), "registry");
         configs.insert(container_id.to_string(), fc);
         Ok(())
@@ -158,25 +163,53 @@ impl Registry {
     }
 }
 
+/// 规则顺序归一化（存储前——2026-09-16）：
+/// - rule_list 按 `host.prio` **降序**（稳定排序——同 prio 保持配置序）；
+/// - 各规则集内 targetrules/binaryrules 按 action rank（deny=0 > alert=1
+///   > allow=2）稳定排序——黑名单类规则先于白名单类评估。
+///
+/// evaluate 依赖该序实现"首个命中即决策"（匹配效率）。
+fn normalize_rule_order(fc: &mut FilterConfig) {
+    fn action_rank(a: crate::model::RuleAction) -> u8 {
+        match a {
+            crate::model::RuleAction::Deny => 0,
+            crate::model::RuleAction::Alert => 1,
+            crate::model::RuleAction::Allow => 2,
+        }
+    }
+    fc.rule_list.sort_by_key(|rs| std::cmp::Reverse(rs.host.prio));
+    for rs in &mut fc.rule_list {
+        rs.targetrules.sort_by_key(|t| action_rank(t.action));
+        rs.binaryrules.sort_by_key(|b| action_rank(b.action));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::CaError;
-    use crate::model::{FilterConfig, Policy, RuleEntry};
+    use crate::model::{FilterConfig, HostRule, HostType, Policy, RuleAction, RuleSet, TargetRule};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn fc(domain: &str) -> FilterConfig {
         FilterConfig {
             default_policy: Policy::Deny,
-            whitelist: vec![RuleEntry {
-                domain: domain.to_string(),
-                method: "*".to_string(),
-                uri: None,
-                binary: None,
-            target_ip: None,
-            target_port: None,
+            rule_list: vec![RuleSet {
+                name: "test-rs".to_string(),
+                host: HostRule {
+                    host_type: HostType::Host,
+                    addr: None,
+                    context: Some(domain.to_string()),
+                    prio: 100,
+                },
+                targetrules: vec![TargetRule {
+                    method: "*".to_string(),
+                    path: "*".to_string(),
+                    action: RuleAction::Allow,
+                }],
+                binaryrules: vec![],
+                port: None,
             }],
-            blacklist: vec![],
         }
     }
 
@@ -229,7 +262,11 @@ mod tests {
     #[test]
     fn invalid_config_rejected_keeps_old() {
         let reg = Registry::new().with_config_validator(Arc::new(|fc| {
-            if fc.whitelist.iter().any(|e| e.domain == "b.com") {
+            if fc
+                .rule_list
+                .iter()
+                .any(|rs| rs.host.context.as_deref() == Some("b.com"))
+            {
                 Err(ConfigError::Format)
             } else {
                 Ok(())
@@ -332,5 +369,78 @@ mod tests {
         reg.set_container_config("c1", fc("a.com")).unwrap();
         reg.set_container_config("c1", fc("b.com")).unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    // 归一化排序（2026-09-16）：rule_list 按 prio 降序；规则集内
+    // targetrules/binaryrules 按 deny>alert>allow——evaluate 有序前置
+    // 条件的存储层单点保证。
+    #[test]
+    fn rule_order_normalized_on_store() {
+        let reg = Registry::new();
+        let fc = FilterConfig {
+            default_policy: Policy::Deny,
+            rule_list: vec![
+                RuleSet {
+                    name: "low".to_string(),
+                    host: HostRule {
+                        host_type: HostType::Host,
+                        addr: None,
+                        context: Some("low.com".to_string()),
+                        prio: 10,
+                    },
+                    targetrules: vec![TargetRule {
+                        method: "*".to_string(),
+                        path: "*".to_string(),
+                        action: RuleAction::Allow,
+                    }],
+                    binaryrules: vec![],
+                    port: None,
+                },
+                RuleSet {
+                    name: "high".to_string(),
+                    host: HostRule {
+                        host_type: HostType::Host,
+                        addr: None,
+                        context: Some("high.com".to_string()),
+                        prio: 999,
+                    },
+                    // 乱序 action：allow → deny → alert（存储后应归一
+                    // deny → alert → allow）。
+                    targetrules: vec![
+                        TargetRule {
+                            method: "*".to_string(),
+                            path: "*".to_string(),
+                            action: RuleAction::Allow,
+                        },
+                        TargetRule {
+                            method: "GET".to_string(),
+                            path: "/x".to_string(),
+                            action: RuleAction::Deny,
+                        },
+                        TargetRule {
+                            method: "POST".to_string(),
+                            path: "/y".to_string(),
+                            action: RuleAction::Alert,
+                        },
+                    ],
+                    binaryrules: vec![],
+                    port: None,
+                },
+            ],
+        };
+        reg.set_container_config("c1", fc.clone()).unwrap();
+        let stored = reg.config_for("c1").expect("stored");
+        // prio 降序：high(999) 在前。
+        assert_eq!(stored.rule_list[0].name, "high");
+        assert_eq!(stored.rule_list[1].name, "low");
+        // action rank：deny → alert → allow。
+        let actions: Vec<RuleAction> =
+            stored.rule_list[0].targetrules.iter().map(|t| t.action).collect();
+        assert_eq!(
+            actions,
+            vec![RuleAction::Deny, RuleAction::Alert, RuleAction::Allow]
+        );
+        // 原 fc 不被修改（归一化发生在存储副本上）。
+        assert_eq!(fc.rule_list[0].name, "low");
     }
 }

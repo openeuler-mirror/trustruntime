@@ -143,27 +143,52 @@ fn from_wire(resp: &UdsResponse) -> Option<InferenceRouteResult> {
 
 /// 单请求 UDS 往返：connect → 写请求行 → 读响应行 → 关闭。
 ///
-/// 任一环节失败 → Err（调用方 fail-closed Block）。
+/// 任一环节失败 → None（调用方 fail-closed Block）。各阶段独立 warn
+/// 日志辅助定位（2026-09-15；不含路径与请求/响应内容——日志安全）。
 fn uds_roundtrip(path: &str, req: &InferenceRequest) -> Option<InferenceRouteResult> {
     // 序列化先行（序列化失败 = 程序不变量破坏，等价协议失败）。
-    let line = serde_json::to_string(&to_wire(req)).ok()?;
-    let mut stream = UnixStream::connect(path).ok()?;
+    let line = serde_json::to_string(&to_wire(req)).unwrap_or_else(|e| {
+        crate::log_warn!("inference", "uds request serialize failed: {e}");
+        String::new()
+    });
+    if line.is_empty() {
+        return None;
+    }
+    let mut stream = match UnixStream::connect(path) {
+        Ok(s) => s,
+        Err(e) => {
+            crate::log_warn!("inference", "uds connect failed: {e}");
+            return None;
+        }
+    };
     let _ = stream.set_read_timeout(Some(UDS_TIMEOUT));
     let _ = stream.set_write_timeout(Some(UDS_TIMEOUT));
 
     // 写请求行（超时约束下的 write_all + flush）。
-    stream.write_all(line.as_bytes()).ok()?;
-    stream.write_all(b"\n").ok()?;
-    stream.flush().ok()?;
+    if let Err(e) = stream.write_all(line.as_bytes())
+        .and_then(|_| stream.write_all(b"\n"))
+        .and_then(|_| stream.flush())
+    {
+        crate::log_warn!("inference", "uds request write failed: {e}");
+        return None;
+    }
+    let req_len = line.len();
 
-    // 读响应行（BufReader 分块读取——超长/EOF → Err；read_line 无上限，
+    // 读响应行（BufReader 分块读取——超长/EOF → None；read_line 无上限，
     // 此处手动按 MAX_RESPONSE_LINE 截断防异常服务端撑爆内存）。
     let mut reader = BufReader::new(stream);
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
-        let n = reader.read(&mut chunk).ok()?;
+        let n = match reader.read(&mut chunk) {
+            Ok(n) => n,
+            Err(e) => {
+                crate::log_warn!("inference", "uds response read failed: {e}");
+                return None;
+            }
+        };
         if n == 0 {
+            crate::log_warn!("inference", "uds response EOF before newline");
             return None; // EOF：响应未完整抵达。
         }
         buf.extend_from_slice(&chunk[..n]);
@@ -171,12 +196,32 @@ fn uds_roundtrip(path: &str, req: &InferenceRequest) -> Option<InferenceRouteRes
             break;
         }
         if buf.len() > MAX_RESPONSE_LINE {
+            crate::log_warn!("inference", "uds response line exceeds limit; dropped");
             return None; // 超长帧——协议畸形。
         }
     }
     let line_end = buf.iter().position(|&b| b == b'\n').unwrap_or(buf.len());
-    let resp: UdsResponse = serde_json::from_slice(&buf[..line_end]).ok()?;
-    from_wire(&resp)
+    let resp: UdsResponse = match serde_json::from_slice(&buf[..line_end]) {
+        Ok(r) => r,
+        Err(e) => {
+            crate::log_warn!("inference", "uds response parse failed: {e}");
+            return None;
+        }
+    };
+    // 收发完成观测（info——release 可见；字节数不含内容，日志安全）。
+    crate::log_info!(
+        "inference",
+        "uds roundtrip done: req_bytes={} resp_bytes={} result={} mods={}",
+        req_len,
+        line_end,
+        resp.result,
+        resp.modifications.len()
+    );
+    from_wire(&resp).or_else(|| {
+        // 值域外枚举（result/action/target 非法）——协议畸形定位。
+        crate::log_warn!("inference", "uds response enum value out of range; dropped");
+        None
+    })
 }
 
 // ===== 分发器 =====
@@ -213,7 +258,11 @@ impl InferenceRouter for UdsRouteDispatcher {
                     }
                 })
             }
-            None => self.local.route(req),
+            None => {
+                // 本地直调观测（debug 级——mock 常态路径低噪声）。
+                crate::log_debug!("inference", "route dispatch: local (env unset)");
+                self.local.route(req)
+            }
         }
     }
 }

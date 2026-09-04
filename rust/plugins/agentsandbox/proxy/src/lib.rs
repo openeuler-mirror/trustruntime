@@ -36,8 +36,9 @@ pub mod registry;
 
 pub use error::{BindError, CaError, ConfigError};
 pub use model::{
-    Action, AuditLogEntry, CaCert, ContainerEndpoint, FilterConfig, InferenceRoute, Policy,
-    Protocol, ProxyConfig, Reason, ResolverOutput, RuleEntry, SCENARIO_LIB,
+    Action, AuditEntryType, AuditLogEntry, BinaryRule, CaCert, ContainerEndpoint, Decision,
+    FilterConfig, HostRule, HostType, InferenceRoute, Policy, Protocol, ProxyConfig, Reason,
+    ResolverOutput, RuleAction, RuleSet, TargetRule, SCENARIO_LIB,
 };
 pub use cert::{parse_ca, CertCache, CertIssuer, CertService, ParsedCa};
 pub use registry::{Registry, Resolver};

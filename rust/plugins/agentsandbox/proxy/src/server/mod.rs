@@ -74,7 +74,7 @@ use crate::forward::{relay_with_idle_timeout, AsyncReadWrite, TargetConnector};
 use crate::logging;
 use crate::mitm::{self, SniResolvingCert};
 use crate::model::{
-    Action, AuditEntryType, AuditLogEntry, Policy, Protocol, Reason, SCENARIO_LIB,
+    Action, AuditEntryType, AuditLogEntry, Protocol, Reason, SCENARIO_LIB,
 };
 use crate::registry::Registry;
 
@@ -133,17 +133,24 @@ impl ServeContext {
         }
     }
 
-    /// 目标端口（覆盖或生产默认——协议相关：TLS 443 / 明文 80）。
-    fn target_port(&self) -> u16 {
-        self.target_port_override.unwrap_or(443)
-    }
-
     /// 目标主机（覆盖或 SNI 域名；SNI 校验名恒为 SNI）。
     fn target_host(&self, sni: &str) -> std::borrow::Cow<'_, str> {
         self.target_host_override
             .as_deref()
             .map(std::borrow::Cow::Borrowed)
             .unwrap_or_else(|| std::borrow::Cow::Owned(sni.to_string()))
+    }
+
+    /// 解析目标端口（协议相关；2026-09-15 提取——连接逻辑与转发日志共用）。
+    ///
+    /// 优先级：测试注入 override > 请求级端口（h1 Host 头 / h2 authority，
+    /// 2026-09-12）> 协议默认（明文 80 / TLS 443）。
+    fn resolved_target_port(&self, conn: &ConnContext, host_port: Option<u16>) -> u16 {
+        if conn.plaintext {
+            self.target_port_override.or(host_port).unwrap_or(80)
+        } else {
+            self.target_port_override.or(host_port).unwrap_or(443)
+        }
     }
 }
 
@@ -419,11 +426,12 @@ async fn handle_request(
     let Some((domain, host_port)) = resolve_host(&conn, &req) else {
         return Ok(config_missing_response(&ctx, &conn, &req, "-"));
     };
-    // 目标端口：明文 = Host 显式端口缺省 80；TLS = 443。
+    // 目标端口：明文 = Host 显式端口缺省 80；TLS = 请求级端口（h1 Host
+    // 头 / h2 authority——非默认端口客户端必携带）缺省 443（2026-09-12）。
     let target_port = if conn.plaintext {
         host_port.unwrap_or(80)
     } else {
-        443
+        host_port.unwrap_or(443)
     };
 
     // 0.5 推理路由分流（AR-005）：命中路由列表（host+url 精确匹配）即
@@ -433,7 +441,7 @@ async fn handle_request(
     if !is_upgrade_request(&req)
         && inference_route_matched(&ctx, &domain, req.uri().path())
     {
-        return handle_inference(req, ctx, conn, domain).await;
+        return handle_inference(req, ctx, conn, domain, host_port).await;
     }
 
     // 1. 容器配置快照（端点静态绑定 container_id；热更新天然生效：
@@ -480,9 +488,10 @@ async fn handle_request(
         )
     };
 
-    // 3. 求值（K3：黑>白>默认，六维 AND 短路；binary 维度取连接级
-    //    resolver 输出的 binary_path，IP/端口维度取本函数 2.5/0 步产物）。
-    let (action, reason) = evaluate(
+    // 3. 求值（K3，2026-09-16 Decision 返回：ruleset 链式——prio 降序
+    //    host 匹配 → binaryrules（deny/alert 即决策）→ targetrules
+    //    （首中即决策）→ default_policy；alert 标记随 Decision 携带）。
+    let decision = evaluate(
         &container_id,
         &domain,
         req.method().as_str(),
@@ -492,16 +501,23 @@ async fn handle_request(
         target_port,
         &fc,
     );
+    let (action, reason, alert) = (decision.action, decision.reason, decision.alert);
     if action == Action::Deny {
-        crate::log_debug!("server", "deny: domain={} reason={:?}", domain, reason);
+        // 策略拒绝观测（info 级——release 可见；debug→info 升级，
+        // 2026-09-15）。
+        crate::log_info!(
+            "server",
+            "deny: host={} method={} path={} reason={:?} container={}",
+            domain,
+            req.method(),
+            req.uri().path(),
+            reason,
+            container_id
+        );
         let meta = ReqMeta { container_id: &container_id, domain: &domain, method: req.method(), uri: req.uri(), target_ips: &target_ip_str };
         let entry = deny_entry(&ctx, &conn, &meta, reason);
         return Ok(audit_deny(&entry, reason));
     }
-
-    // 3.5 告警判定（2026-09-09）：黑白均未命中走默认策略且
-    //     default_policy=alert → 放行 + 审计条目标记告警（type=1）。
-    let alert = reason == Reason::DefaultPolicy && fc.default_policy == Policy::Alert;
 
     // 4. Upgrade（h1）：101 升级后转纯隧道（本函数在 upgrade 前返回
     //    101 响应骨架——隧道由 on_upgrade 任务承接）。
@@ -555,6 +571,7 @@ async fn handle_inference(
     ctx: Arc<ServeContext>,
     conn: Arc<ConnContext>,
     domain: String,
+    host_port: Option<u16>,
 ) -> Result<Response<B>, std::convert::Infallible> {
     let timeout = ctx.connector.timeout();
     let container_id = conn.container_id.clone();
@@ -588,6 +605,22 @@ async fn handle_inference(
         }
     });
 
+    // 裁决结果观测（2026-09-15 info 级——release 可见；辅助定位推理
+    // 路由分流：决策码 + 修改条数（Forward 忽略列表/Block 阻断/Modified
+    // 应用——经 forward_request 的 reason=inference_route 完成日志闭环）。
+    crate::log_info!(
+        "server",
+        "inference decision: result={} modifications={} container={} host={}",
+        match decision.result {
+            InferenceResult::Forward => "forward",
+            InferenceResult::Modified => "modified",
+            InferenceResult::Block => "block",
+        },
+        decision.modifications.len(),
+        container_id,
+        domain
+    );
+
     // 3. 决策分发：Block → 403 + 审计 deny；Forward → 原样；Modified →
     //    应用修改列表（method/uri 不可改——新契约收敛为仅 header/body）。
     let (headers, body) = match decision.result {
@@ -605,7 +638,17 @@ async fn handle_inference(
         // Forward：修改列表忽略（防御性——外部库应为空列表）。
         InferenceResult::Forward => (parts.headers, body),
         InferenceResult::Modified => {
-            apply_inference_modifications(parts.headers, body, &decision.modifications)
+            let applied = apply_inference_modifications(parts.headers, body, &decision.modifications);
+            // 修改应用观测（2026-09-15）：应用前后 body 长度变化（内容不打印
+            //——日志安全；header 修改数已含在裁决日志 modifications 计数）。
+            crate::log_info!(
+                "server",
+                "inference modifications applied: entries={} body_len={} container={}",
+                decision.modifications.len(),
+                applied.1.len(),
+                container_id
+            );
+            applied
         }
     };
     let body_len = body.len();
@@ -617,8 +660,9 @@ async fn handle_inference(
     normalize_buffered_request(&mut fwd_req, body_len);
 
     // 4. 统一转发路径（目标连接 + 转发 + 审计 allow + 真实 status +
-    //    流式回传；reason=inference_route）。
-    forward_request(fwd_req, ctx, conn, domain, container_id, Reason::InferenceRoute, false, None, None).await
+    //    流式回传；reason=inference_route；host_port 透传——与非推理
+    //    路径端口语义一致，2026-09-15 日志观测暴露的传递缺失修复）。
+    forward_request(fwd_req, ctx, conn, domain, container_id, Reason::InferenceRoute, false, host_port, None).await
 }
 
 /// 应用外部库修改列表（仅 result=Modified 路径调用）。
@@ -719,11 +763,23 @@ async fn forward_request(
     let timeout = ctx.connector.timeout();
     let (method, uri) = (req.method().clone(), req.uri().clone());
     let meta = ReqMeta { container_id: &container_id, domain: &domain, method: &method, uri: &uri, target_ips: &target_ip_str };
+    // 转发观测辅助（2026-09-15）：host/port 与连接逻辑同源
+    //（resolved_target_port——测试 override > 请求级端口 > 协议默认）。
+    let fwd_port = ctx.resolved_target_port(&conn, host_port);
+    let fwd_host = ctx.target_host(&domain).into_owned();
 
     // 懒建目标连接（单一 deadline；K9 三类错误 → 502 + 审计 deny）。
     let (sender, conn_handle) = match connect_target(&ctx, &conn, &domain, host_port, timeout).await {
         Ok(x) => x,
         Err(e) => {
+            crate::log_warn!(
+                "server",
+                "target connect failed: host={} port={} reason={:?} container={}",
+                fwd_host,
+                fwd_port,
+                e.reason(),
+                container_id
+            );
             let entry = deny_entry(&ctx, &conn, &meta, e.reason());
             return Ok(audit_deny(&entry, e.reason()));
         }
@@ -736,6 +792,13 @@ async fn forward_request(
         Ok(resp) => resp,
         Err(_) => {
             conn_handle.abort();
+            crate::log_warn!(
+                "server",
+                "target send failed: host={} port={} container={}",
+                fwd_host,
+                fwd_port,
+                container_id
+            );
             return Ok(box_body(block_response(Reason::TargetTlsError)));
         }
     };
@@ -747,12 +810,19 @@ async fn forward_request(
         conn_handle.abort();
         return Ok(blocked);
     }
-    crate::log_debug!(
+    // 转发完成观测（info 级——release 构建可见；辅助定位主链路：
+    // host/port/响应码/决策原因/容器。debug→info 升级 + 字段扩展，
+    // 2026-09-15）。
+    crate::log_info!(
         "server",
-        "forward: domain={} status={} reason={:?}",
-        domain,
+        "forward: host={} port={} method={} path={} status={} reason={:?} container={}",
+        fwd_host,
+        fwd_port,
+        method,
+        uri.path(),
         status.as_u16(),
-        reason
+        reason,
+        container_id
     );
 
     // 流式回传（body 透传——不缓冲不解析，审计不含响应体）。
@@ -795,9 +865,8 @@ async fn connect_target(
     crate::forward::TargetConnectError,
 > {
     let stream = if conn.plaintext {
-        // 明文：纯 TCP 连接目标（端口优先级：测试注入 override > Host
-        // 头显式端口 > 缺省 80——2026-09-09 端口维度语义完整化）。
-        let port = ctx.target_port_override.or(host_port).unwrap_or(80);
+        // 明文：纯 TCP 连接目标（端口优先级见 resolved_target_port）。
+        let port = ctx.resolved_target_port(conn, host_port);
         let tcp = tokio::time::timeout(
             timeout,
             tokio::net::TcpStream::connect((ctx.target_host(domain).as_ref(), port)),
@@ -809,7 +878,8 @@ async fn connect_target(
         TargetStream::Plain(tcp)
     } else {
         // TLS：经 TargetConnector（K9 三类错误映射 + 单一 deadline；
-        // ALPN 与 MITM 协商一致，D5）。
+        // ALPN 与 MITM 协商一致，D5）。端口优先级见 resolved_target_port。
+        let port = ctx.resolved_target_port(conn, host_port);
         let alpn = if ctx.connector_alpn_h2() {
             vec!["h2".to_string(), "http/1.1".to_string()]
         } else {
@@ -817,7 +887,7 @@ async fn connect_target(
         };
         let tls = ctx
             .connector
-            .connect(&ctx.target_host(domain), ctx.target_port(), domain, &alpn)
+            .connect(&ctx.target_host(domain), port, domain, &alpn)
             .await?;
         TargetStream::Tls(Box::new(tls))
     };
@@ -967,11 +1037,21 @@ async fn handle_upgrade(
         .collect();
     let client_upgrade = hyper::upgrade::on(req);
     let meta = ReqMeta { container_id: &container_id, domain: &domain, method: &method, uri: &uri, target_ips: &target_ip_str };
+    let up_port = ctx.resolved_target_port(&conn, host_port);
+    let up_host = ctx.target_host(&domain).into_owned();
 
     // 1. 目标连接（协议分流：TLS→rustls 流；明文→纯 TCP；K9 → 502）。
     let mut target = match connect_upgrade_target(&ctx, &conn, &domain, host_port, timeout).await {
         Ok(t) => t,
         Err(e) => {
+            crate::log_warn!(
+                "server",
+                "upgrade target connect failed: host={} port={} reason={:?} container={}",
+                up_host,
+                up_port,
+                e.reason(),
+                container_id
+            );
             let entry = deny_entry(&ctx, &conn, &meta, e.reason());
             return Ok(audit_deny(&entry, e.reason()));
         }
@@ -979,11 +1059,27 @@ async fn handle_upgrade(
 
     // 2. 手工写出原始升级请求 → 3. 读目标响应头。
     if write_upgrade_request(&mut target, &method, &uri, &headers).await.is_err() {
+        crate::log_warn!(
+            "server",
+            "upgrade target write failed: host={} port={} container={}",
+            up_host,
+            up_port,
+            container_id
+        );
         return Ok(box_body(block_response(Reason::TargetTlsError)));
     }
     let resp_buf = match read_target_head(&mut target, timeout).await {
         Ok(buf) => buf,
-        Err(_) => return Ok(box_body(block_response(Reason::TargetTlsError))),
+        Err(_) => {
+            crate::log_warn!(
+                "server",
+                "upgrade target read failed: host={} port={} container={}",
+                up_host,
+                up_port,
+                container_id
+            );
+            return Ok(box_body(block_response(Reason::TargetTlsError)));
+        }
     };
     let status = parse_status_line(&resp_buf);
 
@@ -1009,7 +1105,7 @@ async fn connect_upgrade_target(
     timeout: Duration,
 ) -> Result<TargetStream, crate::forward::TargetConnectError> {
     if conn.plaintext {
-        let port = ctx.target_port_override.or(host_port).unwrap_or(80);
+        let port = ctx.resolved_target_port(conn, host_port);
         let tcp = tokio::time::timeout(
             timeout,
             tokio::net::TcpStream::connect((ctx.target_host(domain).as_ref(), port)),
@@ -1020,11 +1116,13 @@ async fn connect_upgrade_target(
         let _ = tcp.set_nodelay(true);
         Ok(TargetStream::Plain(tcp))
     } else {
+        // TLS：端口优先级见 resolved_target_port。
+        let port = ctx.resolved_target_port(conn, host_port);
         let tls = ctx
             .connector
             .connect(
                 &ctx.target_host(domain),
-                ctx.target_port(),
+                port,
                 domain,
                 &["http/1.1".to_string()],
             )
@@ -1282,15 +1380,26 @@ fn config_missing_response(
 
 /// 求值/审计域名解析（每请求一次——明文路径 Host 可变，不缓存于连接级）。
 ///
-/// 返回 `(域名, Host 头端口)`：TLS = (SNI, None)——SNI 协议不带端口；
-/// 明文 = (Host 域名, 显式端口)——Host 头可带端口（如
-/// `api.example.com:8443`），端口提取为求值目标端口维度输入与明文
-/// 转发端口依据（2026-09-09；缺省端口由调用方补 80）。
+/// 返回 `(域名, 显式端口)`：
+/// - **TLS** = (SNI 域名, 请求级端口)——域名取 SNI（连接级权威）；
+///   端口取解密后 HTTP 层（2026-09-12）：h1 的 `Host: host:port` 头显式
+///   端口 ∪ h2 的 `:authority` 归一化结果（`req.uri().port_u16()`——
+///   h2 无 Host 头、h1 无 authority，互补覆盖）。RFC 9110 §7.2：非默认
+///   端口客户端 MUST 在 host/:authority 携带——默认端口省略（调用方
+///   兜底 443），规范客户端下覆盖完备；
+///
+/// - **明文** = (Host 域名, 显式端口)——`Host: api.example.com:8443` 的
+///   端口提取为求值目标端口维度输入与明文转发端口依据（缺省由调用方
+///   补 80）。
+///
 /// 域名缺失/空 → None（调用方按 config_not_found 语义 503 拒绝——
 /// 2026-09-01 决策 2，与无 SNI 对齐）。
 fn resolve_host<T>(conn: &ConnContext, req: &Request<T>) -> Option<(String, Option<u16>)> {
     if let Some(sni) = &conn.sni {
-        return Some((sni.clone(), None));
+        // TLS：域名取 SNI；端口取解密后请求层（h1 Host 头 / h2 authority
+        // ——二者至多其一存在，均无则 None）。
+        let port = tls_request_port(req);
+        return Some((sni.clone(), port));
     }
     let host = req
         .headers()
@@ -1323,6 +1432,32 @@ fn resolve_host<T>(conn: &ConnContext, req: &Request<T>) -> Option<(String, Opti
             None => Some((host.to_string(), None)),
         }
     }
+}
+
+/// TLS 路径请求级端口提取（h1 Host 头 ∪ h2 URI authority 互补）。
+///
+/// h2 经 hyper 归一化：`:authority: host:port` → `req.uri()` 的 authority
+/// 部分（Host 头为空）——从 `port_u16()` 取；h1 无 authority，从 Host 头
+/// 剥端口。二者至多其一存在；均无（默认端口省略）→ None。
+fn tls_request_port<T>(req: &Request<T>) -> Option<u16> {
+    // h2（或显式 absolute-form URI）：authority 携带端口。
+    if let Some(port) = req.uri().port_u16() {
+        return Some(port);
+    }
+    let host = req
+        .headers()
+        .get(http::header::HOST)?
+        .to_str()
+        .ok()?
+        .trim();
+    if host.starts_with('[') {
+        // IPv6 [::1]:8443 → 闭括号后端口段直接解析（已是纯端口串）。
+        let rest = host.strip_prefix('[')?;
+        let (_, tail) = rest.split_once(']')?;
+        return tail.strip_prefix(':').and_then(|p| p.parse().ok());
+    }
+    // 域名/IPv4 `host:port` 剥后缀。
+    host.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok())
 }
 
 /// DNS 预解析（2026-09-09：目标 IP 维度条件性激活）。
@@ -1670,13 +1805,54 @@ mod tests {
             peer: "127.0.0.1:9000".parse().unwrap(),
         };
 
-        // TLS：SNI 优先（Host 头不参与；端口 None——SNI 协议不带端口）。
+        // TLS：SNI 域名（连接级权威）+ h1 Host 头显式端口（2026-09-12
+        // ——TLS 端口从解密后请求层提取；Host 域名不参与）。
         let req = http::Request::builder()
             .header("host", "other.com:8080")
             .body(()).unwrap();
         assert_eq!(
             resolve_host(&conn_tls("sni.com"), &req),
+            Some(("sni.com".to_string(), Some(8080)))
+        );
+
+        // TLS：h2 authority 端口（URI absolute-form——hyper 将
+        // :authority 归一化到 uri；Host 头缺省）。
+        let req = http::Request::builder()
+            .uri("https://sni.com:8443/v1/chat")
+            .body(()).unwrap();
+        assert_eq!(
+            resolve_host(&conn_tls("sni.com"), &req),
+            Some(("sni.com".to_string(), Some(8443)))
+        );
+
+        // TLS：URI authority 与 Host 头并存时 URI 优先（h2 形态归一）。
+        let req = http::Request::builder()
+            .uri("https://sni.com:9000/x")
+            .header("host", "other.com:7000")
+            .body(()).unwrap();
+        assert_eq!(
+            resolve_host(&conn_tls("sni.com"), &req),
+            Some(("sni.com".to_string(), Some(9000)))
+        );
+
+        // TLS：默认端口省略（无 Host 端口、无 authority 端口）→ None
+        //（调用方兜底 443——RFC 9110 §7.2 规范客户端覆盖完备）。
+        let req = http::Request::builder()
+            .uri("/v1/chat")
+            .header("host", "sni.com")
+            .body(()).unwrap();
+        assert_eq!(
+            resolve_host(&conn_tls("sni.com"), &req),
             Some(("sni.com".to_string(), None))
+        );
+
+        // TLS：Host 头 IPv6 带端口形态。
+        let req = http::Request::builder()
+            .header("host", "[::1]:8443")
+            .body(()).unwrap();
+        assert_eq!(
+            resolve_host(&conn_tls("sni.com"), &req),
+            Some(("sni.com".to_string(), Some(8443)))
         );
 
         // 明文：Host 带端口（域名 + 端口提取——端口维度输入）。

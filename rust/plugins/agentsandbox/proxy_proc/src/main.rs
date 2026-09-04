@@ -17,6 +17,19 @@ fn main() {
 }
 
 fn run() -> anyhow::Result<()> {
+    // tokio runtime（multi-thread，IO + time driver）：`proxy_init` 的
+    // `TcpListener::from_std` 注册与 `tokio::spawn`（serve 任务）隐式
+    // 要求当前线程处于 runtime 上下文——缺失时 from_std 直接 panic
+    //（"must be called from the context of a Tokio 1.x runtime"，
+    // 2026-09-12 修复的 startup panic）。enter guard 使下方 sync 启动链
+    // 获得上下文；主线程随后阻塞于 UDS 配置监听，serve 任务在 runtime
+    // worker 线程运转。
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow::anyhow!("tokio runtime init failed: {}", e))?;
+    let _rt_guard = rt.enter();
+
     let config = ProxyProcConfig::from_env()?;
     load_ca(&config)?;
     register_ebpf_resolver()?;
@@ -58,8 +71,8 @@ fn read_key_file(path: &str) -> anyhow::Result<Vec<u8>> {
     let mode = meta.permissions().mode();
     if mode & (libc::S_IRGRP | libc::S_IROTH) != 0 {
         anyhow::bail!(
-            "CA key file is group/world readable (mode {:o}); require 0o640 or stricter",
-            mode
+            "CA key file is group/world readable (mode {:o}); require 0o600 or stricter",
+            mode & 0o777
         );
     }
     std::fs::read(path).map_err(|e| anyhow::anyhow!("failed to read CA key {}: {}", path, e))

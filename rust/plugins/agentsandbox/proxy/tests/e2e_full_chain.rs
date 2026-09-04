@@ -24,7 +24,10 @@ use std::time::Duration;
 use common::{refused_target_port, TestPki, TEST_DOMAIN};
 use agentsandbox_proxy::cert::ContainerCertServices;
 use agentsandbox_proxy::logging::{self, LogKind};
-use agentsandbox_proxy::model::{Action, FilterConfig, Policy, Reason, RuleEntry, SCENARIO_LIB};
+use agentsandbox_proxy::model::{
+    Action, FilterConfig, HostRule, HostType, Policy, Reason, RuleAction, RuleSet, TargetRule,
+    SCENARIO_LIB,
+};
 use agentsandbox_proxy::model::CaCert;
 use agentsandbox_proxy::registry::Registry;
 use agentsandbox_proxy::server::{serve, ServeContext};
@@ -32,15 +35,22 @@ use agentsandbox_proxy::server::{serve, ServeContext};
 fn fc(whitelist_domain: &str) -> FilterConfig {
     FilterConfig {
         default_policy: Policy::Deny,
-        whitelist: vec![RuleEntry {
-            domain: whitelist_domain.to_string(),
-            method: "*".to_string(),
-            uri: None,
-            binary: None,
-            target_ip: None,
-            target_port: None,
+        rule_list: vec![RuleSet {
+            name: "allow".to_string(),
+            host: HostRule {
+                host_type: HostType::Host,
+                addr: None,
+                context: Some(whitelist_domain.to_string()),
+                prio: 100,
+            },
+            targetrules: vec![TargetRule {
+                method: "*".to_string(),
+                path: "*".to_string(),
+                action: RuleAction::Allow,
+            }],
+            binaryrules: vec![],
+            port: None,
         }],
-        blacklist: vec![],
     }
 }
 
