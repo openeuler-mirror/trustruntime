@@ -33,7 +33,6 @@ globset = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 bytes = { workspace = true }
-http-body = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -26,6 +26,9 @@ pub enum Policy {
     Allow,
     /// 拒绝。
     Deny,
+    /// 告警（2026-09-09）：黑白名单均未命中时——流量**放行** +
+    /// 审计条目标记告警（`AuditLogEntry::entry_type = Alert`）。
+    Alert,
 }
 
 /// 求值决策动作（K3 契约常量："allow" / "deny"）。
@@ -43,8 +46,9 @@ pub enum Action {
 /// 覆盖求值命中（whitelist/blacklist/default）、配置关联失败（config/group_id
 /// not_found）、证书（ca/cert_error）、审计（log_write_error）、目标出站三类
 ///（target_tls_error/connection_refused/connection_timeout）、binary 身份缺失
-///（binary_not_found）与推理路由命中（inference_route——旁通过滤引擎的三态
-/// 决策均以此 reason 记审计）。
+///（binary_not_found）、推理路由命中（inference_route——旁通过滤引擎的三态
+/// 决策均以此 reason 记审计）与目标 IP 预解析失败（dns_resolve_error——
+/// fail-closed，2026-09-09）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
@@ -61,6 +65,7 @@ pub enum Reason {
     ConnectionTimeout,
     BinaryNotFound,
     InferenceRoute,
+    DnsResolveError,
 }
 
 /// 白名单/黑名单条目：条目内各维度 AND 匹配，未声明维度等同 "*"。
@@ -83,6 +88,17 @@ pub struct RuleEntry {
     /// `binary_path` 全等比较——如 `/usr/bin/python3`）；缺省 "*"。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary: Option<String>,
+    /// 目标 IP 可选维度（2026-09-09）：CIDR 网段（`10.0.0.0/8`）或
+    /// 精确 IP（`1.2.3.4`，等同 /32；IPv4/IPv6 均支持）。求值输入 =
+    /// 请求域名经 DNS 预解析的全部 IP——**任一命中即命中**（deny
+    /// 保守：CDN 多 IP 场景任一 IP 在黑名单则拒）。缺省 "*" 全匹配。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_ip: Option<String>,
+    /// 目标端口可选维度（2026-09-09）：精确（`8443`）或范围
+    ///（`8000-9000`，含两端）。求值输入：明文路径 = Host 头端口
+    ///（无则 80）；TLS 路径 = 443。缺省 "*" 全匹配。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_port: Option<String>,
 }
 
 /// 过滤策略配置（单份结构，交付通道区分两场景）。
@@ -110,12 +126,57 @@ impl FilterConfig {
             .chain(self.blacklist.iter())
             .any(|e| e.binary.is_some())
     }
+
+    /// 是否存在目标 IP 维度条件（任一条目声明 target_ip）。
+    ///
+    /// 服务管道的条件性判定点（与 binary 维度同模式——2026-09-09）：
+    /// 仅含 IP 条件的配置才触发 DNS 预解析（无 IP 条件零解析开销）；
+    /// 解析失败 fail-closed（`Reason::DnsResolveError`）。
+    pub fn has_ip_condition(&self) -> bool {
+        self.whitelist
+            .iter()
+            .chain(self.blacklist.iter())
+            .any(|e| e.target_ip.is_some())
+    }
 }
 
-/// 审计日志条目（AR-003 AR-clarify §2.3.1，11 字段；AR-001 组装、K4 传递）。
+/// 审计条目类型（协议字段 `type`：0=审计 / 1=告警；serde 数值映射）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+#[serde(into = "u8", try_from = "u8")]
+pub enum AuditEntryType {
+    /// 0：审计条目（常规）。
+    #[default]
+    Audit = 0,
+    /// 1：告警条目——default_policy=alert 且黑白名单均未命中时放行的
+    /// 流量（2026-09-09）。
+    Alert = 1,
+}
+
+impl From<AuditEntryType> for u8 {
+    fn from(t: AuditEntryType) -> Self {
+        t as u8
+    }
+}
+
+impl TryFrom<u8> for AuditEntryType {
+    type Error = &'static str;
+
+    fn try_from(v: u8) -> Result<Self, Self::Error> {
+        match v {
+            0 => Ok(Self::Audit),
+            1 => Ok(Self::Alert),
+            _ => Err("audit entry type out of range (0/1)"),
+        }
+    }
+}
+
+/// 审计日志条目（AR-003 AR-clarify §2.3.1；AR-001 组装、K4 传递；
+/// 2026-09-09 扩展 type 字段——12 字段）。
 ///
 /// `status_code`：目标响应码，拒绝路径为 0；`source_ip`（场景一容器源 IP）与
-/// `target_ip` 可空（`None` 序列化为 null，不省略字段）。
+/// `target_ip` 可空（`None` 序列化为 null，不省略字段）；`entry_type`：
+/// 0=审计 / 1=告警（旧条目无该字段时反序列化为 Audit——向后兼容）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditLogEntry {
     /// UTC ISO-8601（秒精度，如 `2026-08-26T01:42:59Z`）。
@@ -140,6 +201,9 @@ pub struct AuditLogEntry {
     pub source_ip: Option<String>,
     /// 目标 IP；连接未建立（拒绝）时可空。
     pub target_ip: Option<String>,
+    /// 条目类型（协议字段 type：0=审计 / 1=告警）。
+    #[serde(rename = "type", default)]
+    pub entry_type: AuditEntryType,
 }
 
 /// 审计场景标识常量（K4："kata" 场景一 / "lib" 场景二）。
@@ -187,6 +251,8 @@ mod tests {
             method: "*".to_string(),
             uri: None,
             binary: binary.map(str::to_string),
+            target_ip: None,
+            target_port: None,
         }
     }
 
@@ -245,7 +311,8 @@ mod tests {
         );
     }
 
-    // K4 契约序列化：audit_log_entry 11 字段（可空字段为 null 不省略）。
+    // K4 契约序列化：audit_log_entry 12 字段（可空字段为 null 不省略；
+    // type 数值映射 0/1）。
     #[test]
     fn audit_entry_serde_fields() {
         let e = AuditLogEntry {
@@ -260,13 +327,46 @@ mod tests {
             reason: Reason::BlacklistMatch,
             source_ip: Some("10.0.0.5".to_string()),
             target_ip: None,
+            entry_type: AuditEntryType::Audit,
         };
         let json = serde_json::to_string(&e).unwrap();
         assert!(json.contains("\"timestamp\":\"2026-08-26T01:42:59Z\""));
         assert!(json.contains("\"status_code\":0"));
         assert!(json.contains("\"target_ip\":null"));
+        assert!(json.contains("\"type\":0"));
         let back: AuditLogEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(back, e);
+
+        // 告警条目：type=1。
+        let alert = AuditLogEntry {
+            action: Action::Allow,
+            reason: Reason::DefaultPolicy,
+            entry_type: AuditEntryType::Alert,
+            ..e
+        };
+        let json = serde_json::to_string(&alert).unwrap();
+        assert!(json.contains("\"type\":1"));
+        assert_eq!(serde_json::from_str::<AuditLogEntry>(&json).unwrap(), alert);
+    }
+
+    // 向后兼容：旧条目（无 type 字段）反序列化为 Audit；非法值拒绝。
+    #[test]
+    fn audit_entry_type_compatibility() {
+        let legacy = r#"{
+            "timestamp":"2026-08-26T01:42:59Z","container_id":"c","scenario":"lib",
+            "domain":"a.com","url_path":"/","method":"GET","status_code":200,
+            "action":"allow","reason":"default_policy","source_ip":null,"target_ip":null
+        }"#;
+        let back: AuditLogEntry = serde_json::from_str(legacy).unwrap();
+        assert_eq!(back.entry_type, AuditEntryType::Audit);
+
+        assert!(serde_json::from_str::<AuditEntryType>("2").is_err());
+        assert_eq!(serde_json::to_string(&AuditEntryType::Alert).unwrap(), "1");
+        assert_eq!(
+            AuditEntryType::try_from(0u8).unwrap(),
+            AuditEntryType::Audit
+        );
+        assert!(AuditEntryType::try_from(3u8).is_err());
     }
 
     // 时间戳格式：UTC ISO-8601 秒精度。已知纪元值断言（civil_from_days

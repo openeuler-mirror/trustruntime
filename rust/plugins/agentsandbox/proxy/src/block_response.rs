@@ -47,7 +47,7 @@ fn is_target_failure(reason: Reason) -> bool {
     matches!(
         reason,
         Reason::TargetTlsError | Reason::ConnectionRefused | Reason::ConnectionTimeout
-    )
+    ) || reason == Reason::DnsResolveError
 }
 
 /// reason → 阻断响应状态码（403/502/503 三类映射）。
@@ -125,8 +125,8 @@ mod tests {
     }
 
     // 阻断响应构造：状态码 + Connection: close + 非空最小体。
-    #[test]
-    fn block_response_shape() {
+    #[tokio::test]
+    async fn block_response_shape() {
         let resp = block_response(Reason::BlacklistMatch);
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         assert_eq!(
@@ -135,28 +135,9 @@ mod tests {
         );
         let (parts, body) = resp.into_parts();
         let _ = parts;
-        // Full<Bytes> body 为立即就绪的同步 body——轮询一次即可收集。
-        let bytes = futures_ready_collect(body);
+        // Full body 聚合（BodyExt——http-body-util；无需 http-body 直接依赖）。
+        use http_body_util::BodyExt as _;
+        let bytes = body.collect().await.unwrap().to_bytes();
         assert!(!bytes.is_empty());
-    }
-
-    /// 无 futures 依赖下收集 Full body（poll_frame 一次即完）。
-    fn futures_ready_collect(mut body: http_body_util::Full<bytes::Bytes>) -> bytes::Bytes {
-        use http_body::Body as _;
-        let mut collected = bytes::BytesMut::new();
-        loop {
-            match std::pin::Pin::new(&mut body)
-                .poll_frame(&mut std::task::Context::from_waker(std::task::Waker::noop()))
-            {
-                std::task::Poll::Ready(Some(Ok(frame))) => {
-                    if let Ok(data) = frame.into_data() {
-                        collected.extend_from_slice(&data);
-                    }
-                }
-                std::task::Poll::Ready(None) => break,
-                _ => break,
-            }
-        }
-        collected.freeze()
     }
 }

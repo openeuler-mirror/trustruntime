@@ -10,14 +10,19 @@ pub fn parse_toml(toml_content: &str) -> Result<TomlConfig, ParseError> {
 }
 
 /// Parses [proxy] section from TOML content and returns validated FilterConfig.
-/// Validates default_policy (allow/deny), policy_change_strategy (drain/reset),
-/// and whitelist/blacklist rule fields. Returns ParseError on validation failure.
+/// Validates default_policy (allow/deny/alert——alert: unmatched traffic is
+/// allowed with alert-marked audit entry, 2026-09-09), policy_change_strategy
+/// (drain/reset), and whitelist/blacklist rule fields.
+/// Returns ParseError on validation failure.
 pub fn parse_proxy_policy(toml_content: &str) -> Result<FilterConfig, ParseError> {
     let config = parse_toml(toml_content)?;
     let fc = config.proxy.ok_or(ParseError::MissingField {
         section: "proxy".to_string(),
     })?;
-    if fc.default_policy != "allow" && fc.default_policy != "deny" {
+    if !matches!(
+        fc.default_policy.as_str(),
+        "allow" | "deny" | "alert"
+    ) {
         return Err(ParseError::TypeMismatch { section: "proxy".to_string() });
     }
     if fc.policy_change_strategy != "drain" && fc.policy_change_strategy != "reset" {

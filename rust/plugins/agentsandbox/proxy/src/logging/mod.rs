@@ -353,6 +353,7 @@ mod tests {
             reason: Reason::BlacklistMatch,
             source_ip: None,
             target_ip: None,
+            entry_type: crate::model::AuditEntryType::Audit,
         }
     }
 
