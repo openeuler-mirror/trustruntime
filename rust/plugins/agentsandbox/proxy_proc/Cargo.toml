@@ -1,21 +1,21 @@
 [package]
-name = "agentsandbox-security"
+name = "agentsandbox-proxy-proc"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[lib]
-name = "agentsandbox_security"
-path = "src/lib.rs"
+[[bin]]
+name = "agentsandbox-proxy"
+path = "src/main.rs"
 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 agentsandbox-config = { path = "../config" }
 agentsandbox-log = { path = "../log" }
-aya = "0.13"
+agentsandbox-proxy = { path = "../proxy" }
+agentsandbox-security = { path = "../security" }
 libc = "0.2"

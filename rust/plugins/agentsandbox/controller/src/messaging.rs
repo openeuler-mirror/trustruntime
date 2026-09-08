@@ -54,3 +54,4 @@ impl MessageSender for UnixSocketSender {
 }
 
 pub const MSG_REFRESH_POLICY: &str = "refresh_policy";
+pub const MSG_REMOVE_CONTAINER: &str = "remove_container";

@@ -26,8 +26,57 @@ pub const NET_ACTION_BLOCK: u8 = 1;
 pub const NET_ACTION_REDIRECT: u8 = 2;
 
 pub const NET_PROTOCOL_ANY: u8 = 0;
-pub const NET_PROTOCOL_TCP: u8 = 6;
-pub const NET_PROTOCOL_UDP: u8 = 17;
+pub const NET_PROTOCOL_TCP: u8 = libc::IPPROTO_TCP as u8;
+pub const NET_PROTOCOL_UDP: u8 = libc::IPPROTO_UDP as u8;
+
+/// BPF map name for cgroup lookup (flow_key → cgroup_id), written by sockops.bpf.c.
+///
+/// IMPORTANT: This string MUST exactly match the BPF map variable name declared with
+/// `SEC(".maps")` in `src/bpf/common.bpf.h` (currently `cgroup_lookup_map`).
+/// `EbpfLoader::lookup_cgroup_by_flow` uses this name to locate the kernel map via
+/// `aya::Ebpf::map(name)`. Changing it without updating the BPF C source will cause
+/// map lookups to silently fail (return None).
+pub const CGROUP_LOOKUP_MAP_NAME: &str = "cgroup_lookup_map";
+
+/// IPv4 address size in bytes.
+const IPV4_ADDR_LEN: usize = 4;
+/// IPv6 address size in bytes.
+const IPV6_ADDR_LEN: usize = 16;
+
+/// Network flow 5-tuple key for cgroup_id lookup (IPv4/IPv6 compatible).
+///
+/// Written by eBPF sockops.bpf.c on BPF_SOCK_OPS_ACTIVE_ESTABLISHED.
+/// Queried by proxy_proc via EbpfLoader::lookup_cgroup_by_flow to recover
+/// container cgroup_id from an accepted TCP connection.
+///
+/// family=AF_INET: IPv4 stored in first 4 bytes of ip fields.
+/// family=AF_INET6: full 16-byte IPv6 addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(C)]
+pub struct FlowKey {
+    pub family: u8,
+    pub protocol: u8,
+    pub src_ip: [u8; IPV6_ADDR_LEN],
+    pub dst_ip: [u8; IPV6_ADDR_LEN],
+    pub src_port: u16,
+    pub dst_port: u16,
+}
+
+unsafe impl aya::Pod for FlowKey {}
+
+impl FlowKey {
+    pub fn from_ipv4(src_ip: [u8; IPV4_ADDR_LEN], src_port: u16, dst_ip: [u8; IPV4_ADDR_LEN], dst_port: u16, protocol: u8) -> Self {
+        let mut src = [0u8; IPV6_ADDR_LEN];
+        let mut dst = [0u8; IPV6_ADDR_LEN];
+        src[..IPV4_ADDR_LEN].copy_from_slice(&src_ip);
+        dst[..IPV4_ADDR_LEN].copy_from_slice(&dst_ip);
+        Self { family: libc::AF_INET as u8, protocol, src_ip: src, dst_ip: dst, src_port, dst_port }
+    }
+
+    pub fn from_ipv6(src_ip: [u8; IPV6_ADDR_LEN], src_port: u16, dst_ip: [u8; IPV6_ADDR_LEN], dst_port: u16, protocol: u8) -> Self {
+        Self { family: libc::AF_INET6 as u8, protocol, src_ip, dst_ip, src_port, dst_port }
+    }
+}
 
 /// BPF map value: compact policy summary for kernel-side enforcement.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -467,20 +516,34 @@ impl EbpfLoader {
         }
     }
 
-    /// Loads eBPF programs (LSM + cgroup/connect4) into the kernel.
-    /// Bytecode is compiled at build time from src/bpf/*.bpf.c and embedded via include_bytes!.
-    /// Only removes previously loaded programs that conflict by name; others are kept.
+    /// Loads eBPF programs into the kernel.
+    ///
+    /// `names` specifies which programs to load. Pass `None` to load all programs,
+    /// or pass a slice of program names (e.g. `&["sockops"]`) to load only specific ones.
+    /// Programs already loaded with conflicting names are replaced.
+    ///
     /// Falls back to stub mode if bytecode is empty (e.g. clang unavailable at build time).
-    pub fn load_programs(&self) -> Result<(), EbpfError> {
+    pub fn load_programs(&self, names: Option<&[&str]>) -> Result<(), EbpfError> {
+        let filter = |name: &str| match names {
+            None => true,
+            Some(list) => list.contains(&name),
+        };
+
         let mut bpf_guard = self.bpf.lock()
             .map_err(|e| EbpfError::LoadError(e.to_string()))?;
 
-        let new_names: Vec<&str> = bytecode::all_programs().iter().map(|(n, _)| *n).collect();
+        let new_names: Vec<&str> = bytecode::all_programs().iter()
+            .filter(|(n, _)| filter(n))
+            .map(|(n, _)| *n)
+            .collect();
         bpf_guard.retain(|b| {
             b.programs().all(|(n, _)| !new_names.contains(&n))
         });
 
         for (name, bytecode) in bytecode::all_programs() {
+            if !filter(name) {
+                continue;
+            }
             if bytecode.is_empty() {
                 continue;
             }
@@ -884,6 +947,29 @@ impl EbpfLoader {
         Ok(())
     }
 
+    /// Looks up cgroup_id by flow key (5-tuple) from the kernel BPF cgroup_lookup_map.
+    ///
+    /// The map is written by eBPF sockops.bpf.c on BPF_SOCK_OPS_ACTIVE_ESTABLISHED
+    /// (LRU hash, kernel auto-evicts stale entries).
+    /// proxy_proc constructs a FlowKey from getpeername + getsockname, then queries this method.
+    pub fn lookup_cgroup_by_flow(&self, key: &FlowKey) -> Option<u64> {
+        if !self.is_loaded() {
+            return None;
+        }
+
+        let bpf_guard = self.bpf.lock().ok()?;
+        for bpf in bpf_guard.iter() {
+            if let Some(map) = bpf.map(CGROUP_LOOKUP_MAP_NAME) {
+                if let Ok(hm) = aya::maps::HashMap::<_, FlowKey, u64>::try_from(map) {
+                    if let Ok(cgroup_id) = hm.get(key, 0) {
+                        return Some(cgroup_id);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Returns true if eBPF programs are currently loaded.
     pub fn is_loaded(&self) -> bool {
         self.loaded.lock().map(|l| *l).unwrap_or(false)
@@ -900,6 +986,10 @@ impl Default for EbpfLoader {
 mod tests {
     use super::*;
     use agentsandbox_config::{CapabilityRule, FilesystemRule, NetworkRule, SecurityPolicy};
+
+    const PROXY_PORT_TEST: u16 = 8443;
+    const MODEL_ROUTE_PORT_TEST: u16 = 9090;
+    const PROXY_PORT_ALT_TEST: u16 = 9999;
 
     fn policy_with_caps(caps: &[&str]) -> SecurityPolicy {
         SecurityPolicy {
@@ -1048,7 +1138,7 @@ mod tests {
     #[test]
     fn test_update_from_security_policy_path_rules() {
         let loader = EbpfLoader::new();
-        loader.load_programs().unwrap();
+        loader.load_programs(None).unwrap();
         let policy = policy_with_cap_paths(&[
             ("cap_net_raw", Some("/usr/bin/curl")),
             ("cap_sys_admin", Some("/usr/sbin/*")),
@@ -1073,7 +1163,7 @@ mod tests {
     #[test]
     fn test_update_from_security_policy_no_path_rules() {
         let loader = EbpfLoader::new();
-        loader.load_programs().unwrap();
+        loader.load_programs(None).unwrap();
         let policy = policy_with_caps(&["cap_sys_admin"]);
         loader.update_from_security_policy(456, &policy, 0).unwrap();
 
@@ -1086,7 +1176,7 @@ mod tests {
     #[test]
     fn test_remove_policy_clears_path_rules() {
         let loader = EbpfLoader::new();
-        loader.load_programs().unwrap();
+        loader.load_programs(None).unwrap();
         let policy = policy_with_cap_paths(&[("cap_net_raw", Some("/usr/bin/curl"))]);
         loader.update_from_security_policy(789, &policy, 0).unwrap();
         assert!(loader.get_cap_path_rules(789).is_some());
@@ -1133,7 +1223,7 @@ mod tests {
     #[test]
     fn test_update_from_security_policy_fs_rules() {
         let loader = EbpfLoader::new();
-        loader.load_programs().unwrap();
+        loader.load_programs(None).unwrap();
         let policy = SecurityPolicy {
             enforcement_mode: "block".to_string(),
             default_action: "allow".to_string(),
@@ -1157,7 +1247,7 @@ mod tests {
     #[test]
     fn test_remove_policy_clears_fs_rules() {
         let loader = EbpfLoader::new();
-        loader.load_programs().unwrap();
+        loader.load_programs(None).unwrap();
         let policy = SecurityPolicy {
             enforcement_mode: "block".to_string(),
             default_action: "allow".to_string(),
@@ -1269,7 +1359,7 @@ mod tests {
     #[test]
     fn test_update_from_security_policy_network_rules() {
         let loader = EbpfLoader::new();
-        loader.load_programs().unwrap();
+        loader.load_programs(None).unwrap();
         let policy = SecurityPolicy {
             enforcement_mode: "block".to_string(),
             default_action: "allow".to_string(),
@@ -1305,7 +1395,7 @@ mod tests {
     #[test]
     fn test_remove_policy_clears_network_rules() {
         let loader = EbpfLoader::new();
-        loader.load_programs().unwrap();
+        loader.load_programs(None).unwrap();
         let policy = SecurityPolicy {
             enforcement_mode: "block".to_string(),
             default_action: "allow".to_string(),
@@ -1331,28 +1421,35 @@ mod tests {
         let loader = EbpfLoader::new();
         assert_eq!(loader.get_proxy(), None);
 
-        loader.load_programs().unwrap();
+        loader.load_programs(None).unwrap();
         let ip = parse_ip("127.0.0.1").unwrap();
-        loader.set_proxy(ip, 8443, 9090, ip).unwrap();
-        assert_eq!(loader.get_proxy(), Some((ip, 8443, 9090, ip)));
+        loader.set_proxy(ip, PROXY_PORT_TEST, MODEL_ROUTE_PORT_TEST, ip).unwrap();
+        assert_eq!(loader.get_proxy(), Some((ip, PROXY_PORT_TEST, MODEL_ROUTE_PORT_TEST, ip)));
     }
 
     #[test]
     fn test_set_proxy_before_load_fails() {
         let loader = EbpfLoader::new();
         let ip = parse_ip("127.0.0.1").unwrap();
-        assert!(loader.set_proxy(ip, 8443, 9090, ip).is_err());
+        assert!(loader.set_proxy(ip, PROXY_PORT_TEST, MODEL_ROUTE_PORT_TEST, ip).is_err());
     }
 
     #[test]
     fn test_unload_clears_proxy() {
         let loader = EbpfLoader::new();
-        loader.load_programs().unwrap();
+        loader.load_programs(None).unwrap();
         let ip = parse_ip("127.0.0.1").unwrap();
-        loader.set_proxy(ip, 9999, 9090, ip).unwrap();
-        assert_eq!(loader.get_proxy(), Some((ip, 9999, 9090, ip)));
+        loader.set_proxy(ip, PROXY_PORT_ALT_TEST, MODEL_ROUTE_PORT_TEST, ip).unwrap();
+        assert_eq!(loader.get_proxy(), Some((ip, PROXY_PORT_ALT_TEST, MODEL_ROUTE_PORT_TEST, ip)));
 
         loader.unload_programs().unwrap();
         assert_eq!(loader.get_proxy(), None);
+    }
+
+    #[test]
+    fn test_lookup_cgroup_by_flow_not_loaded() {
+        let loader = EbpfLoader::new();
+        let key = FlowKey::from_ipv4([127, 0, 0, 1], 12345, [10, 0, 0, 1], 80, NET_PROTOCOL_TCP);
+        assert_eq!(loader.lookup_cgroup_by_flow(&key), None);
     }
 }
