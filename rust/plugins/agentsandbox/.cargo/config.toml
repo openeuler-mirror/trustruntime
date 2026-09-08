@@ -1,2 +1,7 @@
 [build]
 target = "aarch64-unknown-linux-gnu"
+
+# 交叉编译链接器：宿主 cc 无法链接 aarch64 目标（rustc 默认回退宿主
+# gcc-ld/lld → elf64-x86-64 不兼容）；须显式指向交叉工具链。
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"

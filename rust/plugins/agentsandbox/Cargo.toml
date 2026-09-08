@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "config",
+    "inference",
     "log",
     "controller",
     "hook",
