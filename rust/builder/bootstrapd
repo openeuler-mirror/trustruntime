@@ -34,6 +34,11 @@ mount -t tmpfs tmpfs /sysroot/
 /sbin/busybox insmod /kernel/9p.ko
 /sbin/busybox insmod /kernel/9pnet_virtio.ko
 
+/sbin/busybox insmod /kernel/vsock.ko
+/sbin/busybox insmod /kernel/vmw_vsock_virtio_transport_common.ko
+/sbin/busybox insmod /kernel/vmw_vsock_virtio_transport.ko
+/sbin/busybox insmod /kernel/vsock_loopback.ko
+
 /sbin/busybox ip addr add 10.0.2.15/24 dev eth0
 /sbin/busybox ip link set eth0 up
 /sbin/busybox ip route add default via 10.0.2.2
