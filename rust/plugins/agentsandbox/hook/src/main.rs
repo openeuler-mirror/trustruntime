@@ -63,7 +63,7 @@ fn run() -> anyhow::Result<()> {
 
     let cgroup_id = read_cgroup_id()?;
 
-    let resp = send_registration(&sock_path, cgroup_id, &config_path)?;
+    let resp = send_registration(&sock_path, ContainerId::new(cgroup_id), &config_path)?;
 
     if resp.status != "ok" {
         anyhow::bail!("HiController rejected registration: status={}", resp.status);

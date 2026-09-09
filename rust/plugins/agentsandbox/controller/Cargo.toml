@@ -22,4 +22,5 @@ tracing = { workspace = true }
 agentsandbox-config = { path = "../config" }
 agentsandbox-log = { path = "../log" }
 agentsandbox-security = { path = "../security" }
-notify = "6"
+notify = { workspace = true }
+libc = { workspace = true }

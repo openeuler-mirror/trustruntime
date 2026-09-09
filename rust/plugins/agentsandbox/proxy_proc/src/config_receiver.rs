@@ -1,6 +1,6 @@
-use agentsandbox_config::{ContainerId, FilterConfig};
+use agentsandbox_config::ContainerId;
 use agentsandbox_proxy::facade::{remove_container_policy, set_container_ca, set_container_config};
-use agentsandbox_proxy::model::CaCert;
+use agentsandbox_proxy::model::{CaCert, FilterConfig};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};

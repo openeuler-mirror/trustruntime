@@ -1,10 +1,11 @@
 /// Embedded BPF bytecode compiled at build time by build.rs.
-/// The .bpf.o files are generated from src/bpf/*.bpf.c via clang -target bpf.
+/// The .bpf.o files are generated from src/bpf/*.bpf.c via clang -target bpf,
+/// output to OUT_DIR (target/...) and embedded via include_bytes!.
 
-const CAPABILITY_BPF_O: &[u8] = include_bytes!("../src/bpf/capability.bpf.o");
-const FILESYSTEM_BPF_O: &[u8] = include_bytes!("../src/bpf/filesystem.bpf.o");
-const NETWORK_BPF_O: &[u8] = include_bytes!("../src/bpf/network.bpf.o");
-const SOCKOPS_BPF_O: &[u8] = include_bytes!("../src/bpf/sockops.bpf.o");
+const CAPABILITY_BPF_O: &[u8] = include_bytes!(concat!(env!("BPF_OUT_DIR"), "/capability.bpf.o"));
+const FILESYSTEM_BPF_O: &[u8] = include_bytes!(concat!(env!("BPF_OUT_DIR"), "/filesystem.bpf.o"));
+const NETWORK_BPF_O: &[u8] = include_bytes!(concat!(env!("BPF_OUT_DIR"), "/network.bpf.o"));
+const SOCKOPS_BPF_O: &[u8] = include_bytes!(concat!(env!("BPF_OUT_DIR"), "/sockops.bpf.o"));
 
 /// Available BPF program names.
 pub const ALL_PROGRAM_NAMES: &[&str] = &["capability", "filesystem", "network", "sockops"];
