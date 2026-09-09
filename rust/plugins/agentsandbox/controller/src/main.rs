@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const VALID_LOG_LEVELS: &[&str] = &["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
-const SECURE_DIR_MODE: u32 = 0o750;
+const SECURE_DIR_MODE: u32 = 0o750; // rwxr-x---
 
 struct Config {
     config_dir: String,

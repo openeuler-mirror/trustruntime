@@ -4,12 +4,13 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 
 use serde::{Deserialize, Serialize};
+use agentsandbox_config::ContainerId;
 
 /// Registration message sent to HiController.
 #[derive(Debug, Serialize)]
 struct RegisterMessage {
     msg_type: String,
-    cgroup_id: u64,
+    container_id: ContainerId,
     config_path: String,
 }
 
@@ -34,13 +35,9 @@ fn read_cgroup_id() -> anyhow::Result<u64> {
 }
 
 /// Sends registration message to HiController and receives response.
-fn send_registration(sock_path: &str, cgroup_id: u64, config_path: &str) -> anyhow::Result<RegisterResponse> {
+fn send_registration(sock_path: &str, container_id: ContainerId, config_path: &str) -> anyhow::Result<RegisterResponse> {
     let mut stream = UnixStream::connect(sock_path)?;
-    let msg = RegisterMessage {
-        msg_type: "register".to_string(),
-        cgroup_id,
-        config_path: config_path.to_string(),
-    };
+    let msg = RegisterMessage { msg_type: "register".to_string(), container_id, config_path: config_path.to_string() };
     let json = serde_json::to_string(&msg)?;
     stream.write_all(json.as_bytes())?;
     stream.write_all(b"\n")?;

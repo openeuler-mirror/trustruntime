@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 fn main() {
     let bpf_dir = PathBuf::from("src/bpf");
-    let bpf_progs = ["capability.bpf.c", "filesystem.bpf.c", "network.bpf.c"];
+    let bpf_progs = ["capability.bpf.c", "filesystem.bpf.c", "network.bpf.c", "sockops.bpf.c"];
 
     let clang = std::env::var("CLANG").unwrap_or_else(|_| "clang".to_string());
     let bpftool = std::env::var("BPFTOOL").unwrap_or_else(|_| "bpftool".to_string());

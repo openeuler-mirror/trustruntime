@@ -184,4 +184,32 @@ struct {
     __uint(max_entries, 4096 * 64);
 } event_ringbuf SEC(".maps");
 
+/* Container cgroup lookup map.
+ * key:   struct flow_key — 5-tuple (src/dst IP + port + protocol + family)
+ * value: cgroup_id (__u64) — cgroup ID of the connecting container
+ *
+ * Written by sockops.bpf.c on BPF_SOCK_OPS_ACTIVE_ESTABLISHED (connect succeeded,
+ * full 5-tuple available). Read by proxy_proc via EbpfLoader::lookup_cgroup_by_flow
+ * to recover cgroup_id from an accepted TCP connection.
+ *
+ * LRU hash: kernel auto-evicts least-recently-used entries when full, no manual cleanup.
+ * IPv4/IPv6 compatible: family=AF_INET(2) stores IPv4 in first 4 bytes of ip fields;
+ * family=AF_INET6(10) stores full 16-byte IPv6 addresses.
+ */
+struct flow_key {
+    __u8  family;       /* AF_INET=2, AF_INET6=10 */
+    __u8  protocol;     /* IPPROTO_TCP=6, IPPROTO_UDP=17 */
+    __u8  src_ip[16];   /* source IP (IPv4 in first 4 bytes if AF_INET) */
+    __u8  dst_ip[16];   /* destination IP (IPv4 in first 4 bytes if AF_INET) */
+    __u16 src_port;     /* source port (host byte order) */
+    __u16 dst_port;     /* destination port (host byte order) */
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, struct flow_key);
+    __type(value, __u64);
+} cgroup_lookup_map SEC(".maps");
+
 #endif

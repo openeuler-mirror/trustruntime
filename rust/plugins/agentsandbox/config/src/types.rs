@@ -88,3 +88,21 @@ fn default_star() -> String {
 fn default_action() -> String {
     "block".to_string()
 }
+
+/// Container identity. Currently only carries cgroup_id; designed for
+/// future extension (e.g. namespace, pod_uid) without breaking serialization.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ContainerId {
+    pub cgroup_id: u64,
+}
+
+impl ContainerId {
+    pub fn new(cgroup_id: u64) -> Self { Self { cgroup_id } }
+    pub fn as_key(&self) -> String { self.cgroup_id.to_string() }
+}
+
+impl std::fmt::Display for ContainerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.cgroup_id)
+    }
+}

@@ -6,6 +6,7 @@ members = [
     "controller",
     "hook",
     "proxy",
+    "proxy_proc",
     "security",
 ]
 resolver = "2"

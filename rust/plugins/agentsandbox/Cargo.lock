@@ -83,6 +83,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentsandbox-proxy-proc"
+version = "0.1.0"
+dependencies = [
+ "agentsandbox-config",
+ "agentsandbox-log",
+ "agentsandbox-proxy",
+ "agentsandbox-security",
+ "anyhow",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "agentsandbox-security"
 version = "0.1.0"
 dependencies = [
@@ -90,6 +106,7 @@ dependencies = [
  "agentsandbox-log",
  "anyhow",
  "aya",
+ "libc",
  "serde",
  "serde_json",
  "thiserror",
