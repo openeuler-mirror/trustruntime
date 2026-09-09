@@ -47,6 +47,7 @@ impl KeyUsageFlags {
     pub const KEY_AGREEMENT: u32 = 0x08;
     pub const KEY_CERT_SIGN: u32 = 0x04;
     pub const CRL_SIGN: u32 = 0x02;
+    pub const DECIPHER_ONLY: u32 = 0x8000;
 }
 
 fn build_key_usage_extension(key_usage: u32) -> X509Extension {
@@ -71,6 +72,9 @@ fn build_key_usage_extension(key_usage: u32) -> X509Extension {
     }
     if (key_usage & KeyUsageFlags::CRL_SIGN) != 0 {
         ku.crl_sign();
+    }
+    if (key_usage & KeyUsageFlags::DECIPHER_ONLY) != 0 {
+        ku.decipher_only();
     }
     ku.build().expect("Failed to build KeyUsage")
 }

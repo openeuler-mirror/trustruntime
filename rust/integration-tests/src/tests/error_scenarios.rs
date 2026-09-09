@@ -10,12 +10,12 @@
  * See the Mulan PSL v2 for more details.
  */
 
-//! 错误场景测试模块（E01-E20）
+//! 错误场景测试模块（E01-E22）
 //!
 //! 测试范围：
 //! - E01-E06: 验签失败场景（签名不匹配、证书链无效、CRL吊销等）
 //! - E07-E08: 证书/密钥文件缺失
-//! - E09-E20: verify-sign组合操作错误场景
+//! - E09-E22: verify-sign组合操作错误场景
 //!
 //! result码定义（详见ADR-0001）：
 //! - 0: 成功
@@ -36,7 +36,9 @@ use integration_tests::test_helpers::{
     handle_verify_sign_and_parse, setup_plugin_test_context, setup_test_certificates,
     PluginTestContext, TestPaths, TEST_DATA_A, TEST_DATA_B,
 };
-use integration_tests::vsock_client::VsockClient;
+use integration_tests::vsock_client::{
+    build_verify_sign_request as build_vsock_verify_sign_request, VsockClient,
+};
 use openssl::cms::CmsContentInfo;
 use openssl::pkey::PKey;
 use std::fs;
@@ -781,12 +783,14 @@ fn e18_missing_to_verify_field() {
     assert_eq!(resp["result"], 20);
 }
 
-/// E19: verify-sign中to-sign.id无效Base64
+/// E19: verify-sign中id字段无效Base64
 ///
-/// 测试场景：verify-sign请求中to-sign.id字段包含非法Base64字符
+/// 测试场景：verify-sign请求中to-verify.id和to-sign.id均为无效Base64
 ///
 /// 预期结果：返回result=21，signed_data=""，id=""
 /// 原因：无法解码Base64字符串
+///
+/// 注意：to-verify.id与to-sign.id必须相同，否则会先触发result=22（ID不一致）
 ///
 /// 测试依赖：无（插件API测试）
 #[test]
@@ -794,7 +798,7 @@ fn e19_invalid_base64_in_to_sign_id() {
     let temp_dir = TempDir::new().unwrap();
     let ctx = setup_plugin_test_context(&temp_dir);
 
-    let (signed_b64, cert_id_b64) = {
+    let (signed_b64, _cert_id_b64) = {
         let request = build_sign_request("test data");
         let result = ctx.sign(&request).unwrap();
         let resp: serde_json::Value = serde_json::from_slice(&result).unwrap();
@@ -804,12 +808,14 @@ fn e19_invalid_base64_in_to_sign_id() {
         )
     };
 
+    let invalid_base64 = "!!!invalid-base64!!!";
+
     let req = build_verify_sign_request(
         "test data",
         &signed_b64,
-        &cert_id_b64,
+        invalid_base64,
         "new data",
-        "!!!invalid-base64!!!",
+        invalid_base64,
     );
     let resp = handle_verify_sign_and_parse(&ctx, &req);
 
@@ -845,4 +851,113 @@ fn e20_invalid_base64_in_signed_data() {
     assert_eq!(resp["result"], 21);
     assert_eq!(resp["signed_data"], "");
     assert_eq!(resp["id"], "");
+}
+
+/// E21: verify-sign中to-verify.id与to-sign.id不一致
+///
+/// 测试场景：verify-sign请求中to-verify.id与to-sign.id为不同的值
+///
+/// 预期结果：返回result=22，signed_data=""，id=""
+/// 原因：验签和签名必须使用同一个输入证书ID，不一致时拒绝请求
+///
+/// 测试依赖：无（插件API测试）
+#[test]
+fn e21_id_mismatch_between_verify_and_sign() {
+    let temp_dir = TempDir::new().unwrap();
+    let ctx = setup_plugin_test_context(&temp_dir);
+
+    let (signed_b64, cert_id_b64) = {
+        let request = build_sign_request("test data");
+        let result = ctx.sign(&request).unwrap();
+        let resp: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        (
+            resp["signed_data"].as_str().unwrap().to_string(),
+            resp["id"].as_str().unwrap().to_string(),
+        )
+    };
+
+    // 构造一个与 cert_id_b64 不同的合法 Base64 字符串作为 to-sign.id
+    let different_id_b64 = general_purpose::STANDARD.encode([0u8; 20]);
+
+    let req = build_verify_sign_request(
+        "test data",
+        &signed_b64,
+        &cert_id_b64,
+        "new data",
+        &different_id_b64,
+    );
+    let resp = handle_verify_sign_and_parse(&ctx, &req);
+
+    assert_eq!(resp["result"], 22);
+    assert_eq!(resp["signed_data"], "");
+    assert_eq!(resp["id"], "");
+}
+
+/// E22: verify-sign中to-verify.id与to-sign.id不一致（vsock端到端）
+///
+/// 测试场景：通过vsock发送verify-sign请求，to-verify.id与to-sign.id为不同的值
+///
+/// 预期结果：返回result=22，signed_data=""，id=""
+/// 原因：验签和签名必须使用同一个输入证书ID，不一致时拒绝请求
+///
+/// 测试依赖：Linux环境、vsock、TLS证书链
+#[test]
+#[ignore = "requires Linux environment (vsock) and certificates, TLS certificate chain issue pending fix"]
+fn e22_id_mismatch_vsock_end_to_end() {
+    let paths = TestPaths::new();
+
+    let manager = ProcessManager::new(paths.binary_path.clone(), paths.cert_base.clone());
+
+    let node_a_config = NodeConfig {
+        name: "node-a".to_string(),
+        port: 12345,
+        cms_cert_path: paths.node_cms_cert("node-a"),
+        cms_key_path: paths.node_cms_key("node-a"),
+        tls_cert_path: paths.node_tls_cert("node-a"),
+        tls_key_path: paths.node_tls_key("node-a"),
+        tls_client_crl: None,
+    };
+
+    manager
+        .start_node(node_a_config)
+        .expect("Failed to start node-a");
+
+    let mut client = VsockClient::connect(
+        1,
+        12345,
+        &paths.tls_ca_cert(),
+        &paths.tls_client_cert(),
+        &paths.tls_client_key(),
+        paths.tls_key_password().as_deref(),
+    )
+    .expect("Failed to connect to node-a");
+
+    // 先签名获取合法的 signed_data 和 cert_id
+    let sign_resp = client
+        .sign(TEST_DATA_A)
+        .expect("Sign request to node-a failed");
+    assert_sign_success(sign_resp.result, &sign_resp.signed_data, &sign_resp.id);
+
+    // 构造一个与 cert_id 不同的合法 Base64 字符串作为 to-sign.id
+    let different_id_b64 = general_purpose::STANDARD.encode([0u8; 20]);
+
+    // 构造 to-verify.id != to-sign.id 的请求
+    let verify_sign_req = build_vsock_verify_sign_request(
+        TEST_DATA_A,
+        &sign_resp.signed_data,
+        &sign_resp.id,
+        "new data",
+        &different_id_b64,
+    );
+
+    let verify_sign_resp = client
+        .verify_and_sign(verify_sign_req)
+        .expect("Verify-sign request to node-a failed");
+
+    assert_eq!(verify_sign_resp.result, 22);
+    assert_eq!(verify_sign_resp.signed_data, "");
+    assert_eq!(verify_sign_resp.id, "");
+
+    client.close().expect("Failed to close client");
+    manager.stop_all().expect("Failed to stop processes");
 }

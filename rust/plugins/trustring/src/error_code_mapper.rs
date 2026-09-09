@@ -37,10 +37,11 @@
 //!   - result=11：私钥不可用（PrivateKeyUnavailable）
 //!   - result=12：签名算法错误（SigningAlgorithmError）
 //!   - result=13-19：预留扩展
-//! - result=20-29：数据解析错误（预留10个位置，当前使用2个）
+//! - result=20-29：数据解析错误（预留10个位置，当前使用3个）
 //!   - result=20：JSON解析错误（JsonParseError）
 //!   - result=21：Base64解码错误（Base64DecodeError）
-//!   - result=22-29：预留扩展
+//!   - result=22：证书ID不一致（IdMismatch）
+//!   - result=23-29：预留扩展
 //!
 //! 依赖：
 //! - sign模块：SignError（签名错误类型）
@@ -89,6 +90,7 @@ fn err_get_lib(errcode: c_ulong) -> c_int {
 /// | SigningAlgorithmError     | 12     | 签名算法错误             |
 /// | JsonParseError            | 20     | JSON解析错误             |
 /// | Base64DecodeError         | 21     | Base64解码错误           |
+/// | IdMismatch                | 22     | 证书ID不一致             |
 /// | Other(code)               | code   | 其他错误（透传错误码）   |
 #[derive(Debug, PartialEq)]
 pub(crate) enum BusinessError {
@@ -169,6 +171,12 @@ pub(crate) enum BusinessError {
     /// - 证书ID Base64解码失败
     Base64DecodeError,
 
+    /// 证书ID不一致（result=22）
+    ///
+    /// 场景：
+    /// - verify-sign请求中to-verify.id与to-sign.id不一致
+    IdMismatch,
+
     /// 其他错误（透传错误码）
     ///
     /// 用于未分类的OpenSSL错误或其他内部错误。
@@ -204,6 +212,7 @@ impl BusinessError {
     /// | SigningAlgorithmError | 12 |
     /// | JsonParseError | 20 |
     /// | Base64DecodeError | 21 |
+    /// | IdMismatch | 22 |
     pub(crate) fn to_result_code(&self) -> u32 {
         match self {
             BusinessError::CertificateChainInvalid => 3,
@@ -216,6 +225,7 @@ impl BusinessError {
             BusinessError::SigningAlgorithmError => 12,
             BusinessError::JsonParseError => 20,
             BusinessError::Base64DecodeError => 21,
+            BusinessError::IdMismatch => 22,
             BusinessError::Other(code) => *code,
         }
     }

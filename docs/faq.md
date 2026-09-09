@@ -341,6 +341,27 @@ openssl x509 -in cert.pem -noout -text | grep "Subject Key Identifier"
 
 ---
 
+### Q: 验签+签名返回 result=22（证书ID不一致）？
+
+**A**: 原因：verify-sign 请求中 `to-verify.id` 与 `to-sign.id` 不一致。
+
+业务要求：验签和签名必须使用同一个输入证书 ID。先验证 `sign(data + 输入证书id)`，再签名 `sign(新data + 输入证书id)`，两个 id 必须相同。
+
+可能原因：
+
+- `to-verify.id` 和 `to-sign.id` 来自不同的签名操作
+- 客户端构造请求时误用了不同的证书 ID
+
+**排查步骤**：
+
+```bash
+# 检查请求 JSON 中两个 id 字段是否一致
+cat request.json | jq '.["to-verify"].id == .["to-sign"].id'
+# 应输出 true
+```
+
+---
+
 ### Q: result=1 和 result=2 的区别？
 
 **A**: 两者都是验签通过的合法结果：

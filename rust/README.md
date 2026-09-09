@@ -9,10 +9,12 @@ Cargo workspace，包含框架、插件、主程序、测试和工具。
 | `framework` | 通用进程框架：vsock通信、TLS、配置、日志、插件管理 |
 | `trustruntime` | 主程序入口 |
 | `plugins/trustring` | CMS签名验签业务插件 |
+| `launcher` | VM启动器（CCA机密计算） |
 | `integration-tests` | 集成测试 |
 | `tools/cert-gen` | ECC-256测试证书生成工具 |
 | `tools/cms-test-cli` | CMS签名服务交互测试工具（REPL界面） |
-| `examples/` | 示例代码（签名、验签、验签+签名） |
+
+> `builder/` 和 `examples/` 不属于 workspace 成员，分别为打包脚本和示例代码。
 
 ## 构建
 

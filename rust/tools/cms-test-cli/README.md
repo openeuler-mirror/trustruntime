@@ -287,7 +287,7 @@ verify-sign 命令需要完整的 JSON 格式参数，包含 `to-verify` 和 `to
 - `to-verify.signed_data` 必须是真实的签名数据（从 `sign` 或 `verify-sign` 命令获取）
 - `to-verify.id` 必须是真实的证书ID（从 `sign` 或 `verify-sign` 命令获取）
 - `to-verify.data` 必须与签名时的原始数据一致
-- `to-sign.id` 通常与 `to-verify.id` 相同
+- `to-sign.id` 必须与 `to-verify.id` 相同，否则返回 result=22（证书ID不一致）
 
 ### 性能测试
 

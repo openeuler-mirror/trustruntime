@@ -408,6 +408,21 @@ impl DataHandler for VerifySignHandler {
             Err(e) => return e,
         };
 
+        // 校验 to-verify.id 与 to-sign.id 一致性
+        //
+        // 业务语义（CONTEXT.md §验签+签名流程）：
+        // 验签和签名必须使用同一个输入证书ID，先验证 sign(data+输入证书id)，
+        // 再签名 sign(新data+输入证书id)。若两个id不一致，攻击者可借合法身份A
+        // 通过验签，再让本节点用身份B签名，破坏身份连续性。
+        if req.to_verify.id != req.to_sign.id {
+            let error = BusinessError::IdMismatch;
+            log::warn!(
+                "ID mismatch in verify-sign: msg_type 0x12, result_code {}",
+                error.to_result_code()
+            );
+            return build_verify_sign_error_response(error);
+        }
+
         // 处理验签部分
         match self.handle_verify_part(&req.to_verify, &|s| ctx.decode_base64(s)) {
             Ok(_) => log::info!("Verify stage succeeded: msg_type 0x12"),

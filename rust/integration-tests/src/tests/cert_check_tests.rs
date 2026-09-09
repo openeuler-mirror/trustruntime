@@ -384,3 +384,23 @@ fn cc13_comm_cert_missing_extended_key_usage() {
     let result = check_extended_key_usage(&cert, "serverAuth");
     assert!(result.is_err());
 }
+
+/// CC14: 签名证书KeyUsage含decipherOnly位
+///
+/// 测试场景：签名证书含digitalSignature+decipherOnly
+///
+/// 预期结果：check_key_usage_exact 返回 Err
+/// 说明：decipherOnly位于BIT STRING第二字节，extract_key_usage_flags
+/// 检测到 len() > 1 应直接拒绝，防止绕过精确匹配
+#[test]
+fn cc14_signer_cert_key_usage_with_decipher_only() {
+    use integration_tests::test_cert_gen::generate_signer_cert_with_decipher_only;
+    use trustruntime_framework::cert::{check_key_usage_exact, KeyUsageFlags};
+
+    let (_ca_pem, _valid_pem, _valid_key_pem, test_pem, _test_key_pem) =
+        generate_signer_cert_with_decipher_only();
+
+    let cert = openssl::x509::X509::from_pem(&test_pem).unwrap();
+    let result = check_key_usage_exact(&cert, KeyUsageFlags::DIGITAL_SIGNATURE);
+    assert!(result.is_err());
+}
