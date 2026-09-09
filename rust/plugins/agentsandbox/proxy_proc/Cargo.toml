@@ -18,4 +18,4 @@ agentsandbox-config = { path = "../config" }
 agentsandbox-log = { path = "../log" }
 agentsandbox-proxy = { path = "../proxy" }
 agentsandbox-security = { path = "../security" }
-libc = "0.2"
+libc = { workspace = true }

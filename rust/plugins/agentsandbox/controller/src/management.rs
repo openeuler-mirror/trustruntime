@@ -1,6 +1,6 @@
 use crate::config_monitor::ConfigMonitor;
 use crate::messaging::{ManagementMessage, MessageSender, MSG_REFRESH_POLICY, MSG_REMOVE_CONTAINER};
-use crate::sock_listener::{ContainerAction, ContainerMessage, SockListener};
+use crate::sock_listener::{ContainerAction, SockListener};
 use agentsandbox_config::{ContainerId, FilterConfig, SecurityPolicy, parse_security_policy, parse_proxy_policy, parse_container_port};
 use agentsandbox_security::{ContainerIntegration, EbpfLoader, PolicySnapshot};
 use agentsandbox_log::LogConfig;

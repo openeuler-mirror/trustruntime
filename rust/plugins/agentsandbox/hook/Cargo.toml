@@ -12,3 +12,4 @@ path = "src/main.rs"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+agentsandbox-config = { path = "../config" }

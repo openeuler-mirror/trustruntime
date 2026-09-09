@@ -20,7 +20,7 @@ fn run() -> anyhow::Result<()> {
     let config = ProxyProcConfig::from_env()?;
     load_ca(&config)?;
     register_ebpf_resolver()?;
-    register_log_sink();
+    setup_log_sink();
     start_proxy(&config)?;
     start_config_receiver(&config)
 }
@@ -79,10 +79,9 @@ fn register_ebpf_resolver() -> anyhow::Result<()> {
 
 // ---- Log sink registration ----
 
-fn register_log_sink() {
+fn setup_log_sink() {
     let sink: agentsandbox_proxy::logging::LogSink = Arc::new(|event: &LogEvent| -> Result<(), LogSinkError> {
-        let json = serde_json::to_string(event).unwrap_or_default();
-        eprintln!("[AUDIT] {}", json);
+        eprintln!("[AUDIT] {}", event.message);
         Ok(())
     });
     register_log_sink(sink);

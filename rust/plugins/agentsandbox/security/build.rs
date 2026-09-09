@@ -5,6 +5,9 @@ fn main() {
     let bpf_dir = PathBuf::from("src/bpf");
     let bpf_progs = ["capability.bpf.c", "filesystem.bpf.c", "network.bpf.c", "sockops.bpf.c"];
 
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
+    println!("cargo:rustc-env=BPF_OUT_DIR={}", out_dir.display());
+
     let clang = std::env::var("CLANG").unwrap_or_else(|_| "clang".to_string());
     let bpftool = std::env::var("BPFTOOL").unwrap_or_else(|_| "bpftool".to_string());
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| std::env::consts::ARCH.to_string());
@@ -21,7 +24,7 @@ fn main() {
         }
         for prog in &bpf_progs {
             let src = bpf_dir.join(prog);
-            let obj = bpf_dir.join(prog.replace(".bpf.c", ".bpf.o"));
+            let obj = out_dir.join(prog.replace(".bpf.c", ".bpf.o"));
             println!("cargo:rerun-if-changed={}", src.display());
             let status = Command::new(&clang).args(["-O2", "-g", "-target", "bpf", &format!("-D__TARGET_ARCH_{}", arch), "-I/usr/include", "-Isrc/bpf", "-Wall", "-Wno-unused-variable", "-c", &src.to_string_lossy(), "-o", &obj.to_string_lossy()]).status();
             if !status.map(|s| s.success()).unwrap_or(false) {
@@ -32,7 +35,7 @@ fn main() {
     } else {
         eprintln!("cargo:warning=clang not found, generating empty BPF object files");
         for prog in &bpf_progs {
-            let obj = bpf_dir.join(prog.replace(".bpf.c", ".bpf.o"));
+            let obj = out_dir.join(prog.replace(".bpf.c", ".bpf.o"));
             std::fs::write(&obj, []).ok();
         }
     }

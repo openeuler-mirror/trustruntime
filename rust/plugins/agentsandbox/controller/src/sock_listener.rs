@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Read;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::UnixListener as StdUnixListener;
 use thiserror::Error;
 use agentsandbox_config::ContainerId;
 
@@ -32,6 +32,11 @@ pub struct ContainerMessage {
     pub config_path: Option<String>,
 }
 
+/// Unix domain socket listener for container lifecycle messages.
+pub struct SockListener {
+    sock_path: String,
+}
+
 impl SockListener {
     pub fn new(sock_path: &str) -> Self {
         Self { sock_path: sock_path.to_string() }
@@ -40,7 +45,7 @@ impl SockListener {
     pub fn listen<F>(&self, on_message: F) -> Result<(), SockError>
     where F: Fn(ContainerMessage) + Send + 'static {
         let _ = fs::remove_file(&self.sock_path);
-        let listener = UnixListener::bind(&self.sock_path)
+        let listener = StdUnixListener::bind(&self.sock_path)
             .map_err(|e| SockError::BindError(e.to_string()))?;
         for stream in listener.incoming() {
             match stream {

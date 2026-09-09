@@ -19,23 +19,23 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 # 仅 lock_util 锁毒化告警使用：绕开 logging::emit 的 CALLBACK 锁防重入
 # 死锁（见 lock_util.rs 文档；非日志交付路径）。
-log = "0.4"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-rustls-pemfile = "2"
-rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "x509-parser"] }
-x509-parser = "0.16"
+log = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rcgen = { workspace = true }
+x509-parser = { workspace = true }
 tokio = { workspace = true }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
-hyper = { version = "1", default-features = false, features = ["http1", "http2", "server", "client"] }
-hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+tokio-rustls = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 # 单星 glob 匹配（domain/method/uri 中间星形态；特殊字符转义保字面）。
-globset = "0.4"
-http = "1"
-http-body-util = "0.1"
-bytes = "1"
-http-body = "1"
+globset = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+http-body = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3.10"
+tempfile = { workspace = true }
 # 自引用：仅测试构建启用 test-util（fake registry / 日志捕获缝）。
 agentsandbox-proxy = { path = ".", features = ["test-util"] }
