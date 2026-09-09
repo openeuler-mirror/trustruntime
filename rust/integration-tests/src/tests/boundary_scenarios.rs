@@ -204,10 +204,12 @@ fn b04_special_characters_data_sign() {
 
 /// B05: verify-sign中ID无效Base64
 ///
-/// 测试场景：verify-sign请求中to-verify.id字段无效
+/// 测试场景：verify-sign请求中to-verify.id和to-sign.id字段均为无效Base64
 ///
 /// 预期结果：返回result=21，signed_data=""，id=""
 /// 原因：无法解码Base64字符串
+///
+/// 注意：to-verify.id与to-sign.id必须相同，否则会先触发result=22（ID不一致）
 ///
 /// 测试依赖：无（插件API测试）
 #[test]
@@ -215,7 +217,7 @@ fn b05_invalid_base64_in_id() {
     let temp_dir = TempDir::new().unwrap();
     let ctx = setup_plugin_test_context(&temp_dir);
 
-    let (signed_b64, cert_id_b64) = {
+    let (signed_b64, _cert_id_b64) = {
         let request = build_sign_request("test data");
         let result = ctx.sign(&request).unwrap();
         let resp: serde_json::Value = serde_json::from_slice(&result).unwrap();
@@ -225,12 +227,14 @@ fn b05_invalid_base64_in_id() {
         )
     };
 
+    let invalid_base64 = "!!!invalid-base64!!!";
+
     let req = build_verify_sign_request(
         "test data",
         &signed_b64,
-        "!!!invalid-base64!!!",
+        invalid_base64,
         "new data",
-        &cert_id_b64,
+        invalid_base64,
     );
     let resp = handle_verify_sign_and_parse(&ctx, &req);
 

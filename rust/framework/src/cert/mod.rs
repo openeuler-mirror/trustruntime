@@ -451,6 +451,8 @@ impl KeyUsageFlags {
     pub const KEY_CERT_SIGN: u32 = 0x04;
     /// CRL签名（bit 6）
     pub const CRL_SIGN: u32 = 0x02;
+    /// 解密仅（bit 8，位于第二字节）
+    pub const DECIPHER_ONLY: u32 = 0x8000;
 }
 
 const OID_MAPPINGS: &[(&str, &str, &str)] = &[
@@ -536,6 +538,14 @@ pub fn extract_key_usage_flags(cert: &X509) -> Result<u32, CertLoadError> {
         let usage_bytes = std::slice::from_raw_parts(data, length);
 
         if usage_bytes.is_empty() {
+            ASN1_BIT_STRING_free(ku as *mut _);
+            return Err(CertLoadError::InvalidFormat);
+        }
+
+        // RFC 5280 §4.2.1.3: KeyUsage BIT STRING 中 bit 8+ 唯一定义的标准位是
+        // decipherOnly（位于第二字节）。DER 编码会截断尾部零字节，因此
+        // len() > 1 说明证书包含 decipherOnly 或其他扩展位，直接拒绝。
+        if usage_bytes.len() > 1 {
             ASN1_BIT_STRING_free(ku as *mut _);
             return Err(CertLoadError::InvalidFormat);
         }
@@ -1032,6 +1042,9 @@ mod tests {
         if (key_usage_flags & KeyUsageFlags::NON_REPUDIATION) != 0 {
             ku.non_repudiation();
         }
+        if (key_usage_flags & KeyUsageFlags::DECIPHER_ONLY) != 0 {
+            ku.decipher_only();
+        }
         builder.append_extension(ku.build().unwrap()).unwrap();
 
         builder.sign(&pkey, MessageDigest::sha256()).unwrap();
@@ -1064,6 +1077,18 @@ mod tests {
             &cert,
             KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::KEY_ENCIPHERMENT,
         );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn check_key_usage_exact_rejects_decipher_only() {
+        // 场景：证书含 digitalSignature + decipherOnly
+        // 预期：extract_key_usage_flags 返回 Err（BIT STRING 跨两字节）
+        // 原因：decipherOnly 位于第二字节，len() > 1 应被拒绝
+        let (cert, _) = generate_test_cert_with_key_usage(
+            KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::DECIPHER_ONLY,
+        );
+        let result = check_key_usage_exact(&cert, KeyUsageFlags::DIGITAL_SIGNATURE);
         assert!(result.is_err());
     }
 

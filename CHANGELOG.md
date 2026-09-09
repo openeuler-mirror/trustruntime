@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- 安全修复：verify-sign 接口（0x12）新增 `to-verify.id` 与 `to-sign.id` 一致性校验，不一致时返回 result=22
+
 - 文档补充：
   - `docs/user-guide.md` - 使用指南（安装/配置/运维）
   - `docs/contributing.md` - 开发指南（贡献流程/编码规范）

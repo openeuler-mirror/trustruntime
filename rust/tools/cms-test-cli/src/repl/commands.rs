@@ -880,7 +880,7 @@ Note:
   - to-verify.signed_data must be a valid signature from sign or verify-sign command
   - to-verify.id must match the certificate ID that signed the data
   - to-verify.data must match the original data used for signing
-  - to-sign.id is usually the same as to-verify.id";
+  - to-sign.id must be the same as to-verify.id, otherwise result=22 (ID mismatch)";
 
 /// perf 命令帮助文本
 const HELP_PERF: &str = "perf sign --count <n> [--data <text>] [--interval <ms>]

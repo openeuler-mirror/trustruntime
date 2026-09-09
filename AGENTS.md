@@ -93,7 +93,7 @@ wsl bash -c "source ~/.cargo/env && cd <PROJECT_ROOT>/rust && ./scripts/run-inte
 - **Message module**: Pure data layer, no business validation (validation belongs in vsock_server)
 - **Config module**: Optional fields use `Option<T>` or `#[serde(default)]`
 - **Certificate loading**: PEM/DER dual-format support via `framework::cert`
-- **Error mapping**: `error_code_mapper` converts domain errors to result codes 0-9
+- **Error mapping**: `error_code_mapper` converts domain errors to result codes (0-22, see CONTEXT.md §结果码)
 - **Plugin registration**: Plugins register supported message types via `ctx.register_handler(type)` in `init()`
 - **Byte order**: All message serialization uses little-endian (LE) byte order
 - **Async architecture**: TransportLayer trait (transport module) uses async-trait, main.rs uses #[tokio::main(worker_threads = 4)]

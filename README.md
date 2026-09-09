@@ -10,8 +10,12 @@ trustruntime/
 │   ├── framework/           # 通用进程框架 (trustruntime-framework)
 │   ├── trustruntime/        # 主程序入口
 │   ├── plugins/trustring/   # 签名验签业务插件
+│   ├── launcher/            # VM启动器 (trt-launcher)
+│   ├── builder/             # VM镜像构建工具 (trt-builder)
 │   ├── integration-tests/   # 集成测试
 │   ├── tools/cert-gen/      # 测试证书生成工具
+│   ├── tools/cms-test-cli/  # CMS签名服务测试工具
+│   ├── examples/            # 示例代码
 │   └── scripts/             # 开发测试脚本
 ├── docs/                    # 文档
 │   ├── interface.md         # 接口文档
@@ -167,21 +171,20 @@ pkill -f trustruntime
 
 ## 文档
 
-### 使用者
+### 发布包内
+
+- [示例代码](rust/examples/) - 使用示例
+- [Rust Workspace 说明](rust/README.md) - workspace 结构与构建
+- [RPM 部署指南](packaging/README.md) - 安装与部署
+
+### 开发仓库（不包含在发布包中）
 
 - [使用指南](docs/user-guide.md) - 安装、配置、运维
 - [接口文档](docs/interface.md) - API 参考
 - [FAQ](docs/faq.md) - 常见问题
-
-### 开发者
-
 - [开发指南](docs/contributing.md) - 贡献流程、编码规范
-
-### 其他
-
 - [术语表](CONTEXT.md) - 项目术语
 - [变更日志](CHANGELOG.md) - 版本历史
-- [示例代码](rust/examples/) - 使用示例
 
 ## 部署
 

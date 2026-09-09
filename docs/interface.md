@@ -123,7 +123,8 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
 | 12 | 签名算法错误 | 0x11、0x13 |
 | 20 | JSON解析失败 | 0x11、0x13、0x15 |
 | 21 | Base64解码失败 | 0x11、0x13、0x15 |
-| ≥22 | 其他错误 | 0x11、0x13、0x15 |
+| 22 | 证书ID不一致（to-verify.id ≠ to-sign.id） | 0x13 |
+| ≥23 | 其他错误 | 0x11、0x13、0x15 |
 
 **重要说明**：
 
@@ -149,7 +150,7 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
 
 - 0x13 中验签步骤仅验证签名有效性（证书链+CRL+签名匹配），不执行身份判定
 - 0x13 中验签通过后执行签名，验签失败（result≥3）不执行签名步骤（signed_data=""、id=""）
-- 0x13 中验签通过后签名失败，返回签名失败码（10/12/20/21/≥22）
+- 0x13 中验签通过后签名失败，返回签名失败码（10/12/20/21/22/≥23）
 - result=20/21 由 handler 层在解析请求时返回，框架层不处理
 
 ---
@@ -234,7 +235,7 @@ CMS签名验签服务部署于机密计算虚机（Confidential VM）中，以 s
 | id | string (Base64) | 输入的证书 id（即 to-sign.id） |
 | result | int | 结果码（见 6.2） |
 
-**流程**：先验签 sign(data + to-verify.id) → 验签仅验证签名有效性（证书链+CRL+签名匹配），不执行身份判定，验签成功（result=0）即执行签名步骤 sign(新 data + to-sign.id) → 返回签名值和输入证书 id。验签失败（result≥3）时不执行签名步骤，signed_data=""、id=""，直接返回对应 result。
+**流程**：先校验 to-verify.id 与 to-sign.id 一致性（不一致返回 result=22）→ 验签 sign(data + to-verify.id) → 验签仅验证签名有效性（证书链+CRL+签名匹配），不执行身份判定，验签成功（result=0）即执行签名步骤 sign(新 data + to-sign.id) → 返回签名值和输入证书 id。验签失败（result≥3）时不执行签名步骤，signed_data=""、id=""，直接返回对应 result。
 
 ---
 

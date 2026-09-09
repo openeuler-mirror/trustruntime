@@ -353,6 +353,50 @@ pub fn generate_signer_cert_with_extra_usage() -> CertBundle {
     )
 }
 
+/// 生成签名证书（含decipherOnly）用于CC14测试
+///
+/// 用于测试证书用途校验场景 CC14（签名证书KeyUsage含decipherOnly位）。
+/// 签名证书含digitalSignature+decipherOnly，decipherOnly位于BIT STRING第二字节，
+/// 应被extract_key_usage_flags拒绝。
+///
+/// # Returns
+/// CertBundle元组：
+/// - CA证书PEM
+/// - 有效签名者证书PEM
+/// - 有效签名者私钥PEM
+/// - 测试签名者证书PEM（含decipherOnly）
+/// - 测试签名者私钥PEM
+pub fn generate_signer_cert_with_decipher_only() -> CertBundle {
+    let group = get_group();
+    let (ca_cert, ca_pkey, _) = create_ca_cert(&group, "localhost");
+
+    let (valid_cert, valid_pkey, _) = create_cert_with_usage(
+        &group,
+        &ca_cert,
+        &ca_pkey,
+        "localhost",
+        KeyUsageFlags::DIGITAL_SIGNATURE,
+        None,
+    );
+
+    let (test_cert, test_pkey, _) = create_cert_with_usage(
+        &group,
+        &ca_cert,
+        &ca_pkey,
+        "localhost",
+        KeyUsageFlags::DIGITAL_SIGNATURE | KeyUsageFlags::DECIPHER_ONLY,
+        None,
+    );
+
+    (
+        ca_cert.to_pem().unwrap(),
+        valid_cert.to_pem().unwrap(),
+        valid_pkey.private_key_to_pem_pkcs8().unwrap(),
+        test_cert.to_pem().unwrap(),
+        test_pkey.private_key_to_pem_pkcs8().unwrap(),
+    )
+}
+
 /// 生成通信证书（完整用途）用于CC10/CC11测试
 ///
 /// 用于测试证书用途校验场景 CC10/CC11（通信证书KeyUsage包含匹配、ExtendedKeyUsage校验）。
