@@ -13,7 +13,7 @@ test-util = []
 
 [dependencies]
 # 推理路由外部库（AR-005；当前为 mock 空实现，真实库落地后同契约替换）。
-agentsandbox-inference = { path = "../inference" }
+agentsandbox-inference = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

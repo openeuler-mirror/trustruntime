@@ -1,6 +1,6 @@
-use fs2::FileExt;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
 use crate::config::LogConfig;
@@ -18,8 +18,12 @@ pub fn write_line(log_type: &str, json_line: &str, config: &LogConfig) -> Result
         .append(true)
         .open(&log_path)
         .map_err(|_| LogError::WriteError)?;
-    file.lock_exclusive().map_err(|_| LogError::LockError)?;
+    let fd = file.as_raw_fd();
+    let lock_ok = unsafe { libc::flock(fd, libc::LOCK_EX) } == 0;
+    if !lock_ok {
+        return Err(LogError::LockError);
+    }
     let result = writeln!(file, "{}", json_line).map_err(|_| LogError::WriteError);
-    let _ = file.unlock();
+    let _ = unsafe { libc::flock(fd, libc::LOCK_UN) };
     result
 }

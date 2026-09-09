@@ -4,7 +4,7 @@ use crate::sock_listener::{ContainerAction, SockListener};
 use agentsandbox_config::{ContainerId, FilterConfig, SecurityPolicy, parse_security_policy, parse_proxy_policy, parse_container_port};
 use agentsandbox_security::{ContainerIntegration, EbpfLoader, PolicySnapshot};
 use agentsandbox_log::LogConfig;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -36,6 +36,7 @@ pub struct Management {
     cm: ConfigMonitor,
     integration: ContainerIntegration,
     registered_containers: Arc<Mutex<HashSet<ContainerId>>>,
+    container_configs: Arc<Mutex<HashMap<ContainerId, String>>>,
     sock_path: String,
 }
 
@@ -49,19 +50,22 @@ impl Management {
             .map_err(|e| MgmtError::EbpfError(e.to_string()))?;
 
         let integration = ContainerIntegration::new(loader, log_config);
+        let cm = ConfigMonitor::new(config_dir);
+        cm.start().map_err(|e| MgmtError::ConfigError(e.to_string()))?;
         Ok(Self {
-            cm: ConfigMonitor::new(config_dir),
+            cm,
             integration,
             registered_containers: Arc::new(Mutex::new(HashSet::new())),
+            container_configs: Arc::new(Mutex::new(HashMap::new())),
             sock_path: sock_path.to_string(),
         })
     }
 
-    /// Starts config file monitoring in a background thread. On TOML change, atomically applies config per cgroup.
+    /// Starts config file monitoring in a background thread. On TOML change, applies config to the associated container only.
     pub fn start_config_monitor(&self, sender: &dyn MessageSender) -> Result<(), MgmtError> {
         let integration = self.integration.clone();
         let cm = self.cm.clone_for_watch();
-        let registered = self.registered_containers.clone();
+        let container_configs = self.container_configs.clone();
         let sender_box: Box<dyn MessageSender + Send> = sender.clone_box();
 
         thread::spawn(move || {
@@ -74,7 +78,13 @@ impl Management {
                         return;
                     }
                 };
-                apply_config_per_container(&fc, &sp, cp, &registered, &integration, &sender_box);
+                let target_cid = container_configs.lock()
+                    .ok()
+                    .and_then(|m| m.iter().find(|(_, p)| *p == path).map(|(c, _)| c.clone()));
+                match target_cid {
+                    Some(cid) => apply_config_to_container(&fc, &sp, cp, &cid, &integration, &sender_box),
+                    None => eprintln!("config change for unregistered path: {}", path),
+                }
             }).ok();
         });
         Ok(())
@@ -148,29 +158,29 @@ fn apply_container_config(config_path: &str, container_id: ContainerId, mgmt: &A
         rollback_ebpf(&mgmt.integration, &container_id, &old_policy);
         return;
     }
+    if let Ok(mut m) = mgmt.container_configs.lock() {
+        m.insert(container_id.clone(), config_path.to_string());
+    }
+    if let Err(e) = mgmt.cm.add_watch(config_path) {
+        eprintln!("container register: failed to watch config {} for {}: {}", config_path, container_id, e);
+    }
     if let Err(e) = mgmt.integration.block_sock_access(container_id.cgroup_id, &mgmt.sock_path) {
         eprintln!("container register: block sock failed for {}: {}", container_id, e);
     }
 }
 
-/// Per-container config apply on TOML hot-reload. Each container is applied independently.
-fn apply_config_per_container(fc: &Option<FilterConfig>, sp: &Option<SecurityPolicy>, container_port: u16, registered: &Arc<Mutex<HashSet<ContainerId>>>, integration: &ContainerIntegration, sender: &Box<dyn MessageSender + Send>) {
-    let containers: Vec<ContainerId> = registered.lock()
-        .map(|s| s.iter().cloned().collect())
-        .unwrap_or_default();
-    for cid in &containers {
-        let old_policy = integration.get_policy_value(cid.cgroup_id);
-        if let Some(security_policy) = sp {
-            if let Err(e) = integration.register_with_rollback(cid.cgroup_id, security_policy.clone(), container_port) {
-                eprintln!("config apply: eBPF refresh failed for {}: {}, skipping", cid, e);
-                continue;
-            }
+/// Applies config to a single container on TOML hot-reload.
+fn apply_config_to_container(fc: &Option<FilterConfig>, sp: &Option<SecurityPolicy>, container_port: u16, cid: &ContainerId, integration: &ContainerIntegration, sender: &Box<dyn MessageSender + Send>) {
+    let old_policy = integration.get_policy_value(cid.cgroup_id);
+    if let Some(security_policy) = sp {
+        if let Err(e) = integration.register_with_rollback(cid.cgroup_id, security_policy.clone(), container_port) {
+            eprintln!("config apply: eBPF refresh failed for {}: {}, skipping", cid, e);
+            return;
         }
-        if let Some(cfg) = fc {
-            if !send_filter_config_to_proxy(sender, cid, cfg) {
-                rollback_ebpf(integration, cid, &old_policy);
-                continue;
-            }
+    }
+    if let Some(cfg) = fc {
+        if !send_filter_config_to_proxy(sender, cid, cfg) {
+            rollback_ebpf(integration, cid, &old_policy);
         }
     }
 }
@@ -206,6 +216,10 @@ fn unregister_container(container_id: ContainerId, mgmt: &Arc<Management>, sende
         eprintln!("container unregister: eBPF cleanup failed for {}: {}", container_id, e);
     }
     send_remove_container_to_proxy(sender, &container_id);
+    if let Some(config_path) = mgmt.container_configs.lock().ok()
+        .and_then(|mut m| m.remove(&container_id)) {
+        mgmt.cm.remove_watch(&config_path);
+    }
     if let Ok(mut s) = mgmt.registered_containers.lock() {
         s.remove(&container_id);
     }
