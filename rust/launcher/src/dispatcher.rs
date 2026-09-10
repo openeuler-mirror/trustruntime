@@ -76,27 +76,35 @@ fn check_param_exists(opt_str: Option<String>, arg_name: &str) -> Result<PathBuf
     Ok(path)
 }
 
-fn config_custom(
-    config_path: &PathBuf,
-) -> Result<(PathBuf, PathBuf, u32, PathBuf, u32, Option<String>), Box<dyn Error>> {
+/// 启动参数归一形态（config 文件与 CLI 参数两来源的统一输出）。
+struct RunConfig {
+    image_path: PathBuf,
+    payload_path: PathBuf,
+    /// 证书目录（仅 config 文件来源提供；CLI 来源为 None）。
+    cert_dir: Option<PathBuf>,
+    /// 内存（MiB）。
+    mem: u32,
+    cid: u32,
+    /// 透传 QEMU 参数（仅 config 文件来源提供）。
+    qemu_args: Option<String>,
+}
+
+fn config_custom(config_path: &PathBuf) -> Result<RunConfig, Box<dyn Error>> {
     let content = fs::read_to_string(config_path)?;
     let config: LauncherConfig = serde_json::from_str(&content)?;
     validate_config(&config)?;
-    let memory = config.memory as u32;
 
-    Ok((
-        PathBuf::from(config.image),
-        PathBuf::from(config.payload),
-        memory,
-        PathBuf::from(config.certdir),
-        config.cid,
-        config.qemu_args,
-    ))
+    Ok(RunConfig {
+        image_path: PathBuf::from(config.image),
+        payload_path: PathBuf::from(config.payload),
+        cert_dir: Some(PathBuf::from(config.certdir)),
+        mem: config.memory as u32,
+        cid: config.cid,
+        qemu_args: config.qemu_args,
+    })
 }
 
-fn analyze_required_args(
-    cli_args: &RunArgs,
-) -> Result<(PathBuf, PathBuf, Option<PathBuf>, u32, u32, Option<String>), Box<dyn Error>> {
+fn analyze_required_args(cli_args: &RunArgs) -> Result<RunConfig, Box<dyn Error>> {
     match &cli_args.app_conf {
         Some(conf) => {
             info!("--app-conf is exists, using conf file");
@@ -108,43 +116,36 @@ fn analyze_required_args(
                 )
                 .into());
             }
-            let (image_path, payload_path, mem, cert_dir, cid, qemu_args) =
-                config_custom(&config_path)?;
-            Ok((
-                image_path,
-                payload_path,
-                Some(cert_dir),
-                mem,
-                cid,
-                qemu_args,
-            ))
+            config_custom(&config_path)
         }
         None => {
             info!("--app-conf is not exists, using cmd line");
-            let payload_path = check_param_exists(cli_args.payload.clone(), "--payload")?;
-            let image_path = check_param_exists(cli_args.kernel.clone(), "--kernel")?;
-            let mem = cli_args.mem.unwrap_or(DEFAULT_MEM) as u32;
-            let cid = cli_args.cid.unwrap_or(DEFAULT_CID);
-            Ok((image_path, payload_path, None, mem, cid, None))
+            Ok(RunConfig {
+                payload_path: check_param_exists(cli_args.payload.clone(), "--payload")?,
+                image_path: check_param_exists(cli_args.kernel.clone(), "--kernel")?,
+                cert_dir: None,
+                mem: cli_args.mem.unwrap_or(DEFAULT_MEM) as u32,
+                cid: cli_args.cid.unwrap_or(DEFAULT_CID),
+                qemu_args: None,
+            })
         }
     }
 }
 
 fn cli_args_to_qemu_opts(cli_args: &RunArgs) -> Result<QemuLaunchOpts, Box<dyn Error>> {
-    let (image_path, payload_path, cert_dir, mem, cid, qemu_args) =
-        analyze_required_args(cli_args)?;
+    let config = analyze_required_args(cli_args)?;
 
     Ok(QemuLaunchOpts {
         virtiofs_vols: cli_args.virtiofs.clone(),
         published_ports: cli_args.port_forward.clone(),
-        image_path,
-        qemu_args,
-        payload: Some(payload_path),
-        cert_dir: cert_dir.clone(),
+        image_path: config.image_path,
+        qemu_args: config.qemu_args,
+        payload: Some(config.payload_path),
+        cert_dir: config.cert_dir,
         vol_9p_paths: cli_args.volume.clone(),
-        mem,
+        mem: config.mem,
         smp: cli_args.smp.unwrap_or(DEFAULT_SMP) as u32,
-        cid,
+        cid: config.cid,
     })
 }
 
@@ -334,10 +335,11 @@ mod tests {
 
         let result = config_custom(&PathBuf::from(config_path.to_string_lossy().to_string()));
         assert!(result.is_ok());
-        let (_image, _payload, mem, _certdir, cid, qemu_args) = result.unwrap();
-        assert_eq!(mem, 2048);
-        assert_eq!(cid, 3);
-        assert!(qemu_args.is_none());
+        let config = result.unwrap();
+        assert_eq!(config.mem, 2048);
+        assert_eq!(config.cid, 3);
+        assert!(config.qemu_args.is_none());
+        assert_eq!(config.cert_dir, Some(cert_dir));
     }
 
     #[test]
@@ -377,9 +379,9 @@ mod tests {
         };
         let result = analyze_required_args(&cli_args);
         assert!(result.is_ok());
-        let (_, _, cert_dir_opt, _, _, qemu_args) = result.unwrap();
-        assert!(cert_dir_opt.is_some());
-        assert!(qemu_args.is_none());
+        let config = result.unwrap();
+        assert!(config.cert_dir.is_some());
+        assert!(config.qemu_args.is_none());
     }
 
     #[test]
@@ -399,11 +401,11 @@ mod tests {
         };
         let result = analyze_required_args(&cli_args);
         assert!(result.is_ok());
-        let (_, _, cert_dir_opt, mem, cid, qemu_args) = result.unwrap();
-        assert!(cert_dir_opt.is_none());
-        assert_eq!(mem, 2048);
-        assert_eq!(cid, 3);
-        assert!(qemu_args.is_none());
+        let config = result.unwrap();
+        assert!(config.cert_dir.is_none());
+        assert_eq!(config.mem, 2048);
+        assert_eq!(config.cid, 3);
+        assert!(config.qemu_args.is_none());
     }
 
     #[test]
@@ -448,8 +450,8 @@ mod tests {
             ..Default::default()
         };
         let result = analyze_required_args(&cli_args).unwrap();
-        assert_eq!(result.3, DEFAULT_MEM as u32);
-        assert_eq!(result.4, DEFAULT_CID);
+        assert_eq!(result.mem, DEFAULT_MEM as u32);
+        assert_eq!(result.cid, DEFAULT_CID);
     }
 
     #[test]

@@ -119,8 +119,8 @@ fn check_unshare() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    let unshare_stdout = str::from_utf8(&unshare_output.stdout)?;
-    let unshare_stderr = str::from_utf8(&unshare_output.stderr)?;
+    let unshare_stdout = String::from_utf8_lossy(&unshare_output.stdout);
+    let unshare_stderr = String::from_utf8_lossy(&unshare_output.stderr);
     if !unshare_output.status.success() {
         return Err(format!(
             "Failed to command 'unshare -r id', stdout : {} , stderr: {}",
