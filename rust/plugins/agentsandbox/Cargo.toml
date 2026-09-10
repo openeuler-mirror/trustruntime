@@ -18,29 +18,35 @@ license = "Apache-2.0"
 authors = ["AgentSandbox Team"]
 
 [workspace.dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "1"
-anyhow = "1"
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-toml = "0.8"
-http = "1"
-bytes = "1"
-fs2 = "0.4"
-notify = "6"
-libc = "0.2"
-log = "0.4"
-aya = "0.13"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# Internal crates
+agentsandbox-config = { path = "config" }
+agentsandbox-inference = { path = "inference" }
+agentsandbox-log = { path = "log" }
+agentsandbox-security = { path = "security" }
+agentsandbox-proxy = { path = "proxy" }
+# Third-party crates
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+thiserror = "=2.0.12"
+anyhow = "=1.0.98"
+tokio = { version = "=1.49.0", features = ["full"] }
+bytes = "=1.11.1"
+libc = "=0.2.180"
+log = "=0.4.27"
+rustls = { version = "=0.23.36", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12", "logging"] }
+hyper = { version = "=1.8.1", default-features = false, features = ["http1", "http2", "server", "client"] }
+hyper-util = { version = "=0.1.19", features = ["server-auto", "tokio"] }
+http = "=1.4.0"
+toml = "=0.8.23" # 需要与serde兼容
+tempfile = "=3.20.0"
+
+# 下面这写三方件不在版本火车
+aya = "=0.14.0"
 rustls-pemfile = "2"
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "x509-parser"] }
 x509-parser = "0.16"
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
-hyper = { version = "1", default-features = false, features = ["http1", "http2", "server", "client"] }
-hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 globset = "0.4"
-http-body-util = "0.1"
 http-body = "1"
-tempfile = "3.10"
+http-body-util = "0.1"
+
