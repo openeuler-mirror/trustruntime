@@ -118,7 +118,7 @@ fn configure_basic_qemu_command(qemu_cmd: &mut Command, qemu_launch_opts: &QemuL
         .args(["-enable-kvm"])
         .args(["-cpu", "host"])
         .args(["-m", &format!("size={mem_size}M")])
-        .args(["-overcommit", "mem-lock=off"])
+        .args(["-overcommit", "mem-lock=on"])
         .args(["-smp", &format!("{smp_cores}")])
         .args(["-append", "rdinit=init console=ttyAMA0 rodata=full nosoftlockup rcupdate.rcu_cpu_stall_timeout=3000"])
         .args(["-nographic"])
