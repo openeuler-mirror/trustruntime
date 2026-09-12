@@ -173,6 +173,8 @@ mod tests {
                 method: "*".to_string(),
                 uri: None,
                 binary: None,
+            target_ip: None,
+            target_port: None,
             }],
             blacklist: vec![],
         }

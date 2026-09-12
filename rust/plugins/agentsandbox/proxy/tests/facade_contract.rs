@@ -108,6 +108,8 @@ fn valid_fc(domain: &str) -> FilterConfig {
             method: "*".to_string(),
             uri: Some("/v1/*".to_string()),
             binary: None,
+            target_ip: None,
+            target_port: None,
         }],
         blacklist: vec![],
     }
@@ -122,6 +124,8 @@ fn invalid_fc() -> FilterConfig {
             method: "*".to_string(),
             uri: Some("*v1*".to_string()),
             binary: None,
+            target_ip: None,
+            target_port: None,
         }],
         blacklist: vec![],
     }

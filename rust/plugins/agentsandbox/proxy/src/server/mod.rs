@@ -57,7 +57,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agentsandbox_inference::{InferenceDecision, InferenceRequest, InferenceRouter, MockInferenceRouter};
+use agentsandbox_inference::{
+    InferenceModification, InferenceRequest, InferenceResult, InferenceRouteResult,
+    InferenceRouter, ModifyAction, ModifyTarget,
+};
 use http::{Method, Request, Response, Uri};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -70,7 +73,9 @@ use crate::filter::engine::evaluate;
 use crate::forward::{relay_with_idle_timeout, AsyncReadWrite, TargetConnector};
 use crate::logging;
 use crate::mitm::{self, SniResolvingCert};
-use crate::model::{Action, AuditLogEntry, Protocol, Reason, SCENARIO_LIB};
+use crate::model::{
+    Action, AuditEntryType, AuditLogEntry, Policy, Protocol, Reason, SCENARIO_LIB,
+};
 use crate::registry::Registry;
 
 /// 阻断响应体类型（服务层统一 body 形态：Full 或目标流式 body 装箱）。
@@ -101,12 +106,14 @@ pub struct ServeContext {
     pub target_host_override: Option<String>,
     /// 推理路由列表（host+url 精确匹配；空列表 = 无推理路由分流）。
     pub inference_routes: Vec<crate::model::InferenceRoute>,
-    /// 推理路由外部库（crate 引入；默认 mock 空实现——真实库落地后替换）。
+    /// 推理路由裁决器（默认 [`crate::inference_uds::UdsRouteDispatcher`]
+    /// 双模式：env `HISEC_ROUT_PORT` → UDS 远程 / 未设 → 本地 mock）。
     pub inference_router: Arc<dyn InferenceRouter>,
 }
 
 impl ServeContext {
-    /// 以默认参数构造（target timeout 30s，scenario "lib"，无推理路由）。
+    /// 以默认参数构造（target timeout 30s，scenario "lib"，无推理路由；
+    /// 裁决器 = UDS 双模式分发，本地实现为 mock 空实现）。
     pub fn new(
         registry: Arc<Registry>,
         cert_services: Arc<crate::cert::ContainerCertServices>,
@@ -120,18 +127,15 @@ impl ServeContext {
             target_port_override: None,
             target_host_override: None,
             inference_routes: Vec::new(),
-            inference_router: Arc::new(MockInferenceRouter),
+            inference_router: Arc::new(crate::inference_uds::UdsRouteDispatcher::new(
+                Box::new(agentsandbox_inference::MockInferenceRouter),
+            )),
         }
     }
 
     /// 目标端口（覆盖或生产默认——协议相关：TLS 443 / 明文 80）。
     fn target_port(&self) -> u16 {
         self.target_port_override.unwrap_or(443)
-    }
-
-    /// 明文路径目标端口（覆盖或生产默认 80）。
-    fn target_port_plain(&self) -> u16 {
-        self.target_port_override.unwrap_or(80)
     }
 
     /// 目标主机（覆盖或 SNI 域名；SNI 校验名恒为 SNI）。
@@ -409,10 +413,17 @@ async fn handle_request(
     ctx: Arc<ServeContext>,
     conn: Arc<ConnContext>,
 ) -> Result<Response<B>, std::convert::Infallible> {
-    // 0. 域名解析（TLS=SNI 连接级；明文=Host 头请求级——缺失即 503，
-    //    与无 SNI 对齐 fail-closed）。
-    let Some(domain) = resolve_domain(&conn, &req) else {
+    // 0. 域名与端口解析（TLS=SNI 连接级、端口恒 443；明文=Host 头请求级
+    //    ——缺失即 503，与无 SNI 对齐 fail-closed；Host 头可带端口——
+    //    2026-09-09 目标端口维度输入与明文转发端口依据）。
+    let Some((domain, host_port)) = resolve_host(&conn, &req) else {
         return Ok(config_missing_response(&ctx, &conn, &req, "-"));
+    };
+    // 目标端口：明文 = Host 显式端口缺省 80；TLS = 443。
+    let target_port = if conn.plaintext {
+        host_port.unwrap_or(80)
+    } else {
+        443
     };
 
     // 0.5 推理路由分流（AR-005）：命中路由列表（host+url 精确匹配）即
@@ -435,32 +446,67 @@ async fn handle_request(
     // 2. binary 维度（连接级已解析——resolver 一次解析全连接复用；
     //    规则含 binary 条件且未解析 → binary_not_found fail-closed）。
     if fc.has_binary_condition() && conn.binary_path.is_none() {
-        let meta = ReqMeta { container_id: &container_id, domain: &domain, method: req.method(), uri: req.uri() };
+        let meta = ReqMeta { container_id: &container_id, domain: &domain, method: req.method(), uri: req.uri(), target_ips: &None };
         let entry = deny_entry(&ctx, &conn, &meta, Reason::BinaryNotFound);
         return Ok(audit_deny(&entry, Reason::BinaryNotFound));
     }
 
-    // 3. 求值（K3：黑>白>默认，四维 AND 短路；binary 维度取连接级
-    //    resolver 输出的 binary_path）。
+    // 2.5 目标 IP 预解析（2026-09-09：条件性激活——仅含 IP 条件的配置
+    //     触发 DNS 解析，带缓存；失败 → dns_resolve_error fail-closed）。
+    let target_ips: Arc<Vec<std::net::IpAddr>> = if fc.has_ip_condition() {
+        match resolve_target_ips(&domain, ctx.connector.timeout()).await {
+            Some(ips) => ips,
+            None => {
+                crate::log_warn!("server", "dns resolve failed; blocked (fail-closed)");
+                let meta = ReqMeta { container_id: &container_id, domain: &domain, method: req.method(), uri: req.uri(), target_ips: &None };
+                let entry = deny_entry(&ctx, &conn, &meta, Reason::DnsResolveError);
+                return Ok(audit_deny(&entry, Reason::DnsResolveError));
+            }
+        }
+    } else {
+        Arc::new(Vec::new())
+    };
+    let target_ip_str = if target_ips.is_empty() {
+        None
+    } else {
+        // 审计 target_ip 字段（现状恒 None——2026-09-09 起填充解析集，
+        // 逗号连接多 IP 完整记录）。
+        Some(
+            target_ips
+                .iter()
+                .map(|ip| ip.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+    };
+
+    // 3. 求值（K3：黑>白>默认，六维 AND 短路；binary 维度取连接级
+    //    resolver 输出的 binary_path，IP/端口维度取本函数 2.5/0 步产物）。
     let (action, reason) = evaluate(
         &container_id,
         &domain,
         req.method().as_str(),
         req.uri().path(),
         conn.binary_path.as_deref(),
+        &target_ips,
+        target_port,
         &fc,
     );
     if action == Action::Deny {
         crate::log_debug!("server", "deny: domain={} reason={:?}", domain, reason);
-        let meta = ReqMeta { container_id: &container_id, domain: &domain, method: req.method(), uri: req.uri() };
+        let meta = ReqMeta { container_id: &container_id, domain: &domain, method: req.method(), uri: req.uri(), target_ips: &target_ip_str };
         let entry = deny_entry(&ctx, &conn, &meta, reason);
         return Ok(audit_deny(&entry, reason));
     }
 
+    // 3.5 告警判定（2026-09-09）：黑白均未命中走默认策略且
+    //     default_policy=alert → 放行 + 审计条目标记告警（type=1）。
+    let alert = reason == Reason::DefaultPolicy && fc.default_policy == Policy::Alert;
+
     // 4. Upgrade（h1）：101 升级后转纯隧道（本函数在 upgrade 前返回
     //    101 响应骨架——隧道由 on_upgrade 任务承接）。
     if is_upgrade_request(&req) {
-        return handle_upgrade(req, ctx, conn, domain, container_id, reason).await;
+        return handle_upgrade(req, ctx, conn, domain, container_id, reason, alert, host_port, target_ip_str).await;
     }
 
     // 5. allow：目标连接 + 转发 + 流式回传 + 审计（真实 status_code——Q6 修复）。
@@ -470,7 +516,7 @@ async fn handle_request(
         b.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
             .boxed()
     });
-    forward_request(req, ctx, conn, domain, container_id, reason).await
+    forward_request(req, ctx, conn, domain, container_id, reason, alert, host_port, target_ip_str).await
 }
 
 /// Upgrade 请求判定（h1：GET + 非空 Upgrade 头——隧道分支判别器）。
@@ -495,10 +541,12 @@ fn inference_route_matched(ctx: &ServeContext, domain: &str, path: &str) -> bool
 
 /// 推理路由请求处理：缓冲 body → 交外部库裁决 → 决策分发。
 ///
-/// 三态决策（[`InferenceDecision`]）：
+/// 裁决三态（[`InferenceResult`]）：
 /// - Block → 403 + 审计 deny（status=0，reason=inference_route）；
-/// - Forward / ForwardModified → 重建缓冲请求（覆写 Content-Length、剥
-///   Transfer-Encoding）→ 复用统一转发路径（审计 allow + 真实 status）。
+/// - Forward → 原样重建缓冲请求（修改列表忽略）→ 统一转发；
+/// - Modified → 应用修改列表（header 添加/修改 + body 整体替换，见
+///   [`apply_inference_modifications`]）→ 重建 → 统一转发
+///   （Content-Length 按最终 body 覆写，审计 allow + 真实 status）。
 ///
 /// body 缓冲失败/超时：运行日志 warn + 503 关闭，不产出审计（无流量
 /// 通过——与 TLS 层失败仅日志的先例一致）。
@@ -522,34 +570,46 @@ async fn handle_inference(
         }
     };
 
-    // 2. 外部库裁决（同步调用——body 已缓冲；Bytes clone 为引用计数拷贝）。
-    let decision = ctx.inference_router.route(InferenceRequest {
-        method: parts.method.clone(),
-        uri: parts.uri.clone(),
+    // 2. 外部库裁决——spawn_blocking 承载（本地实现可能重计算；UDS
+    //    模式为阻塞 I/O——均不得占用 async worker 线程）。
+    //    外部库不构造请求——返回决策码 + 修改列表，proxy 统一应用。
+    //    入参 body 为 lossy UTF-8 文本（仅库可见性；Forward 路径转发
+    //    原始 Bytes 保真，二进制 body 不被 U+FFFD 破坏）。
+    let route_req = InferenceRequest {
         headers: parts.headers.clone(),
-        body: body.clone(),
+        body: String::from_utf8_lossy(&body).into_owned(),
+    };
+    let router = ctx.inference_router.clone();
+    let decision = tokio::task::spawn_blocking(move || router.route(route_req)).await.unwrap_or_else(|_| {
+        crate::log_warn!("server", "inference route task panicked; blocked");
+        InferenceRouteResult {
+            result: InferenceResult::Block,
+            modifications: Vec::new(),
+        }
     });
 
-    // 3. 决策分发：Block → 403 + 审计 deny；Forward/Modified → 缓冲请求
-    //    重建（原文 parts 或库改写形态）→ 统一转发。
-    let (method, uri, headers, body) = match decision {
-        InferenceDecision::Block => {
+    // 3. 决策分发：Block → 403 + 审计 deny；Forward → 原样；Modified →
+    //    应用修改列表（method/uri 不可改——新契约收敛为仅 header/body）。
+    let (headers, body) = match decision.result {
+        InferenceResult::Block => {
             let meta = ReqMeta {
                 container_id: &container_id,
                 domain: &domain,
                 method: &parts.method,
                 uri: &parts.uri,
+                target_ips: &None,
             };
             let entry = deny_entry(&ctx, &conn, &meta, Reason::InferenceRoute);
             return Ok(audit_deny(&entry, Reason::InferenceRoute));
         }
-        InferenceDecision::Forward => (parts.method, parts.uri, parts.headers, body),
-        InferenceDecision::ForwardModified(new_req) => {
-            (new_req.method, new_req.uri, new_req.headers, new_req.body)
+        // Forward：修改列表忽略（防御性——外部库应为空列表）。
+        InferenceResult::Forward => (parts.headers, body),
+        InferenceResult::Modified => {
+            apply_inference_modifications(parts.headers, body, &decision.modifications)
         }
     };
     let body_len = body.len();
-    let mut fwd_req = match build_buffered_request(method, uri, headers, body) {
+    let mut fwd_req = match build_buffered_request(parts.method, parts.uri, headers, body) {
         Ok(r) => r,
         // 程序不变量破坏（已解析类型 + Full body 理论不可失败）——防御性 502。
         Err(_) => return Ok(box_body(block_response(Reason::TargetTlsError))),
@@ -558,7 +618,55 @@ async fn handle_inference(
 
     // 4. 统一转发路径（目标连接 + 转发 + 审计 allow + 真实 status +
     //    流式回传；reason=inference_route）。
-    forward_request(fwd_req, ctx, conn, domain, container_id, Reason::InferenceRoute).await
+    forward_request(fwd_req, ctx, conn, domain, container_id, Reason::InferenceRoute, false, None, None).await
+}
+
+/// 应用外部库修改列表（仅 result=Modified 路径调用）。
+///
+/// 语义（2026-09-05 契约）：
+/// - **Header + Add(1)**：key 已存在 → **跳过**（只加新头）；
+/// - **Header + Modify(2)**：key 不存在 → **补写**（upsert）；存在 → 替换；
+/// - **Header 非法项**（头名/头值构造失败，如值含 `\n`）：防御性跳过
+///   + warn 日志（单条失败不阻断整体——其余条目继续应用）；
+/// - **Body（任意 action）**：**整体替换**（key 忽略；多条按列表序覆盖，
+///   最后一条生效）。
+fn apply_inference_modifications(
+    mut headers: http::HeaderMap,
+    mut body: bytes::Bytes,
+    modifications: &[InferenceModification],
+) -> (http::HeaderMap, bytes::Bytes) {
+    for m in modifications {
+        match m.target {
+            ModifyTarget::Header => {
+                let (Ok(name), Ok(value)) = (
+                    http::HeaderName::from_bytes(m.key.as_bytes()),
+                    http::HeaderValue::from_str(&m.value),
+                ) else {
+                    // 非法头名/头值（外部库产出缺陷）——跳过该条并告警
+                    //（不含 key/value 内容——日志安全）。
+                    crate::log_warn!("server", "inference route: invalid header modification skipped");
+                    continue;
+                };
+                match m.action {
+                    // Add：已存在跳过（只加新头）。
+                    ModifyAction::Add => {
+                        if !headers.contains_key(&name) {
+                            headers.insert(name, value);
+                        }
+                    }
+                    // Modify：upsert（不存在补写）。
+                    ModifyAction::Modify => {
+                        headers.insert(name, value);
+                    }
+                }
+            }
+            ModifyTarget::Body => {
+                // key 与 action 均忽略——整体替换，最后一条生效。
+                body = bytes::Bytes::from(m.value.clone());
+            }
+        }
+    }
+    (headers, body)
 }
 
 /// 缓冲请求重建（method/uri/headers/body → 统一出站 body 形态请求）。
@@ -594,6 +702,9 @@ fn normalize_buffered_request(req: &mut Request<ReqBody>, body_len: usize) {
 ///
 /// 请求体为统一出站形态 [`ReqBody`]（普通路径流式 Incoming 包装零缓冲；
 /// 推理路由路径缓冲 Full 装箱——库可能改写 body）。
+///
+/// `alert`：default_policy=alert 的放行——审计条目标记告警（type=1）。
+#[allow(clippy::too_many_arguments)] // 转发管道上下文（请求/连接/决策/维度产物传递）。
 async fn forward_request(
     req: Request<ReqBody>,
     ctx: Arc<ServeContext>,
@@ -601,13 +712,16 @@ async fn forward_request(
     domain: String,
     container_id: String,
     reason: Reason,
+    alert: bool,
+    host_port: Option<u16>,
+    target_ip_str: Option<String>,
 ) -> Result<Response<B>, std::convert::Infallible> {
     let timeout = ctx.connector.timeout();
     let (method, uri) = (req.method().clone(), req.uri().clone());
-    let meta = ReqMeta { container_id: &container_id, domain: &domain, method: &method, uri: &uri };
+    let meta = ReqMeta { container_id: &container_id, domain: &domain, method: &method, uri: &uri, target_ips: &target_ip_str };
 
     // 懒建目标连接（单一 deadline；K9 三类错误 → 502 + 审计 deny）。
-    let (sender, conn_handle) = match connect_target(&ctx, &conn, &domain, timeout).await {
+    let (sender, conn_handle) = match connect_target(&ctx, &conn, &domain, host_port, timeout).await {
         Ok(x) => x,
         Err(e) => {
             let entry = deny_entry(&ctx, &conn, &meta, e.reason());
@@ -629,7 +743,7 @@ async fn forward_request(
 
     // 审计（真实 status_code——Q6 修复；先于响应回传发起方：审计 Err
     // 时不回传，无未审计流量）。
-    if let Some(blocked) = audit_allow(&allow_entry(&ctx, &conn, &meta, reason, status.as_u16())) {
+    if let Some(blocked) = audit_allow(&allow_entry(&ctx, &conn, &meta, reason, status.as_u16(), alert)) {
         conn_handle.abort();
         return Ok(blocked);
     }
@@ -671,6 +785,7 @@ async fn connect_target(
     ctx: &ServeContext,
     conn: &ConnContext,
     domain: &str,
+    host_port: Option<u16>,
     timeout: Duration,
 ) -> Result<
     (
@@ -680,10 +795,12 @@ async fn connect_target(
     crate::forward::TargetConnectError,
 > {
     let stream = if conn.plaintext {
-        // 明文：纯 TCP 连接目标 :80（同协议透传；无 TLS 包装）。
+        // 明文：纯 TCP 连接目标（端口优先级：测试注入 override > Host
+        // 头显式端口 > 缺省 80——2026-09-09 端口维度语义完整化）。
+        let port = ctx.target_port_override.or(host_port).unwrap_or(80);
         let tcp = tokio::time::timeout(
             timeout,
-            tokio::net::TcpStream::connect((ctx.target_host(domain).as_ref(), ctx.target_port_plain())),
+            tokio::net::TcpStream::connect((ctx.target_host(domain).as_ref(), port)),
         )
         .await
         .map_err(|_| crate::forward::TargetConnectError::Timeout)?
@@ -826,6 +943,7 @@ impl ServeContext {
 ///    [`relay_with_idle_timeout`]（连接级空闲超时 + 半关闭传播）。
 ///
 /// Upgrade 求值已在 handle_request 上游完成（基于初始请求元数据，4.3.2）。
+#[allow(clippy::too_many_arguments)] // 升级管道上下文（同 forward_request）。
 async fn handle_upgrade(
     req: Request<Incoming>,
     ctx: Arc<ServeContext>,
@@ -833,6 +951,9 @@ async fn handle_upgrade(
     domain: String,
     container_id: String,
     reason: Reason,
+    alert: bool,
+    host_port: Option<u16>,
+    target_ip_str: Option<String>,
 ) -> Result<Response<B>, std::convert::Infallible> {
     let timeout = ctx.connector.timeout();
     // 元数据先行提取（on_upgrade 消耗原始请求——升级 receiver 在其
@@ -845,10 +966,10 @@ async fn handle_upgrade(
         .map(|(n, v)| (n.clone(), v.clone()))
         .collect();
     let client_upgrade = hyper::upgrade::on(req);
-    let meta = ReqMeta { container_id: &container_id, domain: &domain, method: &method, uri: &uri };
+    let meta = ReqMeta { container_id: &container_id, domain: &domain, method: &method, uri: &uri, target_ips: &target_ip_str };
 
     // 1. 目标连接（协议分流：TLS→rustls 流；明文→纯 TCP；K9 → 502）。
-    let mut target = match connect_upgrade_target(&ctx, &conn, &domain, timeout).await {
+    let mut target = match connect_upgrade_target(&ctx, &conn, &domain, host_port, timeout).await {
         Ok(t) => t,
         Err(e) => {
             let entry = deny_entry(&ctx, &conn, &meta, e.reason());
@@ -867,7 +988,7 @@ async fn handle_upgrade(
     let status = parse_status_line(&resp_buf);
 
     // 4. 审计（升级连接 status；先于 101 回传发起方——fail-closed）。
-    if let Some(blocked) = audit_allow(&allow_entry(&ctx, &conn, &meta, reason, status)) {
+    if let Some(blocked) = audit_allow(&allow_entry(&ctx, &conn, &meta, reason, status, alert)) {
         return Ok(blocked);
     }
 
@@ -884,12 +1005,14 @@ async fn connect_upgrade_target(
     ctx: &ServeContext,
     conn: &ConnContext,
     domain: &str,
+    host_port: Option<u16>,
     timeout: Duration,
 ) -> Result<TargetStream, crate::forward::TargetConnectError> {
     if conn.plaintext {
+        let port = ctx.target_port_override.or(host_port).unwrap_or(80);
         let tcp = tokio::time::timeout(
             timeout,
-            tokio::net::TcpStream::connect((ctx.target_host(domain).as_ref(), ctx.target_port_plain())),
+            tokio::net::TcpStream::connect((ctx.target_host(domain).as_ref(), port)),
         )
         .await
         .map_err(|_| crate::forward::TargetConnectError::Timeout)?
@@ -1008,7 +1131,7 @@ fn spawn_upgrade_tunnel<T>(
     });
 }
 
-/// 审计条目组装（完整字段）。
+/// 审计条目组装（完整字段；entry_type 见 [`crate::model::AuditEntryType`]）。
 #[allow(clippy::too_many_arguments)]
 fn build_entry(
     scenario: &str,
@@ -1021,6 +1144,7 @@ fn build_entry(
     status_code: u16,
     source_ip: Option<&str>,
     target_ip: Option<&str>,
+    entry_type: crate::model::AuditEntryType,
 ) -> AuditLogEntry {
     AuditLogEntry {
         timestamp: crate::model::utc_now_iso8601(),
@@ -1034,21 +1158,25 @@ fn build_entry(
         reason,
         source_ip: source_ip.map(str::to_string),
         target_ip: target_ip.map(str::to_string),
+        entry_type,
     }
 }
 
 // ===== 审计与阻断样板辅助（deny/allow 分支的共性收敛；纯提取，行为不变）=====
 
-/// 请求元数据摘要（审计条目组装的 deny 路径入参形态）。
+/// 请求元数据摘要（审计条目组装的通用入参形态）。
 struct ReqMeta<'a> {
     container_id: &'a str,
-    /// 求值/审计域名（TLS=SNI；明文=Host 头——见 [`resolve_domain`]）。
+    /// 求值/审计域名（TLS=SNI；明文=Host 头——见 [`resolve_host`]）。
     domain: &'a str,
     method: &'a Method,
     uri: &'a Uri,
+    /// 目标 IP 审计串（解析集逗号连接；未解析 None——2026-09-09 起
+    /// 填充，此前恒 None）。
+    target_ips: &'a Option<String>,
 }
 
-/// deny 路径审计条目（status=0、source_ip=None、target_ip=None——
+/// deny 路径审计条目（status=0、source_ip=None、type=Audit——
 /// 求值拒绝/binary 缺失/目标连接失败的统一字段形态）。
 fn deny_entry(
     ctx: &ServeContext,
@@ -1067,18 +1195,23 @@ fn deny_entry(
         reason,
         0,
         None,
-        None,
+        meta.target_ips.as_deref(),
+        crate::model::AuditEntryType::Audit,
     )
 }
 
 /// allow 路径审计条目（source_ip=发起方对端 IP；status 为目标响应码——
 /// 普通转发为真实 status_code，Upgrade 为 101）。
+///
+/// `alert`：default_policy=alert 且黑白未命中的放行——条目标记告警
+///（type=1，2026-09-09）；其余常规审计（type=0）。
 fn allow_entry(
     ctx: &ServeContext,
     conn: &ConnContext,
     meta: &ReqMeta<'_>,
     reason: Reason,
     status: u16,
+    alert: bool,
 ) -> AuditLogEntry {
     build_entry(
         ctx.scenario,
@@ -1090,7 +1223,12 @@ fn allow_entry(
         reason,
         status,
         Some(&conn.peer.ip().to_string()),
-        None,
+        meta.target_ips.as_deref(),
+        if alert {
+            crate::model::AuditEntryType::Alert
+        } else {
+            crate::model::AuditEntryType::Audit
+        },
     )
 }
 
@@ -1137,18 +1275,22 @@ fn config_missing_response(
         0,
         Some(&conn.peer.ip().to_string()),
         None,
+        AuditEntryType::Audit,
     );
     audit_deny(&entry, Reason::ConfigNotFound)
 }
 
 /// 求值/审计域名解析（每请求一次——明文路径 Host 可变，不缓存于连接级）。
 ///
-/// TLS：连接级 SNI（握手期捕获）；明文：请求级 Host 头（剥端口；
-/// `[::1]:80` IPv6 形态剥端口保留裸地址）。缺失/空 → None（调用方按
-/// config_not_found 语义 503 拒绝——2026-09-01 决策 2，与无 SNI 对齐）。
-fn resolve_domain<T>(conn: &ConnContext, req: &Request<T>) -> Option<String> {
+/// 返回 `(域名, Host 头端口)`：TLS = (SNI, None)——SNI 协议不带端口；
+/// 明文 = (Host 域名, 显式端口)——Host 头可带端口（如
+/// `api.example.com:8443`），端口提取为求值目标端口维度输入与明文
+/// 转发端口依据（2026-09-09；缺省端口由调用方补 80）。
+/// 域名缺失/空 → None（调用方按 config_not_found 语义 503 拒绝——
+/// 2026-09-01 决策 2，与无 SNI 对齐）。
+fn resolve_host<T>(conn: &ConnContext, req: &Request<T>) -> Option<(String, Option<u16>)> {
     if let Some(sni) = &conn.sni {
-        return Some(sni.clone());
+        return Some((sni.clone(), None));
     }
     let host = req
         .headers()
@@ -1158,14 +1300,73 @@ fn resolve_domain<T>(conn: &ConnContext, req: &Request<T>) -> Option<String> {
     if host.is_empty() {
         return None;
     }
-    // 剥端口：IPv6 [::1]:80 形态保留括号内地址；域名/IPv4 host:port 剥后缀。
+    // 剥端口：IPv6 [::1]:80 形态保留括号内地址；域名/IPv4 host:port 剥
+    // 后缀（端口非数字时不视为端口——域名含非数字冒号仅 IPv6 形态）。
     if host.starts_with('[') {
-        host.split(']')
-            .next()
-            .map(|bare| format!("{bare}]"))
+        // [::1]:8080 → ([::1], 8080)；[::1] → ([::1], None)。
+        let (bare, port) = match host.split_once(']') {
+            Some((bare, rest)) => {
+                let port = rest.strip_prefix(':').and_then(|p| p.parse().ok());
+                (format!("{bare}]"), port)
+            }
+            None => (host.to_string(), None),
+        };
+        Some((bare, port))
     } else {
-        host.rsplit_once(':').map(|(h, _)| h.to_string()).or(Some(host.to_string()))
+        match host.rsplit_once(':') {
+            Some((h, p)) => match p.parse::<u16>() {
+                Ok(port) => Some((h.to_string(), Some(port))),
+                // 端口段非数字（如裸 IPv6 无括号——畸形 Host）：整串为
+                // 域名处理。
+                Err(_) => Some((host.to_string(), None)),
+            },
+            None => Some((host.to_string(), None)),
+        }
     }
+}
+
+/// DNS 预解析（2026-09-09：目标 IP 维度条件性激活）。
+///
+/// 仅当配置含 IP 条件（[`FilterConfig::has_ip_condition`]）时调用——
+/// 无 IP 条件的配置零解析开销。带域名→IP 集缓存（容量 1024，满时整体
+/// 清空——容器内域名变更低频，避免 LRU 复杂度）；deadline 约束。
+/// 失败（超时/无记录/空结果）→ None → 调用方 fail-closed
+///（`Reason::DnsResolveError`）。
+async fn resolve_target_ips(domain: &str, timeout: Duration) -> Option<Arc<Vec<std::net::IpAddr>>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Arc<Vec<std::net::IpAddr>>>>,
+    > = std::sync::OnceLock::new();
+    const CACHE_CAP: usize = 1024;
+
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let cached = {
+        let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+        guard.get(domain).cloned()
+    };
+    if let Some(hit) = cached {
+        return Some(hit);
+    }
+    // 解析（deadline 约束；lookup_host 需要端口形式——用 0 端口仅取 IP）。
+    let lookup = tokio::time::timeout(
+        timeout,
+        tokio::net::lookup_host((domain, 0)),
+    )
+    .await
+    .ok()?;
+    let ips: Vec<std::net::IpAddr> = lookup
+        .ok()?
+        .map(|addr| addr.ip())
+        .collect();
+    if ips.is_empty() {
+        return None;
+    }
+    let ips = Arc::new(ips);
+    let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.len() >= CACHE_CAP {
+        guard.clear(); // 容量上限整体清空（简单策略）。
+    }
+    guard.insert(domain.to_string(), ips.clone());
+    Some(ips)
 }
 
 // ===== 响应构建辅助 =====
@@ -1291,6 +1492,81 @@ mod tests {
         );
     }
 
+    // 修改列表应用语义（2026-09-05 契约）：header add 跳过/modify 补写、
+    // 非法头跳过、body 整体替换最后一条生效。
+    //（串行锁：非法条目分支发出全局日志——与 logging 计数测试互斥。）
+    #[test]
+    fn inference_modifications_application() {
+        let _serial = crate::logging::testing::serial_guard();
+
+        let header_mod = |action: ModifyAction, key: &str, value: &str| InferenceModification {
+            action,
+            target: ModifyTarget::Header,
+            key: key.to_string(),
+            value: value.to_string(),
+        };
+        let body_mod = |value: &str| InferenceModification {
+            action: ModifyAction::Modify, // action 对 body 无区分。
+            target: ModifyTarget::Body,
+            key: String::new(),
+            value: value.to_string(),
+        };
+
+        // 基础 headers：x-test 已存在。
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-test", http::HeaderValue::from_static("orig"));
+        let body = bytes::Bytes::from_static(b"orig-body");
+
+        // Add 已存在 → 跳过；Add 新头 → 写入。
+        let (h, _) = apply_inference_modifications(
+            headers.clone(),
+            body.clone(),
+            &[
+                header_mod(ModifyAction::Add, "x-test", "must-skip"),
+                header_mod(ModifyAction::Add, "x-trace", "t1"),
+            ],
+        );
+        assert_eq!(h.get("x-test").unwrap(), "orig");
+        assert_eq!(h.get("x-trace").unwrap(), "t1");
+
+        // Modify 不存在 → 补写；存在 → 替换。
+        let (h, _) = apply_inference_modifications(
+            headers.clone(),
+            body.clone(),
+            &[
+                header_mod(ModifyAction::Modify, "x-test", "replaced"),
+                header_mod(ModifyAction::Modify, "x-new", "upserted"),
+            ],
+        );
+        assert_eq!(h.get("x-test").unwrap(), "replaced");
+        assert_eq!(h.get("x-new").unwrap(), "upserted");
+
+        // 非法头值（含 \n）→ 跳过该条，其余条目继续应用。
+        let (h, _) = apply_inference_modifications(
+            headers.clone(),
+            body.clone(),
+            &[
+                header_mod(ModifyAction::Add, "x-bad", "bad\nvalue"),
+                header_mod(ModifyAction::Add, "x-good", "ok"),
+            ],
+        );
+        assert!(h.get("x-bad").is_none());
+        assert_eq!(h.get("x-good").unwrap(), "ok");
+
+        // Body 整体替换：多条按序覆盖，最后一条生效；key 忽略。
+        let (_, b) = apply_inference_modifications(
+            headers.clone(),
+            body.clone(),
+            &[body_mod("first"), body_mod("second")],
+        );
+        assert_eq!(b, bytes::Bytes::from_static(b"second"));
+
+        // 空修改列表：headers/body 原样。
+        let (h, b) = apply_inference_modifications(headers, body.clone(), &[]);
+        assert_eq!(h.get("x-test").unwrap(), "orig");
+        assert_eq!(b, body);
+    }
+
     // 嗅探判定：0x16→Tls；HTTP 方法首字符→Http；其他→None。
     #[tokio::test]
     async fn sniff_classifies_protocols() {
@@ -1330,9 +1606,55 @@ mod tests {
         assert_eq!(got, None);
     }
 
-    // Host 解析：纯域名/带端口/IPv6 带端口/缺失/空值。
+    // 审计条目类型组装：alert 标记 → type=Alert(1)；常规 allow/deny →
+    // Audit(0)（2026-09-09 default_policy=alert 场景）。
     #[test]
-    fn resolve_domain_from_host_header() {
+    fn audit_entry_type_assembly() {
+        let registry = Arc::new(Registry::new());
+        let cert_services = Arc::new(crate::cert::ContainerCertServices::new());
+        let connector = Arc::new(TargetConnector::new(
+            Arc::new(rustls::RootCertStore::empty()),
+            Duration::from_secs(30),
+        ));
+        let ctx = ServeContext::new(registry, cert_services, connector);
+        let conn = ConnContext {
+            container_id: "c-test".to_string(),
+            binary_path: None,
+            sni: Some("a.com".to_string()),
+            plaintext: false,
+            peer: "127.0.0.1:9000".parse().unwrap(),
+        };
+        let method = Method::GET;
+        let uri: Uri = "/x".parse().unwrap();
+        let meta = ReqMeta {
+            container_id: "c-test",
+            domain: "a.com",
+            method: &method,
+            uri: &uri,
+            target_ips: &None,
+        };
+
+        // alert 标记 → type=Alert + action=allow。
+        let entry = allow_entry(&ctx, &conn, &meta, Reason::DefaultPolicy, 200, true);
+        assert_eq!(entry.entry_type, AuditEntryType::Alert);
+        assert_eq!(entry.action, Action::Allow);
+        assert_eq!(entry.reason, Reason::DefaultPolicy);
+        assert_eq!(entry.status_code, 200);
+
+        // 常规 allow → type=Audit。
+        let entry = allow_entry(&ctx, &conn, &meta, Reason::WhitelistMatch, 200, false);
+        assert_eq!(entry.entry_type, AuditEntryType::Audit);
+
+        // deny 路径恒 Audit。
+        let entry = deny_entry(&ctx, &conn, &meta, Reason::BlacklistMatch);
+        assert_eq!(entry.entry_type, AuditEntryType::Audit);
+        assert_eq!(entry.action, Action::Deny);
+    }
+
+    // Host 解析：纯域名/带端口/IPv6 带端口/缺失/空值（域名 + 端口——
+    // 2026-09-09 端口保留）。
+    #[test]
+    fn resolve_host_from_host_header() {
         let conn_tls = |sni: &str| ConnContext {
             container_id: "c-test".to_string(),
             binary_path: None,
@@ -1348,38 +1670,59 @@ mod tests {
             peer: "127.0.0.1:9000".parse().unwrap(),
         };
 
-        // TLS：SNI 优先（Host 头不参与）。
+        // TLS：SNI 优先（Host 头不参与；端口 None——SNI 协议不带端口）。
         let req = http::Request::builder()
             .header("host", "other.com:8080")
             .body(()).unwrap();
-        assert_eq!(resolve_domain(&conn_tls("sni.com"), &req), Some("sni.com".to_string()));
+        assert_eq!(
+            resolve_host(&conn_tls("sni.com"), &req),
+            Some(("sni.com".to_string(), None))
+        );
 
-        // 明文：Host 剥端口。
+        // 明文：Host 带端口（域名 + 端口提取——端口维度输入）。
         let req = http::Request::builder()
             .header("host", "api.example.com:8080")
             .body(()).unwrap();
-        assert_eq!(resolve_domain(&conn_plain(), &req), Some("api.example.com".to_string()));
+        assert_eq!(
+            resolve_host(&conn_plain(), &req),
+            Some(("api.example.com".to_string(), Some(8080)))
+        );
 
-        // 明文：纯域名（无端口）。
+        // 明文：纯域名（无端口 → None）。
         let req = http::Request::builder()
             .header("host", "api.example.com")
             .body(()).unwrap();
-        assert_eq!(resolve_domain(&conn_plain(), &req), Some("api.example.com".to_string()));
+        assert_eq!(
+            resolve_host(&conn_plain(), &req),
+            Some(("api.example.com".to_string(), None))
+        );
 
-        // 明文：IPv6 [::1]:80 形态剥端口保留地址。
+        // 明文：IPv6 [::1]:8080 形态（保留地址 + 端口）。
         let req = http::Request::builder()
             .header("host", "[::1]:8080")
             .body(()).unwrap();
-        assert_eq!(resolve_domain(&conn_plain(), &req), Some("[::1]".to_string()));
+        assert_eq!(
+            resolve_host(&conn_plain(), &req),
+            Some(("[::1]".to_string(), Some(8080)))
+        );
+
+        // 明文：IPv6 裸地址（无端口）。
+        let req = http::Request::builder()
+            .header("host", "[::1]")
+            .body(()).unwrap();
+        assert_eq!(
+            resolve_host(&conn_plain(), &req),
+            Some(("[::1]".to_string(), None))
+        );
 
         // 明文：Host 缺失 → None（503 路径，决策 2）。
         let req = http::Request::builder().body(()).unwrap();
-        assert_eq!(resolve_domain(&conn_plain(), &req), None);
+        assert_eq!(resolve_host(&conn_plain(), &req), None);
 
         // 明文：Host 空值 → None。
         let req = http::Request::builder()
             .header("host", "  ")
             .body(()).unwrap();
-        assert_eq!(resolve_domain(&conn_plain(), &req), None);
+        assert_eq!(resolve_host(&conn_plain(), &req), None);
     }
 }

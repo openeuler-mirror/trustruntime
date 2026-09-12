@@ -352,6 +352,15 @@ fn validate_entry(entry: &RuleEntry) -> Result<(), ConfigError> {
     {
         return Err(ConfigError::Format);
     }
+    // 目标 IP / 端口维度语法校验（2026-09-09；仅声明时校验）。
+    if entry.target_ip.as_deref().is_some_and(|p| !is_valid_ip_pattern(p))
+        || entry
+            .target_port
+            .as_deref()
+            .is_some_and(|p| !is_valid_port_pattern(p))
+    {
+        return Err(ConfigError::Format);
+    }
     if entry.binary.as_deref().is_some_and(str::is_empty) {
         return Err(ConfigError::Format);
     }
@@ -363,6 +372,46 @@ fn validate_entry(entry: &RuleEntry) -> Result<(), ConfigError> {
 /// 统一规则；多星语义应拆分为多条目表达，配置面拒绝防歧义）。
 fn is_valid_glob_pattern(pattern: &str) -> bool {
     !pattern.is_empty() && pattern.matches('*').count() <= 1
+}
+
+/// 目标 IP 模式合法性（K10，2026-09-09）：精确 IP（IPv4/IPv6）或
+/// CIDR（`a.b.c.d/n` / `x::y/n`，前缀 ≤ 族上限）；`*` 显式通配合法。
+fn is_valid_ip_pattern(pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    let (addr_str, prefix_str) = match pattern.split_once('/') {
+        Some((a, p)) => (a, Some(p)),
+        None => (pattern, None),
+    };
+    let Ok(ip) = addr_str.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    match prefix_str {
+        None => true, // 精确 IP（/32 或 /128）。
+        Some(p) => match p.parse::<u8>() {
+            Ok(prefix) => match ip {
+                std::net::IpAddr::V4(_) => prefix <= 32,
+                std::net::IpAddr::V6(_) => prefix <= 128,
+            },
+            Err(_) => false,
+        },
+    }
+}
+
+/// 目标端口模式合法性（K10，2026-09-09）：精确（`8443`）或范围
+///（`8000-9000`，含两端且不倒置）；`*` 显式通配合法。
+fn is_valid_port_pattern(pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    match pattern.split_once('-') {
+        Some((lo, hi)) => match (lo.parse::<u16>(), hi.parse::<u16>()) {
+            (Ok(lo), Ok(hi)) => lo <= hi,
+            _ => false,
+        },
+        None => pattern.parse::<u16>().is_ok(),
+    }
 }
 
 /// 加载系统信任锚（platform certs；失败时返回错误由调用方告警）。
@@ -473,6 +522,33 @@ pub mod testing {
 mod tests {
     use super::*;
 
+    // K10 目标 IP/端口模式判定（2026-09-09）。
+    #[test]
+    fn ip_port_pattern_validity() {
+        // IP：精确 / CIDR / 通配。
+        assert!(is_valid_ip_pattern("1.2.3.4"));
+        assert!(is_valid_ip_pattern("10.0.0.0/8"));
+        assert!(is_valid_ip_pattern("2001:db8::/32"));
+        assert!(is_valid_ip_pattern("::1/128"));
+        assert!(is_valid_ip_pattern("*"));
+        // 非法：非 IP / 前缀越界 / 前缀非数字。
+        assert!(!is_valid_ip_pattern("not-an-ip"));
+        assert!(!is_valid_ip_pattern("10.0.0.0/33"));
+        assert!(!is_valid_ip_pattern("2001:db8::/129"));
+        assert!(!is_valid_ip_pattern("10.0.0.0/abc"));
+        assert!(!is_valid_ip_pattern(""));
+
+        // 端口：精确 / 范围 / 通配。
+        assert!(is_valid_port_pattern("8443"));
+        assert!(is_valid_port_pattern("8000-9000"));
+        assert!(is_valid_port_pattern("*"));
+        // 非法：非数字 / 越界 / 倒置。
+        assert!(!is_valid_port_pattern("abc"));
+        assert!(!is_valid_port_pattern("65536"));
+        assert!(!is_valid_port_pattern("9000-8000"));
+        assert!(!is_valid_port_pattern(""));
+    }
+
     // K10 通配模式判定（三维统一：非空 + 星号数 ≤ 1）。
     #[test]
     fn glob_pattern_validity() {
@@ -501,6 +577,8 @@ mod tests {
             method: "GET".to_string(),
             uri: Some("/one/box/*/v1".to_string()),
             binary: Some("python3".to_string()),
+            target_ip: None,
+            target_port: None,
         };
         assert!(validate_entry(&ok).is_ok());
 
@@ -509,6 +587,8 @@ mod tests {
             method: "GET".to_string(),
             uri: None,
             binary: None,
+            target_ip: None,
+            target_port: None,
         };
         assert_eq!(validate_entry(&bad_domain), Err(ConfigError::Format));
 
@@ -518,6 +598,8 @@ mod tests {
             method: "GET".to_string(),
             uri: None,
             binary: None,
+            target_ip: None,
+            target_port: None,
         };
         assert_eq!(validate_entry(&multi_star_domain), Err(ConfigError::Format));
 
@@ -526,6 +608,8 @@ mod tests {
             method: "G*T*".to_string(),
             uri: None,
             binary: None,
+            target_ip: None,
+            target_port: None,
         };
         assert_eq!(validate_entry(&multi_star_method), Err(ConfigError::Format));
 
@@ -534,6 +618,8 @@ mod tests {
             method: "GET".to_string(),
             uri: Some("/a/*/b/*".to_string()),
             binary: None,
+            target_ip: None,
+            target_port: None,
         };
         assert_eq!(validate_entry(&multi_star_uri), Err(ConfigError::Format));
 
@@ -542,6 +628,8 @@ mod tests {
             method: "GET".to_string(),
             uri: Some("*v1*".to_string()),
             binary: None,
+            target_ip: None,
+            target_port: None,
         };
         assert_eq!(validate_entry(&bad_uri), Err(ConfigError::Format));
 
@@ -550,6 +638,8 @@ mod tests {
             method: "GET".to_string(),
             uri: None,
             binary: Some(String::new()),
+            target_ip: None,
+            target_port: None,
         };
         assert_eq!(validate_entry(&bad_binary), Err(ConfigError::Format));
 
@@ -559,6 +649,8 @@ mod tests {
             method: "*".to_string(),
             uri: Some("*".to_string()),
             binary: None,
+            target_ip: None,
+            target_port: None,
         };
         assert!(validate_entry(&bare_star_ok).is_ok());
     }

@@ -67,10 +67,10 @@ fn to_proxy_fc(parsed: &agentsandbox_config::FilterConfig) -> FilterConfig {
             .collect()
     };
     FilterConfig {
-        default_policy: if parsed.default_policy == "allow" {
-            Policy::Allow
-        } else {
-            Policy::Deny
+        default_policy: match parsed.default_policy.as_str() {
+            "allow" => Policy::Allow,
+            "alert" => Policy::Alert,
+            _ => Policy::Deny,
         },
         whitelist: conv(&parsed.whitelist),
         blacklist: conv(&parsed.blacklist),
@@ -128,4 +128,34 @@ fn test_filter_engine_default_policy_deny() {
     let (action, reason) = evaluate("c-001", "neutral.example.org", "GET", "/", None, &fc);
     assert_eq!(action, Action::Deny);
     assert_eq!(reason, Reason::DefaultPolicy);
+}
+
+#[test]
+fn test_parse_proxy_policy_alert_and_invalid() {
+    // default_policy=alert 解析通过（2026-09-09）。
+    let alert_toml = r#"
+[proxy]
+default_policy = "alert"
+policy_change_strategy = "drain"
+whitelist = []
+blacklist = []
+"#;
+    let fc = parse_proxy_policy(alert_toml).unwrap();
+    assert_eq!(fc.default_policy, "alert");
+
+    // alert 求值语义：黑白未命中 → 放行（告警标记由 proxy 审计层承载）。
+    let proxy_fc = to_proxy_fc(&fc);
+    let (action, reason) = evaluate("c-001", "neutral.example.org", "GET", "/", None, &proxy_fc);
+    assert_eq!(action, Action::Allow);
+    assert_eq!(reason, Reason::DefaultPolicy);
+
+    // 非法值拒绝。
+    let bad_toml = r#"
+[proxy]
+default_policy = "warn"
+policy_change_strategy = "drain"
+whitelist = []
+blacklist = []
+"#;
+    assert!(parse_proxy_policy(bad_toml).is_err());
 }

@@ -37,6 +37,8 @@ fn fc(whitelist_domain: &str) -> FilterConfig {
             method: "*".to_string(),
             uri: None,
             binary: None,
+            target_ip: None,
+            target_port: None,
         }],
         blacklist: vec![],
     }

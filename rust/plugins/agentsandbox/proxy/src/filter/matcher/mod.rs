@@ -12,7 +12,8 @@
 
 //! 四维匹配器与维度抽象（过滤引擎 T1，说明书 4.2.2 / D1/D2）。
 //!
-//! 维度语义权威（4.2.2 匹配规则表 + 2026-09-05 三维统一通配决策）：
+//! 维度语义权威（4.2.2 匹配规则表 + 2026-09-05 三维统一通配决策 +
+//! 2026-09-09 目标 IP/端口维度）：
 //! - **单星 glob 通配（domain/method/uri 三维统一）**：至多一个 `*`、
 //!   任意位置；`*` 匹配**任意字符序列**（含 `/`、含空串——`/one/box/*/v1`
 //!   命中 `/one/box/a/b/v1`）；裸 `*` 全匹配；无星精确。`?`/`[`/`]`/
@@ -27,12 +28,17 @@
 //! - method：精确与通配均大小写敏感（HTTP 方法按 RFC 9110）；
 //! - uri：**匹配对象为路径部分，不含 query string**（自首个 `?` 截断）；
 //! - binary：精确全等；`*`/未声明全匹配；**场景一（无 binary_path 入参）
-//!   该维度条件视为匹配通过（D2：忽略=条件永真，非跳过条目）**。
+//!   该维度条件视为匹配通过（D2：忽略=条件永真，非跳过条目）**；
+//! - **target_ip（2026-09-09）**：CIDR 网段或精确 IP（IPv4/IPv6）；
+//!   求值输入 = 请求域名经 DNS 预解析的全部 IP——**任一命中即命中**
+//!   （deny 保守：CDN 多 IP 任一在黑名单则拒）；未声明全匹配；
+//! - **target_port（2026-09-09）**：精确或范围（含两端）；求值输入：
+//!   明文 = Host 头端口（无则 80）、TLS = 443；未声明全匹配。
 //!
 //! 条件 `None`（维度未声明，等同 "*"）全匹配；条目命中 = 全部已声明维度
-//! 匹配通过（AND 短路由 T2 求值遍历按固定维度序 domain→method→uri→binary
-//! 执行，D3）。新维度（header 等）经新增 [`DimensionMatcher`] 实现扩展，
-//! 不改求值遍历（D1）。
+//! 匹配通过（AND 短路由 T2 求值遍历按固定维度序
+//! domain→method→uri→binary→target_ip→target_port 执行，D3）。新维度
+//! （header 等）经新增 [`DimensionMatcher`] 实现扩展，不改求值遍历（D1）。
 
 mod glob;
 
@@ -49,6 +55,12 @@ pub struct RequestMeta<'a> {
     pub url_path: &'a str,
     /// binary 二进制路径（resolver 连接级解析 Some / 未解析 None）。
     pub binary_path: Option<&'a str>,
+    /// 目标 IP 集（请求域名经 DNS 预解析的全部 IP；空切片 = 未解析
+    /// ——含 IP 条目的未解析拒绝在服务管道前置收敛为
+    /// dns_resolve_error，不进入匹配）。
+    pub target_ips: &'a [std::net::IpAddr],
+    /// 目标端口（明文 = Host 头端口缺省 80；TLS = 443）。
+    pub target_port: u16,
 }
 
 /// 维度匹配器抽象（D1：输入请求元组 + 条目维度条件 → bool）。
@@ -176,6 +188,127 @@ impl DimensionMatcher for BinaryMatcher {
     }
 }
 
+/// 目标 IP 维度匹配器（2026-09-09）：CIDR 网段或精确 IP（IPv4/IPv6）。
+///
+/// 求值输入 = 请求域名经 DNS 预解析的全部 IP——**任一命中即命中**
+///（deny 保守：CDN 多 IP 场景任一 IP 在黑名单则拒）。语法合法性由
+/// K10 校验器注入口保证（非法 CIDR 不会进入匹配——此处防御性不命中）。
+pub struct IpMatcher;
+
+impl DimensionMatcher for IpMatcher {
+    fn matches(&self, req: &RequestMeta<'_>, cond: Option<&str>) -> bool {
+        let Some(pattern) = cond else {
+            return true; // 未声明维度等同 "*"。
+        };
+        if pattern == "*" {
+            return true; // 显式通配。
+        }
+        let Some(network) = parse_cidr(pattern) else {
+            return false; // 防御性：非法 CIDR（K10 已拒——不可达路径）。
+        };
+        // 任一解析 IP 落入网段即命中。
+        req.target_ips
+            .iter()
+            .any(|ip| ip_in_network(ip, &network))
+    }
+}
+
+/// CIDR 网络（解析形态：地址位 + 前缀长度——族无关统一表示）。
+///
+/// IPv4 地址在 u128 中**左移 96 位**（占据高 32 位）——前缀语义统一为
+/// 「自 MSB 起 n 位」，掩码计算与 IPv6 共用同一表达式；族标志保证
+/// IPv4/IPv6 不互通。
+struct CidrNetwork {
+    addr: u128,
+    prefix: u8,
+    /// 地址族（V4/V6 不互通：IPv4 地址不命中 IPv6 网段，反之亦然）。
+    is_v6: bool,
+}
+
+/// 解析 CIDR 或精确 IP（`a.b.c.d[/n]` / `x::y[/n]`；无前缀 = /32 或
+/// /128 精确；非法返回 None）。
+fn parse_cidr(pattern: &str) -> Option<CidrNetwork> {
+    let (addr_str, prefix_str) = match pattern.split_once('/') {
+        Some((a, p)) => (a, Some(p)),
+        None => (pattern, None),
+    };
+    let ip: std::net::IpAddr = addr_str.parse().ok()?;
+    let (addr, is_v6, default_prefix) = match ip {
+        std::net::IpAddr::V4(v4) => (u128::from(u32::from(v4)) << 96, false, 32u8),
+        std::net::IpAddr::V6(v6) => (u128::from(v6), true, 128u8),
+    };
+    let max_prefix = if is_v6 { 128 } else { 32 };
+    let prefix = match prefix_str {
+        Some(p) => {
+            let p: u8 = p.parse().ok()?;
+            if p > max_prefix {
+                return None;
+            }
+            p
+        }
+        None => default_prefix,
+    };
+    Some(CidrNetwork { addr, prefix, is_v6 })
+}
+
+/// IP 是否落入 CIDR 网段（同族前缀比较；跨族不命中）。
+fn ip_in_network(ip: &std::net::IpAddr, network: &CidrNetwork) -> bool {
+    let (addr, is_v6) = match ip {
+        std::net::IpAddr::V4(v4) => (u128::from(u32::from(*v4)) << 96, false),
+        std::net::IpAddr::V6(v6) => (u128::from(*v6), true),
+    };
+    if is_v6 != network.is_v6 {
+        return false; // 地址族不互通。
+    }
+    // 前缀全 1 掩码（自 MSB 起 n 位；prefix=0 → 0 全匹配同族）。
+    let mask: u128 = if network.prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - network.prefix)
+    };
+    (addr & mask) == (network.addr & mask)
+}
+
+/// 目标端口维度匹配器（2026-09-09）：精确（`8443`）或范围
+///（`8000-9000`，含两端）。语法合法性由 K10 校验器注入口保证
+///（非法模式不会进入匹配——此处防御性不命中）。
+pub struct PortMatcher;
+
+impl DimensionMatcher for PortMatcher {
+    fn matches(&self, req: &RequestMeta<'_>, cond: Option<&str>) -> bool {
+        let Some(pattern) = cond else {
+            return true; // 未声明维度等同 "*"。
+        };
+        if pattern == "*" {
+            return true; // 显式通配。
+        }
+        match parse_port_pattern(pattern) {
+            Some((lo, hi)) => req.target_port >= lo && req.target_port <= hi,
+            // 防御性：非法模式（K10 已拒——不可达路径）。
+            None => false,
+        }
+    }
+}
+
+/// 解析端口模式：精确 `8443` → (8443, 8443)；范围 `8000-9000` →
+/// (8000, 9000)（含两端；序倒置非法）。
+fn parse_port_pattern(pattern: &str) -> Option<(u16, u16)> {
+    match pattern.split_once('-') {
+        Some((lo, hi)) => {
+            let lo: u16 = lo.parse().ok()?;
+            let hi: u16 = hi.parse().ok()?;
+            if lo > hi {
+                return None; // 范围倒置非法。
+            }
+            Some((lo, hi))
+        }
+        None => {
+            let p: u16 = pattern.parse().ok()?;
+            Some((p, p))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,7 +324,25 @@ mod tests {
             method,
             url_path,
             binary_path: binary,
+            target_ips: &[],
+            target_port: 443,
         }
+    }
+
+    /// 指定目标 IP 集/端口的请求元数据（IP/端口维度测试辅助）。
+    fn req_net<'a>(ips: &'a [std::net::IpAddr], port: u16) -> RequestMeta<'a> {
+        RequestMeta {
+            domain: "a.com",
+            method: "GET",
+            url_path: "/",
+            binary_path: None,
+            target_ips: ips,
+            target_port: port,
+        }
+    }
+
+    fn ip(s: &str) -> std::net::IpAddr {
+        s.parse().unwrap()
     }
 
     // TC3：domain 通配边界（`*.example.com` 匹配子域、不匹配裸域）+
@@ -365,4 +516,59 @@ mod tests {
         assert!(m.matches(&req("a.com", "GET", "/", Some("curl")), None));
     }
 
+    // 目标 IP 维度（2026-09-09）：CIDR/精确、任一命中、族不互通、
+    // 未声明全匹配、非法模式防御性不命中。
+    #[test]
+    fn ip_matcher_cidr_semantics() {
+        let m = IpMatcher;
+        // CIDR 网段命中（网段内/边界/网段外）。
+        let ips = [ip("10.1.2.3"), ip("10.255.0.1")];
+        assert!(m.matches(&req_net(&ips, 443), Some("10.0.0.0/8")));
+        assert!(m.matches(&req_net(&ips, 443), Some("10.1.0.0/16")));
+        assert!(!m.matches(&req_net(&ips, 443), Some("10.1.255.0/24")));
+        // 精确 IP（无前缀 = /32）。
+        assert!(m.matches(&req_net(&ips, 443), Some("10.1.2.3")));
+        assert!(!m.matches(&req_net(&ips, 443), Some("10.1.2.4")));
+        // 任一命中（CDN 多 IP 场景）。
+        let multi = [ip("1.1.1.1"), ip("203.0.113.7")];
+        assert!(m.matches(&req_net(&multi, 443), Some("203.0.113.0/24")));
+        // IPv6 与族不互通。
+        let v6 = [ip("2001:db8::1")];
+        assert!(m.matches(&req_net(&v6, 443), Some("2001:db8::/32")));
+        assert!(m.matches(&req_net(&v6, 443), Some("2001:db8::1"))); // /128
+        assert!(!m.matches(&req_net(&v6, 443), Some("10.0.0.0/8"))); // v6 不入 v4 网段
+        let v4 = [ip("10.0.0.1")];
+        assert!(!m.matches(&req_net(&v4, 443), Some("2001:db8::/32"))); // v4 不入 v6 网段
+        // /0 全匹配（同族）。
+        assert!(m.matches(&req_net(&v4, 443), Some("0.0.0.0/0")));
+        // 未声明/显式通配：全匹配。
+        assert!(m.matches(&req_net(&ips, 443), None));
+        assert!(m.matches(&req_net(&ips, 443), Some("*")));
+        // 非法模式防御性不命中（K10 注入口已拒——不可达路径）。
+        assert!(!m.matches(&req_net(&ips, 443), Some("10.0.0.0/33")));
+        assert!(!m.matches(&req_net(&ips, 443), Some("not-an-ip")));
+    }
+
+    // 目标端口维度（2026-09-09）：精确/范围含端点/未声明全匹配/
+    // 非法模式防御性不命中。
+    #[test]
+    fn port_matcher_semantics() {
+        let m = PortMatcher;
+        // 精确。
+        assert!(m.matches(&req_net(&[], 8443), Some("8443")));
+        assert!(!m.matches(&req_net(&[], 8443), Some("443")));
+        // 范围（含两端）。
+        assert!(m.matches(&req_net(&[], 8000), Some("8000-9000")));
+        assert!(m.matches(&req_net(&[], 9000), Some("8000-9000")));
+        assert!(m.matches(&req_net(&[], 8443), Some("8000-9000")));
+        assert!(!m.matches(&req_net(&[], 7999), Some("8000-9000")));
+        assert!(!m.matches(&req_net(&[], 9001), Some("8000-9000")));
+        // 未声明/显式通配：全匹配。
+        assert!(m.matches(&req_net(&[], 1), None));
+        assert!(m.matches(&req_net(&[], 65535), Some("*")));
+        // 非法模式防御性不命中。
+        assert!(!m.matches(&req_net(&[], 8443), Some("abc")));
+        assert!(!m.matches(&req_net(&[], 8443), Some("9000-8000"))); // 倒置
+        assert!(!m.matches(&req_net(&[], 8443), Some("65536"))); // 越界
+    }
 }

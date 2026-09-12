@@ -26,6 +26,7 @@ pub mod error;
 pub mod facade;
 pub mod filter;
 pub mod forward;
+pub mod inference_uds;
 pub mod logging;
 pub mod mitm;
 pub mod model;

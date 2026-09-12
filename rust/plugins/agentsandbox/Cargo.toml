@@ -47,6 +47,5 @@ rustls-pemfile = "2"
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "x509-parser"] }
 x509-parser = "0.16"
 globset = "0.4"
-http-body = "1"
 http-body-util = "0.1"
 

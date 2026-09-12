@@ -29,7 +29,8 @@
 //! 未声明维度（None）等同 "*" 全匹配（v1.0 兼容，TC-016）。
 
 use crate::filter::matcher::{
-    BinaryMatcher, DimensionMatcher, DomainMatcher, MethodMatcher, RequestMeta, UriMatcher,
+    BinaryMatcher, DimensionMatcher, DomainMatcher, IpMatcher, MethodMatcher, PortMatcher,
+    RequestMeta, UriMatcher,
 };
 use crate::model::{Action, FilterConfig, Policy, Reason, RuleEntry};
 
@@ -38,6 +39,8 @@ static DOMAIN: DomainMatcher = DomainMatcher;
 static METHOD: MethodMatcher = MethodMatcher;
 static URI: UriMatcher = UriMatcher;
 static BINARY: BinaryMatcher = BinaryMatcher;
+static TARGET_IP: IpMatcher = IpMatcher;
+static TARGET_PORT: PortMatcher = PortMatcher;
 
 /// 规则求值（K3）：按**黑>白>默认**顺序确定 (action, reason)——
 /// 同请求命中双名单时黑名单优先（deny-overrides-allow，2026-09-01
@@ -46,13 +49,19 @@ static BINARY: BinaryMatcher = BinaryMatcher;
 /// `url_path` 可含 query string（uri 匹配器内部剥离）；
 /// `binary_path` 为 [`None`] 时 binary 维度条件视为匹配通过
 ///（D2——统一激活语义下 pid 反查失败在管道层先行收敛为
-/// binary_not_found，不会以 None 进入本函数的求值）。
+/// binary_not_found，不会以 None 进入本函数的求值）；
+/// `target_ips` 为 DNS 预解析结果（空切片时含 IP 条目的规则不命中
+/// ——未解析拒绝在管道层先行收敛为 dns_resolve_error）；
+/// `target_port`：明文 = Host 头端口（缺省 80）、TLS = 443。
+#[allow(clippy::too_many_arguments)] // K3 契约平铺签名（维度演进追加）。
 pub fn evaluate(
     group_id: &str,
     domain: &str,
     method: &str,
     url_path: &str,
     binary_path: Option<&str>,
+    target_ips: &[std::net::IpAddr],
+    target_port: u16,
     fc: &FilterConfig,
 ) -> (Action, Reason) {
     // group_id 不参与匹配（契约锚点；防未使用告警的显式标记）。
@@ -62,6 +71,8 @@ pub fn evaluate(
         method,
         url_path,
         binary_path,
+        target_ips,
+        target_port,
     };
     // 黑名单全条目序遍历：命中即 deny（黑>白>默认——同命中黑名单优先，
     // D3 顺序确定性保持）。
@@ -76,14 +87,16 @@ pub fn evaluate(
             return (Action::Allow, Reason::WhitelistMatch);
         }
     }
-    // 默认策略（无规则匹配）。
+    // 默认策略（无规则匹配；Alert → 放行 + 告警标记由服务管道按
+    // default_policy 组合判定——求值动作与 Allow 一致）。
     match fc.default_policy {
-        Policy::Allow => (Action::Allow, Reason::DefaultPolicy),
+        Policy::Allow | Policy::Alert => (Action::Allow, Reason::DefaultPolicy),
         Policy::Deny => (Action::Deny, Reason::DefaultPolicy),
     }
 }
 
-/// 单条目命中判定：固定维度序（domain→method→uri→binary）AND 短路（D3）。
+/// 单条目命中判定：固定维度序（domain→method→uri→binary→target_ip→
+/// target_port）AND 短路（D3）。
 ///
 /// 条件传入形态：`Some(&str)` 已声明维度 / `None` 未声明（等同 "*"，
 /// 匹配器内部全匹配——v1.0 兼容）。
@@ -92,6 +105,8 @@ fn entry_matches(req: &RequestMeta<'_>, entry: &RuleEntry) -> bool {
         && METHOD.matches(req, Some(entry.method.as_str()))
         && URI.matches(req, entry.uri.as_deref())
         && BINARY.matches(req, entry.binary.as_deref())
+        && TARGET_IP.matches(req, entry.target_ip.as_deref())
+        && TARGET_PORT.matches(req, entry.target_port.as_deref())
 }
 
 #[cfg(test)]
@@ -104,6 +119,21 @@ mod tests {
             method: method.to_string(),
             uri: uri.map(str::to_string),
             binary: binary.map(str::to_string),
+            target_ip: None,
+            target_port: None,
+        }
+    }
+
+    /// 含 IP/端口条件的条目（维度组合测试辅助）。
+    fn entry_net(
+        domain: &str,
+        target_ip: Option<&str>,
+        target_port: Option<&str>,
+    ) -> RuleEntry {
+        RuleEntry {
+            target_ip: target_ip.map(str::to_string),
+            target_port: target_port.map(str::to_string),
+            ..entry(domain, "GET", None, None)
         }
     }
 
@@ -126,23 +156,23 @@ mod tests {
         );
         // 白命中。
         assert_eq!(
-            evaluate("g", "allow.com", "GET", "/x", None, &deny_default),
+            evaluate("g", "allow.com", "GET", "/x", None, &[], 443, &deny_default),
             (Action::Allow, Reason::WhitelistMatch)
         );
         // 黑命中。
         assert_eq!(
-            evaluate("g", "block.com", "POST", "/y", None, &deny_default),
+            evaluate("g", "block.com", "POST", "/y", None, &[], 443, &deny_default),
             (Action::Deny, Reason::BlacklistMatch)
         );
         // 均不命中 → 默认 deny。
         assert_eq!(
-            evaluate("g", "other.com", "GET", "/", None, &deny_default),
+            evaluate("g", "other.com", "GET", "/", None, &[], 443, &deny_default),
             (Action::Deny, Reason::DefaultPolicy)
         );
         // 默认 allow 变体。
         let allow_default = fc(Policy::Allow, vec![], vec![]);
         assert_eq!(
-            evaluate("g", "anything.com", "GET", "/", None, &allow_default),
+            evaluate("g", "anything.com", "GET", "/", None, &[], 443, &allow_default),
             (Action::Allow, Reason::DefaultPolicy)
         );
     }
@@ -157,22 +187,22 @@ mod tests {
         );
         // 全命中 → allow。
         assert_eq!(
-            evaluate("g", "a.com", "POST", "/v1/chat", Some("python3"), &conf),
+            evaluate("g", "a.com", "POST", "/v1/chat", Some("python3"), &[], 443, &conf),
             (Action::Allow, Reason::WhitelistMatch)
         );
         // domain+uri 命中但 binary 不匹配 → 不命中（走默认 deny）。
         assert_eq!(
-            evaluate("g", "a.com", "POST", "/v1/chat", Some("curl"), &conf),
+            evaluate("g", "a.com", "POST", "/v1/chat", Some("curl"), &[], 443, &conf),
             (Action::Deny, Reason::DefaultPolicy)
         );
         // method 不匹配。
         assert_eq!(
-            evaluate("g", "a.com", "GET", "/v1/chat", Some("python3"), &conf),
+            evaluate("g", "a.com", "GET", "/v1/chat", Some("python3"), &[], 443, &conf),
             (Action::Deny, Reason::DefaultPolicy)
         );
         // uri 不匹配。
         assert_eq!(
-            evaluate("g", "a.com", "POST", "/v2/chat", Some("python3"), &conf),
+            evaluate("g", "a.com", "POST", "/v2/chat", Some("python3"), &[], 443, &conf),
             (Action::Deny, Reason::DefaultPolicy)
         );
     }
@@ -187,16 +217,16 @@ mod tests {
             vec![],
         );
         assert_eq!(
-            evaluate("g", "a.com", "GET", "/", Some("python3"), &conf),
+            evaluate("g", "a.com", "GET", "/", Some("python3"), &[], 443, &conf),
             (Action::Allow, Reason::WhitelistMatch)
         );
         assert_eq!(
-            evaluate("g", "a.com", "GET", "/", Some("curl"), &conf),
+            evaluate("g", "a.com", "GET", "/", Some("curl"), &[], 443, &conf),
             (Action::Deny, Reason::DefaultPolicy)
         );
         // None：binary 条件视为匹配通过（D2 条件永真）。
         assert_eq!(
-            evaluate("g", "a.com", "GET", "/", None, &conf),
+            evaluate("g", "a.com", "GET", "/", None, &[], 443, &conf),
             (Action::Allow, Reason::WhitelistMatch)
         );
     }
@@ -211,7 +241,7 @@ mod tests {
         );
         // 任意 url_path/进程均不限制。
         assert_eq!(
-            evaluate("g", "a.com", "GET", "/any/path?x=1", Some("any-bin"), &conf),
+            evaluate("g", "a.com", "GET", "/any/path?x=1", Some("any-bin"), &[], 443, &conf),
             (Action::Allow, Reason::WhitelistMatch)
         );
     }
@@ -225,12 +255,12 @@ mod tests {
             vec![],
         );
         assert_eq!(
-            evaluate("g", "a.example.com", "GET", "/v1/chat?q=1", None, &conf),
+            evaluate("g", "a.example.com", "GET", "/v1/chat?q=1", None, &[], 443, &conf),
             (Action::Allow, Reason::WhitelistMatch)
         );
         // 裸域不命中（通配边界）。
         assert_eq!(
-            evaluate("g", "example.com", "GET", "/v1/chat", None, &conf),
+            evaluate("g", "example.com", "GET", "/v1/chat", None, &[], 443, &conf),
             (Action::Deny, Reason::DefaultPolicy)
         );
         // uri 后缀模式（黑名单）。
@@ -240,11 +270,11 @@ mod tests {
             vec![entry("cdn.com", "*", Some("*.js"), None)],
         );
         assert_eq!(
-            evaluate("g", "cdn.com", "GET", "/script.js", None, &conf2),
+            evaluate("g", "cdn.com", "GET", "/script.js", None, &[], 443, &conf2),
             (Action::Deny, Reason::BlacklistMatch)
         );
         assert_eq!(
-            evaluate("g", "cdn.com", "GET", "/script.css", None, &conf2),
+            evaluate("g", "cdn.com", "GET", "/script.css", None, &[], 443, &conf2),
             (Action::Allow, Reason::DefaultPolicy)
         );
     }
@@ -259,7 +289,34 @@ mod tests {
             vec![entry("dual.com", "*", None, None)],
         );
         assert_eq!(
-            evaluate("g", "dual.com", "GET", "/", None, &conf),
+            evaluate("g", "dual.com", "GET", "/", None, &[], 443, &conf),
+            (Action::Deny, Reason::BlacklistMatch)
+        );
+    }
+
+    // 默认策略 Alert（2026-09-09）：黑白未命中 → 放行（与 Allow 同动作；
+    // 告警标记由服务侧组合判定承载）；黑白命中不受 default_policy 影响。
+    #[test]
+    fn default_policy_alert_allows_unmatched() {
+        let conf = fc(Policy::Alert, vec![], vec![]);
+        assert_eq!(
+            evaluate("g", "anything.com", "GET", "/", None, &[], 443, &conf),
+            (Action::Allow, Reason::DefaultPolicy)
+        );
+
+        // 白名单命中：不受 alert 影响（allow + whitelist_match）。
+        let conf = fc(
+            Policy::Alert,
+            vec![entry("allow.com", "GET", None, None)],
+            vec![entry("block.com", "*", None, None)],
+        );
+        assert_eq!(
+            evaluate("g", "allow.com", "GET", "/", None, &[], 443, &conf),
+            (Action::Allow, Reason::WhitelistMatch)
+        );
+        // 黑名单命中：alert 模式下仍拒绝（黑白命中优先于默认策略）。
+        assert_eq!(
+            evaluate("g", "block.com", "GET", "/", None, &[], 443, &conf),
             (Action::Deny, Reason::BlacklistMatch)
         );
     }
@@ -281,23 +338,92 @@ mod tests {
                 "GET",
                 "/one/box/a/b/v1",
                 None,
+                &[],
+                443,
                 &conf
             ),
             (Action::Allow, Reason::WhitelistMatch)
         );
         // domain 结构不符（缺中间段）。
         assert_eq!(
-            evaluate("g", "api.example.com", "GET", "/one/box/a/v1", None, &conf),
+            evaluate("g", "api.example.com", "GET", "/one/box/a/v1", None, &[], 443, &conf),
             (Action::Deny, Reason::DefaultPolicy)
         );
         // uri 不符（尾段不匹配）。
         assert_eq!(
-            evaluate("g", "api.v2.example.com", "GET", "/one/box/a/v2", None, &conf),
+            evaluate("g", "api.v2.example.com", "GET", "/one/box/a/v2", None, &[], 443, &conf),
             (Action::Deny, Reason::DefaultPolicy)
         );
         // method 不符（大小写敏感）。
         assert_eq!(
-            evaluate("g", "api.v2.example.com", "get", "/one/box/a/v1", None, &conf),
+            evaluate("g", "api.v2.example.com", "get", "/one/box/a/v1", None, &[], 443, &conf),
+            (Action::Deny, Reason::DefaultPolicy)
+        );
+    }
+
+    // 目标 IP/端口维度经求值引擎（2026-09-09）：任一解析 IP 命中、
+    // 端口范围、六维 AND 组合。
+    #[test]
+    fn target_ip_port_through_engine() {
+        let ip = |s: &str| -> std::net::IpAddr { s.parse().unwrap() };
+
+        // IP 黑名单（CIDR）：任一解析 IP 命中即 deny。
+        let conf = fc(
+            Policy::Allow,
+            vec![],
+            vec![entry_net("*", Some("203.0.113.0/24"), None)],
+        );
+        let cdn_ips = [ip("1.1.1.1"), ip("203.0.113.7")];
+        assert_eq!(
+            evaluate("g", "cdn.example.com", "GET", "/", None, &cdn_ips, 443, &conf),
+            (Action::Deny, Reason::BlacklistMatch)
+        );
+        // 全部解析 IP 不在网段 → 未命中。
+        let clean = [ip("1.1.1.1")];
+        assert_eq!(
+            evaluate("g", "cdn.example.com", "GET", "/", None, &clean, 443, &conf),
+            (Action::Allow, Reason::DefaultPolicy)
+        );
+        // 空解析集（未解析——管道层已 fail-closed，此处为引擎防御路径）：
+        // 含 IP 条目不命中。
+        assert_eq!(
+            evaluate("g", "cdn.example.com", "GET", "/", None, &[], 443, &conf),
+            (Action::Allow, Reason::DefaultPolicy)
+        );
+
+        // 端口白名单（范围）+ domain 组合。
+        let conf = fc(
+            Policy::Deny,
+            vec![entry_net("*.internal.com", None, Some("8000-9000"))],
+            vec![],
+        );
+        assert_eq!(
+            evaluate("g", "api.internal.com", "GET", "/", None, &[], 8443, &conf),
+            (Action::Allow, Reason::WhitelistMatch)
+        );
+        assert_eq!(
+            evaluate("g", "api.internal.com", "GET", "/", None, &[], 443, &conf),
+            (Action::Deny, Reason::DefaultPolicy)
+        );
+
+        // 六维 AND：IP 与端口同时声明，任一不符即不命中。
+        let conf = fc(
+            Policy::Deny,
+            vec![entry_net("api.internal.com", Some("10.0.0.0/8"), Some("8443"))],
+            vec![],
+        );
+        let ips = [ip("10.1.2.3")];
+        assert_eq!(
+            evaluate("g", "api.internal.com", "GET", "/", None, &ips, 8443, &conf),
+            (Action::Allow, Reason::WhitelistMatch)
+        );
+        assert_eq!(
+            evaluate("g", "api.internal.com", "GET", "/", None, &ips, 443, &conf),
+            (Action::Deny, Reason::DefaultPolicy)
+        );
+        let wrong_ips = [ip("192.168.1.1")];
+        assert_eq!(
+            evaluate("g", "api.internal.com", "GET", "/", None, &wrong_ips, 8443, &conf),
             (Action::Deny, Reason::DefaultPolicy)
         );
     }
