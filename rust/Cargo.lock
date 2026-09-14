@@ -1164,6 +1164,7 @@ name = "trt-launcher"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "log",
  "log4rs",
  "mockrs",
@@ -1194,6 +1195,7 @@ dependencies = [
 name = "trustruntime"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "log",
  "tempfile",
  "tokio",

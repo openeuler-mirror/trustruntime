@@ -10,6 +10,7 @@ trustruntime-framework = { path = "../framework" }
 trustring = { path = "../plugins/trustring" }
 log.workspace = true
 tokio.workspace = true
+libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 vsock.workspace = true
@@ -20,10 +21,11 @@ tempfile.workspace = true
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/trustruntime", dest = "/usr/bin/trustruntime", mode = "550" },
-    { source = "../../packaging/trustruntime.service", dest = "/usr/lib/systemd/system/trustruntime.service", mode = "644" },
+    { source = "../../packaging/trustruntime.service", dest = "/usr/lib/systemd/system/trustruntime.service", mode = "600" },
     { source = "../../conf/agent.toml", dest = "/etc/trustruntime/agent.toml", mode = "640", config = true },
 ]
 post_install_script = """
+chmod 750 /etc/trustruntime
 systemctl enable trustruntime.service
 systemctl start trustruntime.service
 """

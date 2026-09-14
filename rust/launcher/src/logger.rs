@@ -13,15 +13,85 @@
 use log::LevelFilter;
 use log4rs::append::rolling_file::RollingFileAppender;
 use log4rs::append::rolling_file::policy::compound::{
-    CompoundPolicy, roll::fixed_window::FixedWindowRollerBuilder, trigger::size::SizeTrigger,
+    CompoundPolicy,
+    roll::{Roll, fixed_window::FixedWindowRollerBuilder},
+    trigger::size::SizeTrigger,
 };
 use log4rs::config::{Appender, Config, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use std::error::Error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const MAX_FILE_SIZE: u64 = 1024 * 1024;
 const MAX_BACKUPS: u32 = 5;
+
+/// 归档日志文件权限（Unix系统）
+///
+/// 权限值：0o440 = 只读（所有者可读、组可读）
+const ARCHIVE_FILE_MODE: u32 = 0o440;
+
+/// 日志目录权限（Unix系统）
+///
+/// 权限值：0o750 = rwxr-x---
+const LOG_DIR_MODE: u32 = 0o750;
+
+/// 带权限设置的日志滚动器
+///
+/// 在FixedWindowRoller基础上，为归档日志文件设置Unix权限。
+/// 活动日志文件权限由进程级umask(0o027)控制，自动得到0o640。
+#[derive(Debug)]
+struct PermissionRoller {
+    inner: log4rs::append::rolling_file::policy::compound::roll::fixed_window::FixedWindowRoller,
+    pattern: String,
+    base: u32,
+    count: u32,
+}
+
+impl PermissionRoller {
+    fn new(
+        inner: log4rs::append::rolling_file::policy::compound::roll::fixed_window::FixedWindowRoller,
+        pattern: String,
+        base: u32,
+        count: u32,
+    ) -> Self {
+        Self {
+            inner,
+            pattern,
+            base,
+            count,
+        }
+    }
+}
+
+impl Roll for PermissionRoller {
+    fn roll(&self, file: &Path) -> anyhow::Result<()> {
+        // 步骤1：执行固定窗口滚动
+        self.inner.roll(file)?;
+
+        // 步骤2：Unix系统设置归档文件权限
+        #[cfg(unix)]
+        {
+            use std::fs;
+            use std::os::unix::fs::PermissionsExt;
+
+            // 遍历所有归档文件（base到base+count-1），设置权限为0o440
+            for i in self.base..(self.base + self.count) {
+                let archive = self.pattern.replace("{}", &i.to_string());
+                let path = PathBuf::from(&archive);
+
+                if path.exists() {
+                    if let Err(e) =
+                        fs::set_permissions(&path, fs::Permissions::from_mode(ARCHIVE_FILE_MODE))
+                    {
+                        log::warn!("failed to set permissions on {}: {}", archive, e);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
 
 pub fn init_logger(
     log_path: &str,
@@ -29,10 +99,28 @@ pub fn init_logger(
     max_backups: u32,
     log_level: LevelFilter,
 ) -> Result<(), Box<dyn Error>> {
+    // 确保日志目录存在，Unix系统设置目录权限为0o750
     if let Some(parent) = Path::new(log_path).parent() {
-        std::fs::create_dir_all(parent).unwrap_or_else(|e| {
-            eprintln!("Error creating log directory: {}", e);
-        });
+        #[cfg(unix)]
+        {
+            use std::fs::DirBuilder;
+            use std::os::unix::fs::DirBuilderExt;
+
+            DirBuilder::new()
+                .recursive(true)
+                .mode(LOG_DIR_MODE)
+                .create(parent)
+                .unwrap_or_else(|e| {
+                    eprintln!("Error creating log directory: {}", e);
+                });
+        }
+
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                eprintln!("Error creating log directory: {}", e);
+            });
+        }
     }
 
     let log_path_buf = Path::new(log_path).to_path_buf();
@@ -47,20 +135,25 @@ pub fn init_logger(
     let binding = log_dir.join(format!("{}.{{}}", log_filename));
     let archive_pattern = binding
         .to_str()
-        .unwrap_or("/var/log/trustruntime/trtlauncher.{}");
+        .unwrap_or("/var/log/trustruntime/trtlauncher.{}")
+        .to_string();
     let roller = FixedWindowRollerBuilder::default()
         .base(1)
-        .build(archive_pattern, max_backups)?;
+        .build(&archive_pattern, max_backups)?;
+
+    // 包装为带权限设置的滚动器
+    let perm_roller = PermissionRoller::new(roller, archive_pattern.clone(), 1, max_backups);
 
     //配置回滚
     let trigger = SizeTrigger::new(max_file_size);
-    let policy = CompoundPolicy::new(Box::new(trigger), Box::new(roller));
+    let policy = CompoundPolicy::new(Box::new(trigger), Box::new(perm_roller));
 
     //日志格式说明：[时间] [级别] [文件：行号] 消息\n
     let log_pattern = "[{d(%y-%m-%d %H:%M:%S%.3f)}] [{l}] [{f}:{L}] - {m}{n}";
     let file_appender = RollingFileAppender::builder()
         .encoder(Box::new(PatternEncoder::new(log_pattern)))
         .build(log_path, Box::new(policy))?;
+
     let config = Config::builder()
         .appender(Appender::builder().build("file", Box::new(file_appender)))
         .build(Root::builder().appender("file").build(log_level))?;

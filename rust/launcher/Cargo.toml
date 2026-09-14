@@ -13,10 +13,10 @@ path = "src/main.rs"
 name = "trustruntime-launcher"
 assets = [
     { source = "../target/release/trt_launcher", dest = "/bin/trt_launcher", mode = "550", owner = "root", group = "root" },
-    { source = "conf/trt_launcher.service", dest = "/usr/lib/systemd/system/trt_launcher.service", mode = "550", owner = "root", group = "root" },
+    { source = "conf/trt_launcher.service", dest = "/usr/lib/systemd/system/trt_launcher.service", mode = "600", owner = "root", group = "root" },
     { source = "conf/trt_launcher.conf", dest = "/etc/trt_launcher/trt_launcher.conf", mode = "640", config = true, owner = "root", group = "root" },
 ]
-post_install_script = "mkdir -p /var/log/trustruntime && chmod 750 /var/log/trustruntime && chown root:root /var/log/trustruntime"
+post_install_script = "mkdir -p /var/log/trustruntime && chmod 750 /var/log/trustruntime && chown root:root /var/log/trustruntime && chmod 750 /etc/trt_launcher"
 post_uninstall_script = "systemctl stop trt_launcher.service 2>/dev/null || true; systemctl disable trt_launcher.service 2>/dev/null || true"
 
 [dependencies]
@@ -26,6 +26,7 @@ log4rs.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 mockrs = "1.2.6"

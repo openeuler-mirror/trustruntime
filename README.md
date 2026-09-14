@@ -69,6 +69,7 @@ sudo chmod 600 /etc/cert/server/key_pwd.txt
 
 ```bash
 sudo mkdir -p /etc/trustruntime
+sudo chmod 750 /etc/trustruntime
 sudo cp conf/agent.toml /etc/trustruntime/agent.toml
 ```
 
