@@ -60,6 +60,7 @@ Co-Authored-By: glm-5 (alibaba-cn)
 
 提交前检查：
 - [ ] rust目录下的代码是否满足fmt要求，使用`cargo fmt --check`检查, 若不满足则终止提交，告知用户
+- [ ] 对 staged 的 Rust 增量代码（`git diff --cached -- '*.rs'`）按 `docs/contributing.md` §3.4-3.6 逐条检查，发现违规则终止提交并告知用户
 - [ ] 使用正确的类型关键字
 - [ ] 标题简洁（50字符以内），使用英文
 - [ ] 描述清晰说明"做了什么"和"为什么"，使用中文

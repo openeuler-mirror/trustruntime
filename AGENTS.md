@@ -80,6 +80,7 @@ wsl bash -c "source ~/.cargo/env && cd <PROJECT_ROOT>/rust && ./scripts/run-inte
 - Use `serde` for serialization
 - Prefer explicit error types over `Box<dyn Error>` in public APIs
 - Tests should verify behavior through public interfaces (see TDD philosophy in user instructions)
+- Clippy未覆盖规范、Unsafe编码规范、FFI规范：详见 `docs/contributing.md` §3.4-3.6
 
 ## Documentation
 

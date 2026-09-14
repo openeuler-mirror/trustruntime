@@ -170,8 +170,11 @@ fn verify_cert_with_crl(
         return false;
     }
 
-    if crate::cert::is_crl_expired(crl) && !CRL_EXPIRY_WARNED.swap(true, Ordering::SeqCst) {
-        log::warn!("CRL has expired, continuing with stale CRL for revocation check");
+    #[allow(clippy::collapsible_if)]
+    if crate::cert::is_crl_expired(crl) {
+        if !CRL_EXPIRY_WARNED.swap(true, Ordering::SeqCst) {
+            log::warn!("CRL has expired, continuing with stale CRL for revocation check");
+        }
     }
 
     if let Some(chain) = ctx.chain() {

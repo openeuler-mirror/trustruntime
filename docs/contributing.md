@@ -229,6 +229,74 @@ error!("Failed to load certificate: {}", cert_path);
 error!("Failed to load certificate");
 ```
 
+### 3.4 Clippy 未覆盖的编码规范
+
+Clippy 无法检测以下规范，需开发者人工遵守。
+
+#### 3.4.1 禁止在 Match 分支的 Guard 条件中使用具有副作用的表达式
+
+Match guard 条件仅限纯比较或纯查询（`==`、`is_empty()`、`starts_with()` 等），禁止赋值、I/O、原子写、锁操作等副作用。
+
+#### 3.4.2 逻辑与/或操作符的右侧不应存在副作用操作
+
+右侧操作数不应包含赋值、I/O、原子写、状态修改等副作用。利用短路求值控制副作用执行时机的写法属于违规，应拆分为嵌套 `if` 将副作用放在内层，并添加 `#[allow(clippy::collapsible_if)]`。
+
+#### 3.4.3 定义宏匹配规则时，应遵循由窄到宽的排列顺序
+
+具体规则在前，通用规则在后，否则通用规则贪婪匹配导致具体规则永不触发（死规则）。
+
+### 3.5 Unsafe 编码规范
+
+#### 3.5.1 禁止滥用 Unsafe 代码，仅在必要场景下使用
+
+- 不为逃避编译器安全检查或提升性能而滥用 unsafe
+- 尽量缩小 `unsafe` 块范围，空指针检查、数值比较、日志等安全操作应移出
+- 禁止通过 unsafe 将不可变引用/指针手工转换为可变引用/指针
+
+#### 3.5.2 Unsafe 块中涉及的裸指针与内存地址，须在操作前完成有效性校验
+
+所有 FFI 返回的裸指针必须先 null 检查再使用：`if ptr.is_null() { return Err(...); }`
+
+#### 3.5.3 Unsafe 模式下分配的内存资源，须确保释放路径与分配方式匹配，杜绝泄漏与悬垂指针
+
+需区分 OpenSSL `get0`/`get1` 内存所有权语义：
+
+| 后缀 | 栈所有权 | 元素引用计数 | 栈释放方式 |
+|------|---------|------------|-----------|
+| `get0`（如 `CMS_get0_SignerInfos`） | 借用（不释放） | 不增加 | 不释放 |
+| `get1`（如 `CMS_get1_certs`） | 新建（需释放） | 已增加 | `OPENSSL_sk_free` |
+
+**特别注意**：`CMS_get0_signers` 不遵循标准 `get0` 语义——返回新建栈（需 `OPENSSL_sk_free`）但证书不 up_ref。
+
+```rust
+// CMS_get0_signers：新建栈 + 借用证书 → 需手动 up_ref
+unsafe { X509_up_ref(ptr) };
+unsafe { OPENSSL_sk_free(stack) };
+Some(unsafe { X509::from_ptr(ptr) })
+
+// CMS_get1_certs：新建栈 + 已 up_ref → 直接接管
+certs_vec.push(unsafe { X509::from_ptr(ptr) });
+unsafe { OPENSSL_sk_free(stack) };
+```
+
+### 3.6 FFI 编码规范
+
+#### 3.6.1 FFI 边界内存安全管理
+
+- **安全性**：确保调用的 C 函数不会导致未定义行为或内存安全问题
+- **ABI 兼容性**：使用 `extern "C"` 声明 C 函数，回调函数用 `unsafe extern "C" fn`，确保签名与 C 侧匹配
+- **所有权 & 生命周期**：区分 OpenSSL `get0`/`get1` 语义（详见 §3.5.3），借用指针不释放，副本需释放，回调函数指针生命周期需在调用期间有效
+- **内存管理**：注意内存的申请和释放，避免内存泄漏/悬垂指针
+
+#### 3.6.2 跨边界数据内存布局兼容
+
+跨 FFI 传递的结构体必须添加 `#[repr(C)]` 避免字段重排。来自 `openssl_sys`/`libc` 的类型已自带，opaque 类型（零变体枚举）仅通过裸指针传递不需要。
+
+```rust
+#[repr(C)]
+pub struct VsockHeader { pub seq: u32, pub version: u32, pub msg_type: u32, pub len: u32 }
+```
+
 ---
 
 ## 4. 提交规范

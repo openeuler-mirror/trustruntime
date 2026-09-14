@@ -322,39 +322,37 @@ impl Verifier {
     /// * `Some(X509)` - 签名者证书
     /// * `None` - 提取失败（无签名者、栈为空、或多签名者）
     fn extract_signer_cert(cms: &CmsContentInfo) -> Option<X509> {
+        let signers_stack = unsafe { CMS_get0_signers(cms.as_ptr()) };
+
+        if signers_stack.is_null() {
+            return None;
+        }
+
+        let stack = signers_stack as *const OPENSSL_STACK;
+        let num = unsafe { OPENSSL_sk_num(stack) };
+
+        if num <= 0 {
+            log::warn!("OPENSSL_sk_num returned non-positive value: {}", num);
+            unsafe { OPENSSL_sk_free(stack as *mut OPENSSL_STACK) };
+            return None;
+        }
+
+        if num > 1 {
+            log::warn!("CMS contains multiple signers: {}", num);
+            unsafe { OPENSSL_sk_free(stack as *mut OPENSSL_STACK) };
+            return None;
+        }
+
+        let x509_ptr = unsafe { OPENSSL_sk_value(stack, 0) as *mut X509_sys };
+
+        if x509_ptr.is_null() {
+            log::warn!("OPENSSL_sk_value returned NULL for index 0");
+            unsafe { OPENSSL_sk_free(stack as *mut OPENSSL_STACK) };
+            return None;
+        }
+
         unsafe {
-            let cms_ptr = cms.as_ptr();
-            let signers_stack = CMS_get0_signers(cms_ptr);
-
-            if signers_stack.is_null() {
-                return None;
-            }
-
-            let stack = signers_stack as *const OPENSSL_STACK;
-            let num = OPENSSL_sk_num(stack);
-
-            if num <= 0 {
-                log::warn!("OPENSSL_sk_num returned non-positive value: {}", num);
-                OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
-                return None;
-            }
-
-            if num > 1 {
-                log::warn!("CMS contains multiple signers: {}", num);
-                OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
-                return None;
-            }
-
-            let x509_ptr = OPENSSL_sk_value(stack, 0) as *mut X509_sys;
-
-            if x509_ptr.is_null() {
-                log::warn!("OPENSSL_sk_value returned NULL for index 0");
-                OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
-                return None;
-            }
-
             X509_up_ref(x509_ptr);
-
             OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
             Some(X509::from_ptr(x509_ptr))
         }
@@ -449,48 +447,44 @@ impl Verifier {
             None => return Ok(()),
         };
 
-        if trustruntime_framework::cert::is_crl_expired(crl)
-            && !CRL_EXPIRY_WARNED.swap(true, Ordering::SeqCst)
-        {
-            log::warn!("CRL has expired, continuing with stale CRL for revocation check");
+        #[allow(clippy::collapsible_if)]
+        if trustruntime_framework::cert::is_crl_expired(crl) {
+            if !CRL_EXPIRY_WARNED.swap(true, Ordering::SeqCst) {
+                log::warn!("CRL has expired, continuing with stale CRL for revocation check");
+            }
         }
 
-        let certs = unsafe {
-            let cms_ptr = cms.as_ptr();
-            let certs_stack = CMS_get1_certs(cms_ptr);
+        let certs_stack = unsafe { CMS_get1_certs(cms.as_ptr()) };
 
-            if certs_stack.is_null() {
-                return Ok(());
+        if certs_stack.is_null() {
+            return Ok(());
+        }
+
+        let stack = certs_stack as *const OPENSSL_STACK;
+        let num = unsafe { OPENSSL_sk_num(stack) };
+
+        if num <= 0 {
+            log::warn!("OPENSSL_sk_num returned non-positive value: {}", num);
+            unsafe { OPENSSL_sk_free(stack as *mut OPENSSL_STACK) };
+            return Ok(());
+        }
+
+        let mut certs_vec = Vec::with_capacity(num as usize);
+        for i in 0..num {
+            let x509_ptr = unsafe { OPENSSL_sk_value(stack, i) as *mut X509_sys };
+
+            if x509_ptr.is_null() {
+                log::warn!("OPENSSL_sk_value returned NULL for index {}", i);
+                continue;
             }
 
-            let stack = certs_stack as *const OPENSSL_STACK;
-            let num = OPENSSL_sk_num(stack);
+            certs_vec.push(unsafe { X509::from_ptr(x509_ptr) });
+        }
 
-            if num <= 0 {
-                log::warn!("OPENSSL_sk_num returned non-positive value: {}", num);
-                OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
-                return Ok(());
-            }
-
-            let mut certs_vec = Vec::with_capacity(num as usize);
-            for i in 0..num {
-                let x509_ptr = OPENSSL_sk_value(stack, i) as *mut X509_sys;
-
-                if x509_ptr.is_null() {
-                    log::warn!("OPENSSL_sk_value returned NULL for index {}", i);
-                    continue;
-                }
-
-                certs_vec.push(X509::from_ptr(x509_ptr));
-            }
-
-            OPENSSL_sk_free(stack as *mut OPENSSL_STACK);
-
-            certs_vec
-        };
+        unsafe { OPENSSL_sk_free(stack as *mut OPENSSL_STACK) };
 
         if let Some(revoked_stack) = crl.get_revoked() {
-            for cert in &certs {
+            for cert in &certs_vec {
                 for revoked in revoked_stack.iter() {
                     if revoked.serial_number() == cert.serial_number() {
                         return Err(VerifyError::CertificateRevoked);
