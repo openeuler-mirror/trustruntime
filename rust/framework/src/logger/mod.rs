@@ -204,6 +204,8 @@ impl PermissionRoller {
 /// 1. 调用内置FixedWindowRoller执行滚动（重命名文件）
 /// 2. 在Unix系统上，遍历所有归档文件并设置权限（0o440）
 ///
+/// 活动日志文件权限由进程级umask(0o027)控制，自动得到0o640，无需在此处理。
+///
 /// # Arguments
 /// * `file` - 当前日志文件路径
 ///
@@ -221,7 +223,7 @@ impl Roll for PermissionRoller {
             use std::fs;
             use std::os::unix::fs::PermissionsExt;
 
-            // 遍历所有归档文件（base到base+count-1）
+            // 遍历所有归档文件（base到base+count-1），设置权限为0o440
             for i in self.base..(self.base + self.count) {
                 let archive = self.pattern.replace("{}", &i.to_string());
                 let path = PathBuf::from(&archive);

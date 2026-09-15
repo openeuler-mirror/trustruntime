@@ -23,6 +23,11 @@ use std::error::Error;
 use std::process;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    #[cfg(unix)]
+    unsafe {
+        libc::umask(0o027);
+    }
+
     if let Err(e) = logger::init_default_logger() {
         eprintln!("Failed to initialize logger: {}", e);
         process::exit(1);

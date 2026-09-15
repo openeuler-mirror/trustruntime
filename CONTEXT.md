@@ -212,9 +212,12 @@ comm_crl = "/etc/cert/server/cert.crl"
 ### 文件权限
 
 - **配置文件**: 640 (root:root)
+- **配置目录**: 750 (root:root)
 - **服务二进制**: 750 (root:root)
-- **systemd unit**: 644 (root:root)
+- **systemd unit**: 600 (root:root)
 - **日志目录**: 750 (root:root)
+- **活动日志文件**: 640 (root:root)
+- **归档日志文件**: 440 (root:root)
 
 ## 证书用途要求
 

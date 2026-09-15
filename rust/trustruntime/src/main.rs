@@ -246,6 +246,11 @@ async fn graceful_shutdown(
 /// - 并发连接上限: Semaphore(16)
 #[tokio::main(worker_threads = 4)]
 async fn main() {
+    #[cfg(unix)]
+    unsafe {
+        libc::umask(0o027);
+    }
+
     // ==================== 步骤1：配置加载 ====================
     let args: Vec<String> = std::env::args().collect();
     let config_path = match parse_args(&args) {
