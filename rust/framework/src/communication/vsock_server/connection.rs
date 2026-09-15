@@ -172,10 +172,13 @@ fn read_message(
     let mut full_buf = vec![0u8; HEADER_SIZE + len as usize];
     full_buf[..HEADER_SIZE].copy_from_slice(&header_buf);
 
-    if len > 0 && ssl_stream.read_exact(&mut full_buf[HEADER_SIZE..]).is_err() {
-        log::warn!("Failed to read message body");
-        send_error_response(ssl_stream, seq, version, ERROR_PROTOCOL);
-        return Err(ERROR_PROTOCOL);
+    #[allow(clippy::collapsible_if)]
+    if len > 0 {
+        if ssl_stream.read_exact(&mut full_buf[HEADER_SIZE..]).is_err() {
+            log::warn!("Failed to read message body");
+            send_error_response(ssl_stream, seq, version, ERROR_PROTOCOL);
+            return Err(ERROR_PROTOCOL);
+        }
     }
 
     match VsockMessage::parse(&full_buf) {
