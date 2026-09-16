@@ -1,6 +1,6 @@
 use std::fs;
-use std::io::Read;
-use std::os::unix::net::UnixListener as StdUnixListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixListener;
 use thiserror::Error;
 use agentsandbox_config::ContainerId;
 
@@ -42,22 +42,26 @@ impl SockListener {
         Self { sock_path: sock_path.to_string() }
     }
 
-    pub fn listen<F>(&self, on_message: F) -> Result<(), SockError>
+    pub async fn listen<F>(&self, on_message: F) -> Result<(), SockError>
     where F: Fn(ContainerMessage) + Send + 'static {
         let _ = fs::remove_file(&self.sock_path);
-        let listener = StdUnixListener::bind(&self.sock_path)
+        let listener = UnixListener::bind(&self.sock_path)
             .map_err(|e| SockError::BindError(e.to_string()))?;
-        for stream in listener.incoming() {
-            match stream {
-                Ok(mut stream) => {
+        loop {
+            match listener.accept().await {
+                Ok((mut stream, _)) => {
                     let mut buf = String::new();
-                    if stream.read_to_string(&mut buf).is_err() { continue; }
-                    if let Some(msg) = Self::parse_message(&buf) { on_message(msg); }
+                    if stream.read_to_string(&mut buf).await.is_err() { continue; }
+                    if let Some(msg) = Self::parse_message(&buf) {
+                        on_message(msg);
+                        let _ = stream.write_all(br#"{"status":"ok"}"#).await;
+                        let _ = stream.write_all(b"\n").await;
+                        let _ = stream.flush().await;
+                    }
                 }
                 Err(e) => eprintln!("sock accept error: {}", e),
             }
         }
-        Ok(())
     }
 
     /// Parses a JSON lifecycle message.
