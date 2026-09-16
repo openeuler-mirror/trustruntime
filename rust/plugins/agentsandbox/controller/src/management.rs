@@ -96,19 +96,17 @@ impl Management {
         let mgmt = self.clone();
         let sender_box: Box<dyn MessageSender + Send> = sender.clone_box();
 
-        tokio::task::spawn_blocking(move || {
-            sock_listener.listen(move |msg| {
-                match msg.action {
-                    ContainerAction::Register => {
-                        if let Some(config_path) = &msg.config_path {
-                            apply_container_config(config_path, msg.container_id, &mgmt, &sender_box);
-                        }
-                    }
-                    ContainerAction::Unregister => {
-                        unregister_container(msg.container_id, &mgmt, &sender_box);
+        sock_listener.listen(move |msg| {
+            match msg.action {
+                ContainerAction::Register => {
+                    if let Some(config_path) = &msg.config_path {
+                        apply_container_config(config_path, msg.container_id, &mgmt, &sender_box);
                     }
                 }
-            }).ok();
+                ContainerAction::Unregister => {
+                    unregister_container(msg.container_id, &mgmt, &sender_box);
+                }
+            }
         }).await.map_err(|e| MgmtError::SockError(e.to_string()))?;
         Ok(())
     }
