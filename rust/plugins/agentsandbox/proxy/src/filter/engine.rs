@@ -84,6 +84,7 @@ pub fn evaluate(
 
     for rs in &fc.rule_list {
         if !ruleset_matches(&req, rs) {
+            crate::log_debug!("filter", "ruleset skipped: name={} prio={}", rs.name, rs.host.prio);
             continue;
         }
         // binaryrules：deny/alert 命中即决策；allow 透传（无决策——排序
@@ -94,6 +95,12 @@ pub fn evaluate(
             }
             match br.action {
                 RuleAction::Deny => {
+                    crate::log_debug!(
+                        "filter",
+                        "rule matched: ruleset={} prio={} kind=binary action=deny",
+                        rs.name,
+                        rs.host.prio
+                    );
                     return Decision {
                         action: Action::Deny,
                         reason: Reason::BlacklistMatch,
@@ -101,6 +108,12 @@ pub fn evaluate(
                     }
                 }
                 RuleAction::Alert => {
+                    crate::log_debug!(
+                        "filter",
+                        "rule matched: ruleset={} prio={} kind=binary action=alert",
+                        rs.name,
+                        rs.host.prio
+                    );
                     return Decision {
                         action: Action::Allow,
                         reason: Reason::BlacklistMatch,
@@ -117,6 +130,12 @@ pub fn evaluate(
             }
             match tr.action {
                 RuleAction::Deny => {
+                    crate::log_debug!(
+                        "filter",
+                        "rule matched: ruleset={} prio={} kind=target action=deny",
+                        rs.name,
+                        rs.host.prio
+                    );
                     return Decision {
                         action: Action::Deny,
                         reason: Reason::BlacklistMatch,
@@ -124,6 +143,12 @@ pub fn evaluate(
                     }
                 }
                 RuleAction::Alert => {
+                    crate::log_debug!(
+                        "filter",
+                        "rule matched: ruleset={} prio={} kind=target action=alert",
+                        rs.name,
+                        rs.host.prio
+                    );
                     return Decision {
                         action: Action::Allow,
                         reason: Reason::BlacklistMatch,
@@ -131,6 +156,12 @@ pub fn evaluate(
                     }
                 }
                 RuleAction::Allow => {
+                    crate::log_debug!(
+                        "filter",
+                        "rule matched: ruleset={} prio={} kind=target action=allow",
+                        rs.name,
+                        rs.host.prio
+                    );
                     return Decision {
                         action: Action::Allow,
                         reason: Reason::WhitelistMatch,
@@ -140,9 +171,11 @@ pub fn evaluate(
             }
         }
         // 本规则集无命中 → 链式继续下一规则集（首个规则命中才决策）。
+        crate::log_debug!("filter", "ruleset no rule hit: name={} prio={}", rs.name, rs.host.prio);
     }
 
     // 默认策略（全部规则集未命中）。
+    crate::log_debug!("filter", "no ruleset hit; default policy applies");
     match fc.default_policy {
         Policy::Allow => Decision {
             action: Action::Allow,

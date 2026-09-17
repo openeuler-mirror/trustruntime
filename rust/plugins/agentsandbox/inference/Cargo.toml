@@ -1,6 +1,6 @@
 [package]
 name = "agentsandbox-inference"
-description = "AgentSandbox 推理路由外部库（mock 占位实现——真实库落地后替换）"
+description = "AgentSandbox 推理路由外部库（BeDemo C++ 移植真实实现——配置驱动路由 + 隐私脱敏 + API-Key 加密管理）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,3 +9,16 @@ publish = false
 [dependencies]
 http = { workspace = true }
 bytes = { workspace = true }
+# API key 契约类型（serde）/ 错误枚举（thiserror——2026-09-17 打桩接口）。
+serde = { workspace = true }
+thiserror = { workspace = true }
+# 真实实现（BeDemo 移植）：JSON / 正则脱敏 / AES-256-GCM / 日志门面。
+serde_json = { workspace = true }
+regex = { workspace = true }
+aes-gcm = { workspace = true }
+base64 = { workspace = true }
+zeroize = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

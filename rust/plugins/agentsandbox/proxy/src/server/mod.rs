@@ -107,13 +107,16 @@ pub struct ServeContext {
     /// 推理路由列表（host+url 精确匹配；空列表 = 无推理路由分流）。
     pub inference_routes: Vec<crate::model::InferenceRoute>,
     /// 推理路由裁决器（默认 [`crate::inference_uds::UdsRouteDispatcher`]
-    /// 双模式：env `HISEC_ROUT_PORT` → UDS 远程 / 未设 → 本地 mock）。
+    /// 双模式：env `UDS_PATH` → UDS 远程 / 未设 → 本地真实库
+    /// （`agentsandbox_inference::default_router`——init 过则 AgentRouter，
+    /// 否则 mock Forward））。
     pub inference_router: Arc<dyn InferenceRouter>,
 }
 
 impl ServeContext {
     /// 以默认参数构造（target timeout 30s，scenario "lib"，无推理路由；
-    /// 裁决器 = UDS 双模式分发，本地实现为 mock 空实现）。
+    /// 裁决器 = UDS 双模式分发，本地实现 = 真实库优先（init 过则
+    /// AgentRouter，未设则 mock 空实现——2026-09-17 真实库落地））。
     pub fn new(
         registry: Arc<Registry>,
         cert_services: Arc<crate::cert::ContainerCertServices>,
@@ -128,7 +131,7 @@ impl ServeContext {
             target_host_override: None,
             inference_routes: Vec::new(),
             inference_router: Arc::new(crate::inference_uds::UdsRouteDispatcher::new(
-                Box::new(agentsandbox_inference::MockInferenceRouter),
+                agentsandbox_inference::default_router(),
             )),
         }
     }
@@ -596,6 +599,14 @@ async fn handle_inference(
         headers: parts.headers.clone(),
         body: String::from_utf8_lossy(&body).into_owned(),
     };
+    // 调试观测（debug 级——release 构建过滤）：推理路由输入全量
+    //（headers + body；body 为库可见的 lossy 文本）。
+    crate::log_debug!(
+        "server",
+        "inference route input: headers={} body={}",
+        format_headers_for_log(&route_req.headers),
+        route_req.body
+    );
     let router = ctx.inference_router.clone();
     let decision = tokio::task::spawn_blocking(move || router.route(route_req)).await.unwrap_or_else(|_| {
         crate::log_warn!("server", "inference route task panicked; blocked");
@@ -604,6 +615,25 @@ async fn handle_inference(
             modifications: Vec::new(),
         }
     });
+
+    // 调试观测（debug 级）：裁决返回全量——决策码 + 逐条修改项
+    //（action/target/key/value；鉴权头含凭据明文，仅限 debug 构建）。
+    crate::log_debug!(
+        "server",
+        "inference route output: result={:?} modifications={}",
+        decision.result,
+        decision
+            .modifications
+            .iter()
+            .map(|m| {
+                format!(
+                    "[action={:?} target={:?} key={} value={}]",
+                    m.action, m.target, m.key, m.value
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     // 裁决结果观测（2026-09-15 info 级——release 可见；辅助定位推理
     // 路由分流：决策码 + 修改条数（Forward 忽略列表/Block 阻断/Modified
@@ -639,8 +669,16 @@ async fn handle_inference(
         InferenceResult::Forward => (parts.headers, body),
         InferenceResult::Modified => {
             let applied = apply_inference_modifications(parts.headers, body, &decision.modifications);
-            // 修改应用观测（2026-09-15）：应用前后 body 长度变化（内容不打印
-            //——日志安全；header 修改数已含在裁决日志 modifications 计数）。
+            // 调试观测（debug 级）：应用修改后的最终请求形态（headers +
+            // body——转发到目标的实际内容）。
+            crate::log_debug!(
+                "server",
+                "inference request after modifications: headers={} body={}",
+                format_headers_for_log(&applied.0),
+                String::from_utf8_lossy(&applied.1)
+            );
+            // 修改应用观测（2026-09-15）：应用后 body 长度（info 级不打印
+            // 内容——日志安全；全量内容观测见上方 debug 级）。
             crate::log_info!(
                 "server",
                 "inference modifications applied: entries={} body_len={} container={}",
@@ -663,6 +701,22 @@ async fn handle_inference(
     //    流式回传；reason=inference_route；host_port 透传——与非推理
     //    路径端口语义一致，2026-09-15 日志观测暴露的传递缺失修复）。
     forward_request(fwd_req, ctx, conn, domain, container_id, Reason::InferenceRoute, false, host_port, None).await
+}
+
+/// 调试日志用请求头格式化：`[name: value; ...]`（多值头逐值展开；
+/// 非 UTF-8 头值以 `<binary>` 占位）。
+fn format_headers_for_log(headers: &http::HeaderMap) -> String {
+    let pairs: Vec<String> = headers
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "{}: {}",
+                name.as_str(),
+                value.to_str().unwrap_or("<binary>")
+            )
+        })
+        .collect();
+    format!("[{}]", pairs.join("; "))
 }
 
 /// 应用外部库修改列表（仅 result=Modified 路径调用）。

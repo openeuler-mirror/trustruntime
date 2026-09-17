@@ -106,6 +106,13 @@ impl Registry {
             ),
         }
         normalize_rule_order(&mut fc);
+        // 配置热更新落地确认（info——release 可见；HC 推送结果可观测）。
+        crate::log_info!(
+            "registry",
+            "container config updated: container={} rulesets={}",
+            container_id,
+            fc.rule_list.len()
+        );
         let mut configs = crate::lock_util::recovered(self.configs.write(), "registry");
         configs.insert(container_id.to_string(), fc);
         Ok(())

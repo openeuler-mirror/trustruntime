@@ -1,0 +1,52 @@
+{
+  "version": "1.0.0",
+  "default_priority": [
+    "strategy_cloud_with_sanitization",
+    "strategy_cloud_direct",
+    "strategy_local_direct"
+  ],
+  "strategies": [
+    {
+      "strategy_id": "strategy_cloud_with_sanitization",
+      "name": "云端脱敏路由",
+      "enabled": true,
+      "priority": 10,
+      "condition": {
+        "model_id": "qwen36-35b-vl"
+      },
+      "action": {
+        "target": "cloud_with_sanitization",
+        "model_id": "qwen36-35b-vl",
+        "sanitize": true
+      }
+    },
+    {
+      "strategy_id": "strategy_cloud_direct",
+      "name": "云端直连不脱敏",
+      "enabled": true,
+      "priority": 20,
+      "condition": {
+        "model_id": "claude-3"
+      },
+      "action": {
+        "target": "cloud",
+        "model_id": "claude-3",
+        "sanitize": false
+      }
+    },
+    {
+      "strategy_id": "strategy_local_direct",
+      "name": "本地直连不脱敏",
+      "enabled": true,
+      "priority": 30,
+      "condition": {
+        "model_id": "llama-8b"
+      },
+      "action": {
+        "target": "local",
+        "model_id": "llama-8b",
+        "sanitize": false
+      }
+    }
+  ]
+}

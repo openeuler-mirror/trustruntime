@@ -116,20 +116,53 @@ impl TargetConnector {
         alpn: &[String],
     ) -> Result<TlsStream<TcpStream>, TargetConnectError> {
         let deadline = tokio::time::Instant::now() + self.timeout;
-        // TCP 连接（含域名解析）：单一 deadline 预算。
-        let tcp = tokio::time::timeout_at(deadline, TcpStream::connect((host, port)))
-            .await
-            .map_err(|_| TargetConnectError::Timeout)?
-            .map_err(map_tcp_connect_error)?;
+        // TCP 连接（含域名解析）：单一 deadline 预算。阶段日志（warn）与
+        // server 层枚举日志双层共存——原始错误详情在此层保留（定位辅助）。
+        let tcp = match tokio::time::timeout_at(deadline, TcpStream::connect((host, port))).await
+        {
+            Err(_) => {
+                crate::log_warn!(
+                    "forward",
+                    "target connect deadline exceeded (tcp): host={host} port={port}"
+                );
+                return Err(TargetConnectError::Timeout);
+            }
+            Ok(Err(e)) => {
+                crate::log_warn!(
+                    "forward",
+                    "target tcp connect failed: host={host} port={port} err={e}"
+                );
+                return Err(map_tcp_connect_error(e));
+            }
+            Ok(Ok(tcp)) => tcp,
+        };
         let _ = tcp.set_nodelay(true);
         // TLS 握手（客户端侧，SNI 域名校验）：同一 deadline 剩余预算。
-        let name = rustls::pki_types::ServerName::try_from(sni.to_string())
-            .map_err(|_| TargetConnectError::TargetTls)?;
+        let name = match rustls::pki_types::ServerName::try_from(sni.to_string()) {
+            Ok(n) => n,
+            Err(_) => {
+                crate::log_warn!("forward", "target sni invalid: sni={sni}");
+                return Err(TargetConnectError::TargetTls);
+            }
+        };
         let connector = self.connector_for(alpn);
-        tokio::time::timeout_at(deadline, connector.connect(name, tcp))
-            .await
-            .map_err(|_| TargetConnectError::Timeout)?
-            .map_err(|_| TargetConnectError::TargetTls)
+        match tokio::time::timeout_at(deadline, connector.connect(name, tcp)).await {
+            Err(_) => {
+                crate::log_warn!(
+                    "forward",
+                    "target connect deadline exceeded (tls): host={host} port={port}"
+                );
+                Err(TargetConnectError::Timeout)
+            }
+            Ok(Err(e)) => {
+                crate::log_warn!("forward", "target tls handshake failed: host={host} err={e}");
+                Err(TargetConnectError::TargetTls)
+            }
+            Ok(Ok(stream)) => {
+                crate::log_debug!("forward", "target connected: host={host} port={port}");
+                Ok(stream)
+            }
+        }
     }
 }
 
@@ -185,7 +218,7 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
 /// 单向泵：读 r 写 w。读侧受**连接级空闲**约束（共享活动时钟：deadline
 /// 自最近一次任一方向活动起算；到期重查时钟——对向活动已推进则重新武装，
 /// 重查仍到期才是真空闲）；写侧独立预算（本批超过 idle 未排空即返回）；
-/// EOF/错误/空闲返回。
+/// EOF/错误/空闲返回（拆除原因经日志观测——2026-09-17 维护定位辅助）。
 async fn pump<R, W>(
     r: &mut R,
     w: &mut W,
@@ -203,10 +236,14 @@ async fn pump<R, W>(
             let deadline = *crate::lock_util::recovered(last_activity.lock(), "activity clock") + idle;
             match tokio::time::timeout_at(deadline, r.read(&mut buf)).await {
                 Ok(Ok(n)) => break n,
-                Ok(Err(_)) => return, // IO 错误。
+                Ok(Err(e)) => {
+                    crate::log_warn!("forward", "tunnel read failed: {e}");
+                    return;
+                }
                 Err(_elapsed) => {
                     let latest = *crate::lock_util::recovered(last_activity.lock(), "activity clock");
                     if latest + idle <= tokio::time::Instant::now() {
+                        crate::log_info!("forward", "tunnel idle timeout (connection-level)");
                         return; // 连接级空闲（双向均无活动超过 idle）。
                     }
                     // 对向活动已推进 deadline → 重新武装继续等待。
@@ -214,13 +251,17 @@ async fn pump<R, W>(
             }
         };
         if n == 0 {
+            crate::log_debug!("forward", "tunnel eof");
             return; // EOF（半关闭传播由调用方 shutdown 处理）。
         }
         // 写超时：独立预算（对端不消费即拆除，内存有界防滞留）。
         let write_deadline = tokio::time::Instant::now() + idle;
         match tokio::time::timeout_at(write_deadline, w.write_all(&buf[..n])).await {
             Ok(Ok(())) => {}
-            _ => return,
+            _ => {
+                crate::log_warn!("forward", "tunnel write timeout: peer not consuming");
+                return;
+            }
         }
         *crate::lock_util::recovered(last_activity.lock(), "activity clock") = tokio::time::Instant::now();
     }

@@ -29,6 +29,8 @@
 
 use std::sync::{Arc, RwLock};
 
+use agentsandbox_inference::ApiKeyError;
+
 use crate::error::{BindError, CaError, ConfigError};
 use crate::logging::LogSink;
 use crate::model::{CaCert, FilterConfig, ProxyConfig};
@@ -173,6 +175,50 @@ pub fn register_log_sink(handler: LogSink) {
     runtime().register_log_sink(handler);
 }
 
+/// 设置/删除推理服务的 API key（2026-09-17，AR-005 配套管理面）。
+///
+/// 入参形态（serde）：
+/// `{"action":"set|delete","items":[{"model_id":"GLM_53","api_key":"sk-112"}]}`
+///
+/// - **set**：有则更新、无则添加（upsert）；**delete**：按 `model_id`
+///   删除（`api_key` 字段忽略；不存在幂等成功）；空 `items` = no-op；
+/// - **双模式分发**（与推理路由裁决同模式，每调用读 env
+///   [`ROUTE_ENV_VAR`](crate::inference_uds::ROUTE_ENV_VAR)）：
+///   env 设置 → UDS 远程（`msg_type=1`，失败返回
+///   [`ApiKeyError::Delivery`]——**可重试**，管理面操作不做流量面
+///   fail-closed）；env 未设 → 本地打桩存储
+///   （[`apply_api_key`](agentsandbox_inference::apply_api_key)——真实
+///   外部库落地后替换）。
+pub fn set_api_key(req: agentsandbox_inference::ApiKeyRequest) -> Result<(), ApiKeyError> {
+    // 参数校验：set → model_id/api_key 均非空；delete → model_id 非空
+    //（api_key 忽略）；空 items 短路成功。
+    if !req.items.is_empty() {
+        for item in &req.items {
+            match req.action {
+                agentsandbox_inference::ApiKeyAction::Set => {
+                    if item.model_id.is_empty() || item.api_key.is_empty() {
+                        return Err(ApiKeyError::Invalid);
+                    }
+                }
+                agentsandbox_inference::ApiKeyAction::Delete => {
+                    if item.model_id.is_empty() {
+                        return Err(ApiKeyError::Invalid);
+                    }
+                }
+            }
+        }
+    }
+    let path = std::env::var_os(crate::inference_uds::ROUTE_ENV_VAR).filter(|v| !v.is_empty());
+    match path {
+        Some(path) => {
+            let path = path.to_string_lossy().into_owned();
+            crate::inference_uds::uds_api_key(&path, &req)
+                .ok_or(ApiKeyError::Delivery)
+        }
+        None => agentsandbox_inference::apply_api_key(&req),
+    }
+}
+
 /// proxy 初始化错误。
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
@@ -186,6 +232,10 @@ pub enum ProxyInitError {
     /// 配置非法（container_id 空 / 端口 0 / 路由条目 host 或 url 空）。
     #[error("invalid endpoint")]
     InvalidEndpoint,
+    /// 推理路由库初始化失败（目录不存在/配置非法等——细节仅运行日志，
+    /// 不含路径；发生于一次性 guard 之前，修正配置后可重调）。
+    #[error("inference init failed")]
+    InferenceInit,
 }
 
 /// 全局初始化标记（proxy_init 一次性）。
@@ -198,13 +248,19 @@ static INITIALIZED: std::sync::atomic::AtomicBool =
 ///   容器身份经 [`register_binary_resolver`] 回调**连接级运行时解析**
 ///   （source/target/protocol → container_id + binary_path）；
 /// - **inference_routes**：推理路由列表（host+url 精确匹配；命中即旁通
-///   过滤引擎，交推理路由外部库裁决——AR-005；空列表 = 无分流）。
+///   过滤引擎，交推理路由外部库裁决——AR-005；空列表 = 无分流）；
+/// - **router_config_dir**：推理路由真实库初始化（AR-005）——
+///   `Some(dir)` → `init(dir)`；`None` → 内嵌默认配置（`init_default`）。
+///   初始化先于服务装配（`ServeContext::new` 的 `default_router()` 拾取
+///   `AgentRouter`）。
 ///
-/// 前置校验：端口非 0，路由条目 host/url 非空；重复调用返回
-/// `ProxyInitError::AlreadyInitialized`。
+/// 前置校验：端口非 0，路由条目 host/url 非空；推理库初始化失败返回
+/// `ProxyInitError::InferenceInit`（guard 未消耗——修正后可重调）；重复
+/// 调用返回 `ProxyInitError::AlreadyInitialized`。
 pub fn proxy_init(config: &ProxyConfig) -> Result<(), ProxyInitError> {
     validate_endpoint(&config.forwarding)?;
     validate_inference_routes(&config.inference_routes)?;
+    init_inference_router(config)?;
     if INITIALIZED.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return Err(ProxyInitError::AlreadyInitialized);
     }
@@ -267,7 +323,8 @@ fn spawn_serve(forward_listener: tokio::net::TcpListener, config: &ProxyConfig) 
         std::time::Duration::from_secs(30),
     ));
     let mut serve_ctx = crate::server::ServeContext::new(registry, cert_services, connector);
-    // 推理路由列表装配（router 默认 mock——crate 引入，真实库落地后替换）。
+    // 推理路由列表装配（router 默认装配在 ServeContext::new——真实库
+    // 优先：crate init 过则 AgentRouter，否则 mock——2026-09-17）。
     serve_ctx.inference_routes = config.inference_routes.clone();
     let ctx = Arc::new(serve_ctx);
     tokio::spawn(async move {
@@ -296,6 +353,23 @@ fn validate_inference_routes(
 ) -> Result<(), ProxyInitError> {
     if routes.iter().any(|r| r.host.is_empty() || r.url.is_empty()) {
         return Err(ProxyInitError::InvalidEndpoint);
+    }
+    Ok(())
+}
+
+/// 推理路由真实库初始化（proxy_init 期，一次性 guard 之前）。
+///
+/// `Some(dir)` → `init(dir)`；`None` → 内嵌默认配置（`init_default`）。
+/// 失败仅运行日志记录错误类别（Display 不含路径——日志安全），返回
+/// [`ProxyInitError::InferenceInit`]；guard 未消耗，修正配置后可重调。
+fn init_inference_router(config: &ProxyConfig) -> Result<(), ProxyInitError> {
+    let result = match &config.router_config_dir {
+        Some(dir) => agentsandbox_inference::init(dir),
+        None => agentsandbox_inference::init_default(),
+    };
+    if let Err(e) = result {
+        crate::log_error!("facade", "inference router init failed: {}", e);
+        return Err(ProxyInitError::InferenceInit);
     }
     Ok(())
 }

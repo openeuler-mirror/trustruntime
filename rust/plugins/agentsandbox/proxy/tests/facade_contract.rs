@@ -284,6 +284,8 @@ async fn proxy_init_validates_endpoints() {
     let cfg = |f: &ContainerEndpoint, routes: Vec<InferenceRoute>| ProxyConfig {
         forwarding: f.clone(),
         inference_routes: routes,
+        // 校验失败用例不触达推理初始化（校验先于 init——None 亦可）。
+        router_config_dir: None,
     };
     let route = |host: &str, url: &str| InferenceRoute {
         host: host.to_string(),

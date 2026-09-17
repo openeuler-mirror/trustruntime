@@ -572,6 +572,11 @@ pub struct ProxyConfig {
     /// 推理路由列表（host+url 精确匹配；命中的请求旁通过滤引擎，
     /// 交推理路由外部库裁决——AR-005）。
     pub inference_routes: Vec<InferenceRoute>,
+    /// 推理路由真实库配置目录（AR-005；`proxy_init` 期初始化）：
+    /// `Some(dir)` → `init(dir)`（四配置文件目录）；`None` → 内嵌默认
+    /// 配置初始化（`init_default`——api_keys 落状态目录）。初始化失败
+    /// → `ProxyInitError::InferenceInit`（进程启动失败，fail-closed）。
+    pub router_config_dir: Option<String>,
 }
 
 /// 推理路由条目（`{host, url}`——host 对请求域名（SNI/Host 头）精确

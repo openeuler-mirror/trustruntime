@@ -24,6 +24,8 @@ pub struct ManagementResponse {
 
 pub const MSG_REFRESH_POLICY: &str = "refresh_policy";
 pub const MSG_REMOVE_CONTAINER: &str = "remove_container";
+/// HC → proxy_proc 下发 API key（set/delete——2026-09-17）。
+pub const MSG_SET_API_KEY: &str = "set_api_key";
 
 /// refresh_policy payload from HC: { container_id, filter_config }.
 #[derive(Debug, Deserialize)]
@@ -44,6 +46,11 @@ static CA_MATERIAL: OnceLock<CaCert> = OnceLock::new();
 /// Stores the global CA PEM material for per-container injection.
 pub fn set_global_ca(ca: CaCert) {
     let _ = CA_MATERIAL.set(ca);
+}
+
+/// Reads the globally loaded CA material (set at startup by `set_global_ca`).
+pub fn global_ca() -> Option<&'static CaCert> {
+    CA_MATERIAL.get()
 }
 
 /// Receives container lifecycle and config updates from HiController via Unix socket.
@@ -88,6 +95,7 @@ fn handle_connection(stream: &mut UnixStream) -> std::io::Result<()> {
     let resp = match msg.msg_type.as_str() {
         MSG_REFRESH_POLICY => handle_refresh_policy(&msg),
         MSG_REMOVE_CONTAINER => handle_remove_container(&msg),
+        MSG_SET_API_KEY => handle_set_api_key(&msg),
         other => ManagementResponse {
             status: "error".to_string(),
             detail: Some(serde_json::json!({ "error": format!("unknown msg_type: {}", other) })),
@@ -156,6 +164,43 @@ fn handle_remove_container(msg: &ManagementMessage) -> ManagementResponse {
             ManagementResponse {
                 status: "ok".to_string(),
                 detail: Some(serde_json::json!({ "container_id": payload.container_id, "note": "already removed" })),
+                request_id: msg.request_id.clone(),
+            }
+        }
+    }
+}
+
+/// set_api_key handler（2026-09-17）：payload → ApiKeyRequest → facade
+/// set_api_key（env 双模式：UDS msg_type=1 / 本地打桩存储）。
+fn handle_set_api_key(msg: &ManagementMessage) -> ManagementResponse {
+    let payload: agentsandbox_proxy::ApiKeyRequest =
+        match serde_json::from_value(msg.payload.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                return ManagementResponse {
+                    status: "error".to_string(),
+                    detail: Some(serde_json::json!({ "error": format!("payload: {}", e) })),
+                    request_id: msg.request_id.clone(),
+                };
+            }
+        };
+    // 日志不含 api key 内容（安全——仅动作与条数）。
+    eprintln!(
+        "[INFO] proxy_proc: set_api_key action={:?} items={}",
+        payload.action,
+        payload.items.len()
+    );
+    match agentsandbox_proxy::facade::set_api_key(payload) {
+        Ok(()) => ManagementResponse {
+            status: "ok".to_string(),
+            detail: None,
+            request_id: msg.request_id.clone(),
+        },
+        Err(e) => {
+            eprintln!("[WARN] proxy_proc: set_api_key failed: {:?}", e);
+            ManagementResponse {
+                status: "error".to_string(),
+                detail: Some(serde_json::json!({ "error": format!("set_api_key: {:?}", e) })),
                 request_id: msg.request_id.clone(),
             }
         }
