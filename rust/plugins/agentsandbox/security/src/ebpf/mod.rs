@@ -1,7 +1,10 @@
 use agentsandbox_config::SecurityPolicy;
 use agentsandbox_log::SecurityEvent;
+use aya::Btf;
+use aya::programs::{CgroupAttachMode, CgroupSockAddr, Lsm, ProgramError, SockOps};
 use thiserror::Error;
 use std::collections::HashMap;
+use std::fs::File;
 use std::sync::Mutex;
 
 use crate::bytecode;
@@ -37,6 +40,9 @@ pub const NET_PROTOCOL_UDP: u8 = libc::IPPROTO_UDP as u8;
 /// `aya::Ebpf::map(name)`. Changing it without updating the BPF C source will cause
 /// map lookups to silently fail (return None).
 pub const CGROUP_LOOKUP_MAP_NAME: &str = "cgroup_lookup_map";
+
+/// Root cgroup v2 path where sockops/connect4 programs are attached.
+const ROOT_CGROUP_PATH: &str = "/sys/fs/cgroup";
 
 /// IPv4 address size in bytes.
 const IPV4_ADDR_LEN: usize = 4;
@@ -540,6 +546,13 @@ impl EbpfLoader {
             b.programs().all(|(n, _)| !new_names.contains(&n))
         });
 
+        let needs_lsm = new_names.iter().any(|n| *n == "capability" || *n == "filesystem");
+        let btf = if needs_lsm {
+            Some(Btf::from_sys_fs().map_err(|e| EbpfError::LoadError(e.to_string()))?)
+        } else {
+            None
+        };
+
         for (name, bytecode) in bytecode::all_programs() {
             if !filter(name) {
                 continue;
@@ -547,8 +560,11 @@ impl EbpfLoader {
             if bytecode.is_empty() {
                 continue;
             }
-            let bpf = aya::Ebpf::load(bytecode)
+            let mut bpf = aya::Ebpf::load(bytecode)
                 .map_err(|e| EbpfError::LoadError(format!("{}: {}", name, e)))?;
+
+            Self::attach_program(&mut bpf, name, btf.as_ref())?;
+
             bpf_guard.push(bpf);
         }
         drop(bpf_guard);
@@ -556,6 +572,50 @@ impl EbpfLoader {
         let mut loaded = self.loaded.lock()
             .map_err(|e| EbpfError::LoadError(e.to_string()))?;
         *loaded = true;
+        Ok(())
+    }
+
+    /// Loads and attaches a single program based on its logical object name.
+    fn attach_program(bpf: &mut aya::Ebpf, name: &str, btf: Option<&Btf>) -> Result<(), EbpfError> {
+        match name {
+            "capability" | "filesystem" => {
+                let btf = btf.ok_or_else(|| EbpfError::LoadError("kernel BTF unavailable".to_string()))?;
+                let (prog_name, hook_name) = match name {
+                    "capability" => ("handle_capable", "security_capable"),
+                    _ => ("handle_file_open", "security_file_open"),
+                };
+                let prog: &mut Lsm = bpf.program_mut(prog_name)
+                    .ok_or_else(|| EbpfError::LoadError(format!("{} not found", prog_name)))?
+                    .try_into()
+                    .map_err(|e: ProgramError| EbpfError::LoadError(e.to_string()))?;
+                prog.load(hook_name, btf)
+                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                prog.attach().map_err(|e| EbpfError::LoadError(e.to_string()))?;
+            }
+            "network" => {
+                let cgroup = File::open(ROOT_CGROUP_PATH)
+                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                let prog: &mut CgroupSockAddr = bpf.program_mut("handle_connect4")
+                    .ok_or_else(|| EbpfError::LoadError("handle_connect4 not found".to_string()))?
+                    .try_into()
+                    .map_err(|e: ProgramError| EbpfError::LoadError(e.to_string()))?;
+                prog.load().map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                prog.attach(cgroup, CgroupAttachMode::Single)
+                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+            }
+            "sockops" => {
+                let cgroup = File::open(ROOT_CGROUP_PATH)
+                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                let prog: &mut SockOps = bpf.program_mut("handle_sockops")
+                    .ok_or_else(|| EbpfError::LoadError("handle_sockops not found".to_string()))?
+                    .try_into()
+                    .map_err(|e: ProgramError| EbpfError::LoadError(e.to_string()))?;
+                prog.load().map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                prog.attach(cgroup, CgroupAttachMode::Single)
+                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+            }
+            _ => {}
+        }
         Ok(())
     }
 

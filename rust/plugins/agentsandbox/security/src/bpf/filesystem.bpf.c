@@ -1,10 +1,13 @@
-#include "common.bpf.h"
 #include <vmlinux.h>
-#include <linux/bpf.h>
-#include <bpf/bpf_helpers.h>
+#include "common.bpf.h"
 #include <bpf/bpf_tracing.h>
-#include <linux/fcntl.h>
 #include <linux/errno.h>
+
+/* Kernel-internal FMODE_* flags are #defines in include/linux/fs.h, not present
+ * in vmlinux.h (BTF dump) nor any UAPI header. Define the values the program reads. */
+#define FMODE_READ  0x1
+#define FMODE_WRITE 0x2
+#define FMODE_EXEC  0x4
 
 char LICENSE[] SEC("license") = "GPL";
 

@@ -1,9 +1,7 @@
-#include "common.bpf.h"
 #include <linux/bpf.h>
-#include <bpf/bpf_helpers.h>
+#include "common.bpf.h"
 #include <bpf/bpf_tracing.h>
-#include <linux/in.h>
-#include <linux/socket.h>
+#include <bpf/bpf_endian.h>
 #include <linux/errno.h>
 
 char LICENSE[] SEC("license") = "GPL";

@@ -1,8 +1,7 @@
-#include "common.bpf.h"
 #include <linux/bpf.h>
-#include <bpf/bpf_helpers.h>
 #include <linux/in.h>
 #include <linux/socket.h>
+#include "common.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -24,7 +23,8 @@ static __always_inline void record_flow(struct bpf_sock_ops *ctx) {
     __u64 cgroup_id = bpf_get_current_cgroup_id();
 
     struct flow_key key = {};
-    key.protocol = ctx->protocol;
+    /* sockops only fires for TCP, so the 5-tuple protocol is always TCP. */
+    key.protocol = NET_PROTOCOL_TCP;
 
     if (ctx->family == AF_INET) {
         key.family = AF_INET;
@@ -51,7 +51,7 @@ static __always_inline void record_flow(struct bpf_sock_ops *ctx) {
 SEC("sockops")
 int handle_sockops(struct bpf_sock_ops *ctx) {
     switch (ctx->op) {
-    case BPF_SOCK_OPS_ACTIVE_ESTABLISHED:
+    case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
         /* Container process initiated connect() and it succeeded.
          * Full 5-tuple (src/dst IP + src/dst port) + protocol now available. */
         record_flow(ctx);

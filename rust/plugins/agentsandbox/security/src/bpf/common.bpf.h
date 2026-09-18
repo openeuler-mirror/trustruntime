@@ -1,7 +1,22 @@
 #ifndef __COMMON_BPF_H
 #define __COMMON_BPF_H
 
-#include <linux/types.h>
+/*
+ * Basic types (__u64 etc.) and BPF_MAP_TYPE_* enums must be provided by the
+ * including translation unit *before* this header:
+ *   - <vmlinux.h>   for capability/filesystem (CO-RE internal kernel structs)
+ *   - <linux/bpf.h> for network/sockops (UAPI-only programs)
+ */
+#include <bpf/bpf_helpers.h>
+
+/* Address-family constants are #defines in the kernel and therefore absent from
+ * vmlinux.h; the stripped Ubuntu linux-libc-dev <linux/socket.h> also omits them. */
+#ifndef AF_INET
+#define AF_INET 2
+#endif
+#ifndef AF_INET6
+#define AF_INET6 10
+#endif
 
 #define MAX_CGROUP_ID_LEN 256
 #define MAX_EVENT_DETAIL 128

@@ -1,7 +1,5 @@
-#include "common.bpf.h"
 #include <vmlinux.h>
-#include <linux/bpf.h>
-#include <bpf/bpf_helpers.h>
+#include "common.bpf.h"
 #include <bpf/bpf_tracing.h>
 #include <linux/errno.h>
 
@@ -117,11 +115,7 @@ static __always_inline int emit_event(__u64 cgroup_id, __u32 pid, __u8 enforceme
 }
 
 SEC("lsm/security_capable")
-int BPF_PROG(handle_capable, const struct cred *cred, struct cap_audit_info *info, int cap, int opts, int ret) {
-    if (ret != 0) {
-        return ret;
-    }
-
+int BPF_PROG(handle_capable, const struct cred *cred, struct user_namespace *ns, int cap, unsigned int opts) {
     if (cap < 0 || cap >= 64) {
         return 0;
     }
