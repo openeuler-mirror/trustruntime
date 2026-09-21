@@ -10,49 +10,55 @@
  * See the Mulan PSL v2 for more details.
  */
 
-//! 规则求值引擎（过滤引擎 T2，说明书 4.1 / K3 / D3）。
+//! 规则求值引擎（2026-09-16 结构重设计：ruleset 链式求值）。
 //!
-//! 纯函数决策：**黑名单条目序遍历**（条目内四维 AND 短路，固定维度序
-//! domain→method→uri→binary）→ 命中即 `(deny, blacklist_match)`；
-//! 未命中 → **白名单同法**（`allow, whitelist_match`）；仍未命中 →
-//! `(default_policy 值, default_policy)`。无状态、无 I/O、不缓存——
-//! 决策只由入参决定（同一配置多次求值结果确定，D3）。
+//! 纯函数决策，无状态、无 I/O、不缓存。**前置条件**：`rule_list` 已按
+//! `host.prio` **降序**、各规则集内 targetrules/binaryrules 已按 action
+//! rank（deny>alert>allow）排序——由 [`crate::registry::Registry::
+//! set_container_config`] 存储时归一化（单一保证点）。
 //!
-//! 求值顺序为**黑名单>白名单>默认**（2026-09-01 用户决策修订——同请求
-//! 命中双名单时黑名单优先，deny-overrides-allow 安全模型）。
+//! 求值算法（链式——首个**规则**命中即决策）：
+//! ```text
+//! for rs in rule_list（prio 降序）:
+//!     host 不匹配 → continue 下一规则集
+//!     for br in rs.binaryrules:            // deny/alert 即决策；allow 透传
+//!         deny  → (Deny,  blacklist_match)
+//!         alert → (Allow, blacklist_match, alert=true)
+//!     for tr in rs.targetrules:            // 首中即决策
+//!         deny  → (Deny,  blacklist_match)
+//!         alert → (Allow, blacklist_match, alert=true)
+//!         allow → (Allow, whitelist_match)
+//!     （规则集内无命中 → 继续下一规则集）
+//! 全部未命中 → default_policy（Alert → 放行 + alert=true）
+//! ```
 //!
-//! 签名对齐 K3（`evaluate(group_id, domain, method, url_path,
-//! binary_path, fc) -> (Action, Reason)`）；`group_id` 不参与匹配
-//!（审计/回调入参），保留以锚定契约形态。
+//! host 匹配：`type=ip` → addr（精确/CIDR）对 DNS 预解析 target_ips
+//! **任一命中**（deny 保守）；`type=host` → context 单星 glob 对请求域名
+//!（大小写不敏感）。`port` 为**预留字段**（不参与匹配）。
 //!
-//! 条目命中判定复用 [`crate::filter::matcher`] 四维匹配器（T1 已交付）；
-//! 未声明维度（None）等同 "*" 全匹配（v1.0 兼容，TC-016）。
+//! binary 匹配：path 单星 glob 对 resolver 的 binary_path；`None`（未
+//! 解析）不命中——含 binaryrules 的配置由服务层前置收敛
+//! binary_not_found（`has_binary_condition`），不以 None 进入求值。
 
 use crate::filter::matcher::{
-    BinaryMatcher, DimensionMatcher, DomainMatcher, IpMatcher, MethodMatcher, PortMatcher,
-    RequestMeta, UriMatcher,
+    star_glob_match, DimensionMatcher, DomainMatcher, IpMatcher, MethodMatcher, RequestMeta,
+    UriMatcher,
 };
-use crate::model::{Action, FilterConfig, Policy, Reason, RuleEntry};
+use crate::model::{
+    Action, Decision, FilterConfig, HostType, Policy, Reason, RuleAction, RuleSet,
+};
 
 /// 静态匹配器组（无状态 unit struct，进程内共享）。
 static DOMAIN: DomainMatcher = DomainMatcher;
 static METHOD: MethodMatcher = MethodMatcher;
 static URI: UriMatcher = UriMatcher;
-static BINARY: BinaryMatcher = BinaryMatcher;
 static TARGET_IP: IpMatcher = IpMatcher;
-static TARGET_PORT: PortMatcher = PortMatcher;
 
-/// 规则求值（K3）：按**黑>白>默认**顺序确定 (action, reason)——
-/// 同请求命中双名单时黑名单优先（deny-overrides-allow，2026-09-01
-/// 用户决策修订原「白>黑>默认」）。
+/// 规则求值（K3，2026-09-16 起 [`Decision`] 返回）。
 ///
-/// `url_path` 可含 query string（uri 匹配器内部剥离）；
-/// `binary_path` 为 [`None`] 时 binary 维度条件视为匹配通过
-///（D2——统一激活语义下 pid 反查失败在管道层先行收敛为
-/// binary_not_found，不会以 None 进入本函数的求值）；
-/// `target_ips` 为 DNS 预解析结果（空切片时含 IP 条目的规则不命中
-/// ——未解析拒绝在管道层先行收敛为 dns_resolve_error）；
-/// `target_port`：明文 = Host 头端口（缺省 80）、TLS = 443。
+/// `group_id` 不参与匹配（契约锚点）；`url_path` 可含 query（uri 匹配器
+/// 内部剥离）；`target_ips` 为 DNS 预解析结果（仅 host.type=ip 规则集
+/// 消费）；`target_port` 当前不参与匹配（port 预留）。
 #[allow(clippy::too_many_arguments)] // K3 契约平铺签名（维度演进追加）。
 pub fn evaluate(
     group_id: &str,
@@ -63,9 +69,10 @@ pub fn evaluate(
     target_ips: &[std::net::IpAddr],
     target_port: u16,
     fc: &FilterConfig,
-) -> (Action, Reason) {
+) -> Decision {
     // group_id 不参与匹配（契约锚点；防未使用告警的显式标记）。
     let _ = group_id;
+    let _ = target_port; // port 预留——不参与匹配。
     let req = RequestMeta {
         domain,
         method,
@@ -74,357 +81,474 @@ pub fn evaluate(
         target_ips,
         target_port,
     };
-    // 黑名单全条目序遍历：命中即 deny（黑>白>默认——同命中黑名单优先，
-    // D3 顺序确定性保持）。
-    for entry in &fc.blacklist {
-        if entry_matches(&req, entry) {
-            return (Action::Deny, Reason::BlacklistMatch);
+
+    for rs in &fc.rule_list {
+        if !ruleset_matches(&req, rs) {
+            crate::log_debug!("filter", "ruleset skipped: name={} prio={}", rs.name, rs.host.prio);
+            continue;
         }
-    }
-    // 白名单全条目序遍历：命中即 allow。
-    for entry in &fc.whitelist {
-        if entry_matches(&req, entry) {
-            return (Action::Allow, Reason::WhitelistMatch);
+        // binaryrules：deny/alert 命中即决策；allow 透传（无决策——排序
+        // 保证 allow 段最后，透传后落入 targetrules）。
+        for br in &rs.binaryrules {
+            if !binary_rule_matches(br, req.binary_path) {
+                continue;
+            }
+            match br.action {
+                RuleAction::Deny => {
+                    crate::log_debug!(
+                        "filter",
+                        "rule matched: ruleset={} prio={} kind=binary action=deny",
+                        rs.name,
+                        rs.host.prio
+                    );
+                    return Decision {
+                        action: Action::Deny,
+                        reason: Reason::BlacklistMatch,
+                        alert: false,
+                    }
+                }
+                RuleAction::Alert => {
+                    crate::log_debug!(
+                        "filter",
+                        "rule matched: ruleset={} prio={} kind=binary action=alert",
+                        rs.name,
+                        rs.host.prio
+                    );
+                    return Decision {
+                        action: Action::Allow,
+                        reason: Reason::BlacklistMatch,
+                        alert: true,
+                    }
+                }
+                RuleAction::Allow => {} // 透传。
+            }
         }
+        // targetrules：首个命中即决策。
+        for tr in &rs.targetrules {
+            if !METHOD.matches(&req, Some(&tr.method)) || !URI.matches(&req, Some(&tr.path)) {
+                continue;
+            }
+            match tr.action {
+                RuleAction::Deny => {
+                    crate::log_debug!(
+                        "filter",
+                        "rule matched: ruleset={} prio={} kind=target action=deny",
+                        rs.name,
+                        rs.host.prio
+                    );
+                    return Decision {
+                        action: Action::Deny,
+                        reason: Reason::BlacklistMatch,
+                        alert: false,
+                    }
+                }
+                RuleAction::Alert => {
+                    crate::log_debug!(
+                        "filter",
+                        "rule matched: ruleset={} prio={} kind=target action=alert",
+                        rs.name,
+                        rs.host.prio
+                    );
+                    return Decision {
+                        action: Action::Allow,
+                        reason: Reason::BlacklistMatch,
+                        alert: true,
+                    }
+                }
+                RuleAction::Allow => {
+                    crate::log_debug!(
+                        "filter",
+                        "rule matched: ruleset={} prio={} kind=target action=allow",
+                        rs.name,
+                        rs.host.prio
+                    );
+                    return Decision {
+                        action: Action::Allow,
+                        reason: Reason::WhitelistMatch,
+                        alert: false,
+                    }
+                }
+            }
+        }
+        // 本规则集无命中 → 链式继续下一规则集（首个规则命中才决策）。
+        crate::log_debug!("filter", "ruleset no rule hit: name={} prio={}", rs.name, rs.host.prio);
     }
-    // 默认策略（无规则匹配；Alert → 放行 + 告警标记由服务管道按
-    // default_policy 组合判定——求值动作与 Allow 一致）。
+
+    // 默认策略（全部规则集未命中）。
+    crate::log_debug!("filter", "no ruleset hit; default policy applies");
     match fc.default_policy {
-        Policy::Allow | Policy::Alert => (Action::Allow, Reason::DefaultPolicy),
-        Policy::Deny => (Action::Deny, Reason::DefaultPolicy),
+        Policy::Allow => Decision {
+            action: Action::Allow,
+            reason: Reason::DefaultPolicy,
+            alert: false,
+        },
+        Policy::Deny => Decision {
+            action: Action::Deny,
+            reason: Reason::DefaultPolicy,
+            alert: false,
+        },
+        Policy::Alert => Decision {
+            action: Action::Allow,
+            reason: Reason::DefaultPolicy,
+            alert: true,
+        },
     }
 }
 
-/// 单条目命中判定：固定维度序（domain→method→uri→binary→target_ip→
-/// target_port）AND 短路（D3）。
-///
-/// 条件传入形态：`Some(&str)` 已声明维度 / `None` 未声明（等同 "*"，
-/// 匹配器内部全匹配——v1.0 兼容）。
-fn entry_matches(req: &RequestMeta<'_>, entry: &RuleEntry) -> bool {
-    DOMAIN.matches(req, Some(entry.domain.as_str()))
-        && METHOD.matches(req, Some(entry.method.as_str()))
-        && URI.matches(req, entry.uri.as_deref())
-        && BINARY.matches(req, entry.binary.as_deref())
-        && TARGET_IP.matches(req, entry.target_ip.as_deref())
-        && TARGET_PORT.matches(req, entry.target_port.as_deref())
+/// 规则集命中判定（host 条件——port 预留不参与）。
+fn ruleset_matches(req: &RequestMeta<'_>, rs: &RuleSet) -> bool {
+    match rs.host.host_type {
+        HostType::Ip => rs
+            .host
+            .addr
+            .as_deref()
+            .map(|addr| TARGET_IP.matches(req, Some(addr)))
+            .unwrap_or(false),
+        HostType::Host => rs
+            .host
+            .context
+            .as_deref()
+            .map(|ctx| DOMAIN.matches(req, Some(ctx)))
+            .unwrap_or(false),
+    }
+}
+
+/// binary 规则命中判定（path 单星 glob；未解析 None 不命中——服务层
+/// 前置 binary_not_found 收敛）。
+fn binary_rule_matches(br: &crate::model::BinaryRule, binary_path: Option<&str>) -> bool {
+    binary_path.is_some_and(|bp| star_glob_match(&br.path, bp))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{BinaryRule, HostRule, RuleSet, TargetRule};
 
-    fn entry(domain: &str, method: &str, uri: Option<&str>, binary: Option<&str>) -> RuleEntry {
-        RuleEntry {
-            domain: domain.to_string(),
+    fn mk_host_ruleset(context: &str, prio: u32, targets: Vec<TargetRule>) -> RuleSet {
+        RuleSet {
+            name: format!("rs-{context}"),
+            host: HostRule {
+                host_type: HostType::Host,
+                addr: None,
+                context: Some(context.to_string()),
+                prio,
+            },
+            targetrules: targets,
+            binaryrules: vec![],
+            port: None,
+        }
+    }
+
+    fn mk_ip_ruleset(addr: &str, prio: u32, targets: Vec<TargetRule>) -> RuleSet {
+        RuleSet {
+            name: format!("rs-{addr}"),
+            host: HostRule {
+                host_type: HostType::Ip,
+                addr: Some(addr.to_string()),
+                context: None,
+                prio,
+            },
+            targetrules: targets,
+            binaryrules: vec![],
+            port: None,
+        }
+    }
+
+    fn t(method: &str, path: &str, action: RuleAction) -> TargetRule {
+        TargetRule {
             method: method.to_string(),
-            uri: uri.map(str::to_string),
-            binary: binary.map(str::to_string),
-            target_ip: None,
-            target_port: None,
+            path: path.to_string(),
+            action,
         }
     }
 
-    /// 含 IP/端口条件的条目（维度组合测试辅助）。
-    fn entry_net(
-        domain: &str,
-        target_ip: Option<&str>,
-        target_port: Option<&str>,
-    ) -> RuleEntry {
-        RuleEntry {
-            target_ip: target_ip.map(str::to_string),
-            target_port: target_port.map(str::to_string),
-            ..entry(domain, "GET", None, None)
-        }
-    }
-
-    fn fc(default: Policy, whitelist: Vec<RuleEntry>, blacklist: Vec<RuleEntry>) -> FilterConfig {
+    fn fc(default: Policy, rule_list: Vec<RuleSet>) -> FilterConfig {
         FilterConfig {
             default_policy: default,
-            whitelist,
-            blacklist,
+            rule_list,
         }
     }
 
-    // TC1（表驱动）：黑命中/白命中/无命中走默认（allow 与 deny 两种默认；
-    // 本用例黑白名单无重叠，顺序无关）。
+    fn eval(domain: &str, method: &str, path: &str, fc: &FilterConfig) -> Decision {
+        evaluate("g", domain, method, path, None, &[], 443, fc)
+    }
+
+    // TC1：prio 降序链式——高优先级规则集先决策；未命中回退低优先级。
     #[test]
-    fn tc1_three_way_decision_table() {
-        let deny_default = fc(
+    fn tc1_prio_order_chain() {
+        let conf = fc(
             Policy::Deny,
-            vec![entry("allow.com", "GET", None, None)],
-            vec![entry("block.com", "*", None, None)],
+            vec![
+                mk_host_ruleset(
+                    "dual.com",
+                    300,
+                    vec![t("*", "/admin/*", RuleAction::Deny)],
+                ),
+                mk_host_ruleset("dual.com", 100, vec![t("*", "*", RuleAction::Allow)]),
+            ],
         );
-        // 白命中。
+        // 高 prio 规则集命中 deny。
         assert_eq!(
-            evaluate("g", "allow.com", "GET", "/x", None, &[], 443, &deny_default),
-            (Action::Allow, Reason::WhitelistMatch)
+            eval("dual.com", "GET", "/admin/x", &conf),
+            Decision {
+                action: Action::Deny,
+                reason: Reason::BlacklistMatch,
+                alert: false
+            }
         );
-        // 黑命中。
+        // 高 prio 规则集无命中 → 链式回退低 prio allow。
         assert_eq!(
-            evaluate("g", "block.com", "POST", "/y", None, &[], 443, &deny_default),
-            (Action::Deny, Reason::BlacklistMatch)
-        );
-        // 均不命中 → 默认 deny。
-        assert_eq!(
-            evaluate("g", "other.com", "GET", "/", None, &[], 443, &deny_default),
-            (Action::Deny, Reason::DefaultPolicy)
-        );
-        // 默认 allow 变体。
-        let allow_default = fc(Policy::Allow, vec![], vec![]);
-        assert_eq!(
-            evaluate("g", "anything.com", "GET", "/", None, &[], 443, &allow_default),
-            (Action::Allow, Reason::DefaultPolicy)
+            eval("dual.com", "GET", "/v1/x", &conf),
+            Decision {
+                action: Action::Allow,
+                reason: Reason::WhitelistMatch,
+                alert: false
+            }
         );
     }
 
-    // TC2：条目内四维 AND——仅全命中才放行，任一维不匹配落入后续求值。
+    // TC2：host 匹配——type=host glob 命中/不命中。
     #[test]
-    fn tc2_multi_dimension_and() {
+    fn tc2_host_glob_matching() {
         let conf = fc(
             Policy::Deny,
-            vec![entry("a.com", "POST", Some("/v1/*"), Some("python3"))],
-            vec![],
+            vec![mk_host_ruleset("*.example.com", 100, vec![t("*", "*", RuleAction::Allow)])],
         );
-        // 全命中 → allow。
         assert_eq!(
-            evaluate("g", "a.com", "POST", "/v1/chat", Some("python3"), &[], 443, &conf),
-            (Action::Allow, Reason::WhitelistMatch)
+            eval("a.example.com", "GET", "/", &conf).action,
+            Action::Allow
         );
-        // domain+uri 命中但 binary 不匹配 → 不命中（走默认 deny）。
-        assert_eq!(
-            evaluate("g", "a.com", "POST", "/v1/chat", Some("curl"), &[], 443, &conf),
-            (Action::Deny, Reason::DefaultPolicy)
+        // 裸域不命中（glob 字面 `.` 分隔）。
+        assert_eq!(eval("example.com", "GET", "/", &conf).reason, Reason::DefaultPolicy);
+        // 无关域名。
+        assert_eq!(eval("other.org", "GET", "/", &conf).action, Action::Deny);
+    }
+
+    // TC3：host 匹配——type=ip（DNS 预解析 IP 任一命中；CIDR 网段）。
+    #[test]
+    fn tc3_host_ip_matching() {
+        let conf = fc(
+            Policy::Deny,
+            vec![mk_ip_ruleset("10.0.0.0/8", 100, vec![t("*", "*", RuleAction::Deny)])],
         );
-        // method 不匹配。
+        let hit = ["10.1.2.3".parse().unwrap()];
+        let miss = ["192.168.1.1".parse().unwrap()];
         assert_eq!(
-            evaluate("g", "a.com", "GET", "/v1/chat", Some("python3"), &[], 443, &conf),
-            (Action::Deny, Reason::DefaultPolicy)
+            evaluate("g", "cdn.com", "GET", "/", None, &hit, 443, &conf).reason,
+            Reason::BlacklistMatch
         );
-        // uri 不匹配。
         assert_eq!(
-            evaluate("g", "a.com", "POST", "/v2/chat", Some("python3"), &[], 443, &conf),
-            (Action::Deny, Reason::DefaultPolicy)
+            evaluate("g", "cdn.com", "GET", "/", None, &miss, 443, &conf).reason,
+            Reason::DefaultPolicy
+        );
+        // 空 IP 集（未解析）：ip 规则集不命中。
+        assert_eq!(
+            evaluate("g", "cdn.com", "GET", "/", None, &[], 443, &conf).reason,
+            Reason::DefaultPolicy
         );
     }
 
-    // TC5：binary 维度——Some 命中/不命中；None（统一激活下管道层先行
-    // 收敛，此路径为防御性断言：条件永真，D2）。
+    // TC4：targetrules 维度——method + path AND 匹配。
     #[test]
-    fn tc5_binary_dimension() {
+    fn tc4_targetrule_method_path() {
         let conf = fc(
             Policy::Deny,
-            vec![entry("a.com", "*", None, Some("python3"))],
-            vec![],
+            vec![mk_host_ruleset(
+                "a.com",
+                100,
+                vec![t("GET", "/v1/*", RuleAction::Allow)],
+            )],
         );
+        assert_eq!(eval("a.com", "GET", "/v1/x", &conf).action, Action::Allow);
+        assert_eq!(eval("a.com", "GET", "/", &conf).reason, Reason::DefaultPolicy);
         assert_eq!(
-            evaluate("g", "a.com", "GET", "/", Some("python3"), &[], 443, &conf),
-            (Action::Allow, Reason::WhitelistMatch)
+            eval("a.com", "POST", "/v1/x", &conf).reason,
+            Reason::DefaultPolicy
         );
+        // query 剥离。
         assert_eq!(
-            evaluate("g", "a.com", "GET", "/", Some("curl"), &[], 443, &conf),
-            (Action::Deny, Reason::DefaultPolicy)
-        );
-        // None：binary 条件视为匹配通过（D2 条件永真）。
-        assert_eq!(
-            evaluate("g", "a.com", "GET", "/", None, &[], 443, &conf),
-            (Action::Allow, Reason::WhitelistMatch)
+            eval("a.com", "GET", "/v1/x?q=1", &conf).action,
+            Action::Allow
         );
     }
 
-    // TC6（TC-016）：v1.0 条目缺省维度（uri/binary 未声明）等同 "*"。
+    // TC5：action 三态——deny/alert/allow 的 Decision 形态。
     #[test]
-    fn tc6_v10_entry_compatibility() {
-        let conf = fc(
-            Policy::Deny,
-            vec![entry("a.com", "GET", None, None)],
-            vec![],
-        );
-        // 任意 url_path/进程均不限制。
+    fn tc5_action_three_states() {
+        let mk = |action: RuleAction| {
+            fc(
+                Policy::Deny,
+                vec![mk_host_ruleset("a.com", 100, vec![t("*", "*", action)])],
+            )
+        };
         assert_eq!(
-            evaluate("g", "a.com", "GET", "/any/path?x=1", Some("any-bin"), &[], 443, &conf),
-            (Action::Allow, Reason::WhitelistMatch)
+            eval("a.com", "GET", "/", &mk(RuleAction::Deny)),
+            Decision {
+                action: Action::Deny,
+                reason: Reason::BlacklistMatch,
+                alert: false
+            }
+        );
+        assert_eq!(
+            eval("a.com", "GET", "/", &mk(RuleAction::Alert)),
+            Decision {
+                action: Action::Allow,
+                reason: Reason::BlacklistMatch,
+                alert: true
+            }
+        );
+        assert_eq!(
+            eval("a.com", "GET", "/", &mk(RuleAction::Allow)),
+            Decision {
+                action: Action::Allow,
+                reason: Reason::WhitelistMatch,
+                alert: false
+            }
         );
     }
 
-    // TC8：通配边界经求值引擎的组合（domain 通配/uri 前缀后缀）。
+    // TC6：action 排序优先级——同规则集内 deny 条目先于 alert 先于 allow
+    //（registry 归一化后形态；deny 命中优先）。
     #[test]
-    fn tc8_wildcard_semantics_through_engine() {
+    fn tc6_action_precedence_within_ruleset() {
+        // 手工构造已排序形态（deny → alert → allow——存储归一化结果）。
         let conf = fc(
             Policy::Deny,
-            vec![entry("*.example.com", "*", Some("/v1/*"), None)],
-            vec![],
+            vec![mk_host_ruleset(
+                "a.com",
+                100,
+                vec![
+                    t("GET", "/x", RuleAction::Deny),
+                    t("*", "/x", RuleAction::Alert),
+                    t("*", "*", RuleAction::Allow),
+                ],
+            )],
         );
+        // deny 段命中优先于 alert 段。
         assert_eq!(
-            evaluate("g", "a.example.com", "GET", "/v1/chat?q=1", None, &[], 443, &conf),
-            (Action::Allow, Reason::WhitelistMatch)
+            eval("a.com", "GET", "/x", &conf),
+            Decision {
+                action: Action::Deny,
+                reason: Reason::BlacklistMatch,
+                alert: false
+            }
         );
-        // 裸域不命中（通配边界）。
+        // deny 段 method 不符 → alert 段命中（放行 + 告警）。
         assert_eq!(
-            evaluate("g", "example.com", "GET", "/v1/chat", None, &[], 443, &conf),
-            (Action::Deny, Reason::DefaultPolicy)
+            eval("a.com", "POST", "/x", &conf),
+            Decision {
+                action: Action::Allow,
+                reason: Reason::BlacklistMatch,
+                alert: true
+            }
         );
-        // uri 后缀模式（黑名单）。
-        let conf2 = fc(
-            Policy::Allow,
-            vec![],
-            vec![entry("cdn.com", "*", Some("*.js"), None)],
-        );
+        // 前段均不命中 → allow 段。
         assert_eq!(
-            evaluate("g", "cdn.com", "GET", "/script.js", None, &[], 443, &conf2),
-            (Action::Deny, Reason::BlacklistMatch)
-        );
-        assert_eq!(
-            evaluate("g", "cdn.com", "GET", "/script.css", None, &[], 443, &conf2),
-            (Action::Allow, Reason::DefaultPolicy)
+            eval("a.com", "GET", "/y", &conf),
+            Decision {
+                action: Action::Allow,
+                reason: Reason::WhitelistMatch,
+                alert: false
+            }
         );
     }
 
-    // 求值顺序确定性（D3，2026-09-01 修订）：黑名单先于白名单
-    //（同请求命中双名单时黑胜——deny-overrides-allow）。
+    // TC7：binaryrules——deny/alert 即决策；allow 透传至 targetrules；
+    // glob 匹配 binary_path。
     #[test]
-    fn blacklist_precedes_whitelist() {
-        let conf = fc(
-            Policy::Deny,
-            vec![entry("dual.com", "GET", None, None)],
-            vec![entry("dual.com", "*", None, None)],
-        );
+    fn tc7_binaryrules() {
+        let mut rs = mk_host_ruleset("a.com", 100, vec![t("*", "*", RuleAction::Allow)]);
+        rs.binaryrules = vec![
+            BinaryRule {
+                path: "/usr/bin/wget".to_string(),
+                action: RuleAction::Deny,
+            },
+            BinaryRule {
+                path: "/usr/bin/curl".to_string(),
+                action: RuleAction::Alert,
+            },
+            BinaryRule {
+                path: "*".to_string(),
+                action: RuleAction::Allow,
+            },
+        ];
+        let conf = fc(Policy::Deny, vec![rs]);
+        // binary deny 命中（优先于 target allow）。
         assert_eq!(
-            evaluate("g", "dual.com", "GET", "/", None, &[], 443, &conf),
-            (Action::Deny, Reason::BlacklistMatch)
+            evaluate("g", "a.com", "GET", "/", Some("/usr/bin/wget"), &[], 443, &conf),
+            Decision {
+                action: Action::Deny,
+                reason: Reason::BlacklistMatch,
+                alert: false
+            }
+        );
+        // binary alert 命中（放行 + 告警）。
+        assert_eq!(
+            evaluate("g", "a.com", "GET", "/", Some("/usr/bin/curl"), &[], 443, &conf),
+            Decision {
+                action: Action::Allow,
+                reason: Reason::BlacklistMatch,
+                alert: true
+            }
+        );
+        // binary allow（透传）→ target allow 决策。
+        assert_eq!(
+            evaluate("g", "a.com", "GET", "/", Some("/usr/bin/python3"), &[], 443, &conf),
+            Decision {
+                action: Action::Allow,
+                reason: Reason::WhitelistMatch,
+                alert: false
+            }
+        );
+        // binary 未解析（None）：不命中任何 binaryrule → target allow。
+        assert_eq!(
+            eval("a.com", "GET", "/", &conf).action,
+            Action::Allow
         );
     }
 
-    // 默认策略 Alert（2026-09-09）：黑白未命中 → 放行（与 Allow 同动作；
-    // 告警标记由服务侧组合判定承载）；黑白命中不受 default_policy 影响。
+    // TC8：默认策略三态（无规则集命中）。
     #[test]
-    fn default_policy_alert_allows_unmatched() {
-        let conf = fc(Policy::Alert, vec![], vec![]);
+    fn tc8_default_policy_states() {
+        let empty = |p: Policy| fc(p, vec![]);
         assert_eq!(
-            evaluate("g", "anything.com", "GET", "/", None, &[], 443, &conf),
-            (Action::Allow, Reason::DefaultPolicy)
-        );
-
-        // 白名单命中：不受 alert 影响（allow + whitelist_match）。
-        let conf = fc(
-            Policy::Alert,
-            vec![entry("allow.com", "GET", None, None)],
-            vec![entry("block.com", "*", None, None)],
+            eval("x.com", "GET", "/", &empty(Policy::Deny)),
+            Decision {
+                action: Action::Deny,
+                reason: Reason::DefaultPolicy,
+                alert: false
+            }
         );
         assert_eq!(
-            evaluate("g", "allow.com", "GET", "/", None, &[], 443, &conf),
-            (Action::Allow, Reason::WhitelistMatch)
+            eval("x.com", "GET", "/", &empty(Policy::Allow)),
+            Decision {
+                action: Action::Allow,
+                reason: Reason::DefaultPolicy,
+                alert: false
+            }
         );
-        // 黑名单命中：alert 模式下仍拒绝（黑白命中优先于默认策略）。
         assert_eq!(
-            evaluate("g", "block.com", "GET", "/", None, &[], 443, &conf),
-            (Action::Deny, Reason::BlacklistMatch)
+            eval("x.com", "GET", "/", &empty(Policy::Alert)),
+            Decision {
+                action: Action::Allow,
+                reason: Reason::DefaultPolicy,
+                alert: true
+            }
         );
     }
 
-    // 单星任意位置经求值引擎（2026-09-05 三维统一 glob——中间星
-    // domain + 中间星 uri + 单星 method 组合）。
+    // TC9：port 预留——规则集带 port 字段不影响匹配（任意端口均命中）。
     #[test]
-    fn single_star_anywhere_through_engine() {
-        let conf = fc(
-            Policy::Deny,
-            vec![entry("api.*.example.com", "G*T", Some("/one/box/*/v1"), None)],
-            vec![],
-        );
-        // 全维命中 → allow。
-        assert_eq!(
-            evaluate(
-                "g",
-                "api.v2.example.com",
-                "GET",
-                "/one/box/a/b/v1",
-                None,
-                &[],
-                443,
-                &conf
-            ),
-            (Action::Allow, Reason::WhitelistMatch)
-        );
-        // domain 结构不符（缺中间段）。
-        assert_eq!(
-            evaluate("g", "api.example.com", "GET", "/one/box/a/v1", None, &[], 443, &conf),
-            (Action::Deny, Reason::DefaultPolicy)
-        );
-        // uri 不符（尾段不匹配）。
-        assert_eq!(
-            evaluate("g", "api.v2.example.com", "GET", "/one/box/a/v2", None, &[], 443, &conf),
-            (Action::Deny, Reason::DefaultPolicy)
-        );
-        // method 不符（大小写敏感）。
-        assert_eq!(
-            evaluate("g", "api.v2.example.com", "get", "/one/box/a/v1", None, &[], 443, &conf),
-            (Action::Deny, Reason::DefaultPolicy)
-        );
-    }
-
-    // 目标 IP/端口维度经求值引擎（2026-09-09）：任一解析 IP 命中、
-    // 端口范围、六维 AND 组合。
-    #[test]
-    fn target_ip_port_through_engine() {
-        let ip = |s: &str| -> std::net::IpAddr { s.parse().unwrap() };
-
-        // IP 黑名单（CIDR）：任一解析 IP 命中即 deny。
-        let conf = fc(
-            Policy::Allow,
-            vec![],
-            vec![entry_net("*", Some("203.0.113.0/24"), None)],
-        );
-        let cdn_ips = [ip("1.1.1.1"), ip("203.0.113.7")];
-        assert_eq!(
-            evaluate("g", "cdn.example.com", "GET", "/", None, &cdn_ips, 443, &conf),
-            (Action::Deny, Reason::BlacklistMatch)
-        );
-        // 全部解析 IP 不在网段 → 未命中。
-        let clean = [ip("1.1.1.1")];
-        assert_eq!(
-            evaluate("g", "cdn.example.com", "GET", "/", None, &clean, 443, &conf),
-            (Action::Allow, Reason::DefaultPolicy)
-        );
-        // 空解析集（未解析——管道层已 fail-closed，此处为引擎防御路径）：
-        // 含 IP 条目不命中。
-        assert_eq!(
-            evaluate("g", "cdn.example.com", "GET", "/", None, &[], 443, &conf),
-            (Action::Allow, Reason::DefaultPolicy)
-        );
-
-        // 端口白名单（范围）+ domain 组合。
-        let conf = fc(
-            Policy::Deny,
-            vec![entry_net("*.internal.com", None, Some("8000-9000"))],
-            vec![],
-        );
-        assert_eq!(
-            evaluate("g", "api.internal.com", "GET", "/", None, &[], 8443, &conf),
-            (Action::Allow, Reason::WhitelistMatch)
-        );
-        assert_eq!(
-            evaluate("g", "api.internal.com", "GET", "/", None, &[], 443, &conf),
-            (Action::Deny, Reason::DefaultPolicy)
-        );
-
-        // 六维 AND：IP 与端口同时声明，任一不符即不命中。
-        let conf = fc(
-            Policy::Deny,
-            vec![entry_net("api.internal.com", Some("10.0.0.0/8"), Some("8443"))],
-            vec![],
-        );
-        let ips = [ip("10.1.2.3")];
-        assert_eq!(
-            evaluate("g", "api.internal.com", "GET", "/", None, &ips, 8443, &conf),
-            (Action::Allow, Reason::WhitelistMatch)
-        );
-        assert_eq!(
-            evaluate("g", "api.internal.com", "GET", "/", None, &ips, 443, &conf),
-            (Action::Deny, Reason::DefaultPolicy)
-        );
-        let wrong_ips = [ip("192.168.1.1")];
-        assert_eq!(
-            evaluate("g", "api.internal.com", "GET", "/", None, &wrong_ips, 8443, &conf),
-            (Action::Deny, Reason::DefaultPolicy)
-        );
+    fn tc9_port_reserved_ignored() {
+        let mut rs = mk_host_ruleset("a.com", 100, vec![t("*", "*", RuleAction::Allow)]);
+        rs.port = Some(8843);
+        let conf = fc(Policy::Deny, vec![rs]);
+        for port in [443u16, 80, 8843] {
+            assert_eq!(
+                evaluate("g", "a.com", "GET", "/", None, &[], port, &conf).action,
+                Action::Allow,
+                "port={port} 应命中（预留不参与匹配）"
+            );
+        }
     }
 }

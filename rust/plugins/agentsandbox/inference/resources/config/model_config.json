@@ -1,0 +1,37 @@
+{
+  "models": [
+    {
+      "model_id": "qwen36-35b-vl",
+      "name": "qwen36-35b-vl Cloud",
+      "type": "cloud",
+      "provider": "openai",
+      "endpoint": "http://mlops.huawei.com/mlops-service/api/v2/agentService/v1",
+      "timeout_ms": 30000,
+      "max_retries": 3,
+      "headers": {
+        "X-Custom-Header": "data-router"
+      },
+      "enabled": true
+    },
+    {
+      "model_id": "claude-3",
+      "name": "Claude-3 Cloud",
+      "type": "cloud",
+      "provider": "anthropic",
+      "endpoint": "https://api.anthropic.com/v1/messages",
+      "timeout_ms": 60000,
+      "max_retries": 3,
+      "enabled": true
+    },
+    {
+      "model_id": "llama-8b",
+      "name": "Local LLaMA-8B",
+      "type": "local",
+      "provider": "custom",
+      "endpoint": "http://localhost:8080/v1/chat/completions",
+      "timeout_ms": 120000,
+      "max_retries": 1,
+      "enabled": true
+    }
+  ]
+}

@@ -17,12 +17,49 @@ fn main() {
 }
 
 fn run() -> anyhow::Result<()> {
+    // tokio runtime（multi-thread，IO + time driver）：`proxy_init` 的
+    // `TcpListener::from_std` 注册与 `tokio::spawn`（serve 任务）隐式
+    // 要求当前线程处于 runtime 上下文——缺失时 from_std 直接 panic
+    //（"must be called from the context of a Tokio 1.x runtime"，
+    // 2026-09-12 修复的 startup panic）。enter guard 使下方 sync 启动链
+    // 获得上下文；主线程随后阻塞于 UDS 配置监听，serve 任务在 runtime
+    // worker 线程运转。
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow::anyhow!("tokio runtime init failed: {}", e))?;
+    let _rt_guard = rt.enter();
+
     let config = ProxyProcConfig::from_env()?;
     load_ca(&config)?;
     register_ebpf_resolver()?;
     setup_log_sink();
+    // 启动顺序（AR-005，2026-09-18）：start_proxy（内含推理库初始化）
+    // 先于 apply_startup_api_key——key 交付依赖已初始化的全局状态
+    //（"先 init 再 set key"）。serve 已启动而 key 尚未落库的窗口内，
+    // 推理流量按未配置模型语义处理（Bearer EMPTY——与 UDS 远程模式
+    // 服务延迟就绪的既有语义一致）。
+    // 容器策略不经启动装配——HC 经 UDS refresh_policy 下发
+    //（未下发容器 fail-closed 503，生产语义；self-test 打桩已移除）。
     start_proxy(&config)?;
+    apply_startup_api_key(&config);
     start_config_receiver(&config)
+}
+
+/// 启动期 API key 配置应用（2026-09-17）：AGENTSANDBOX_API_KEY 解析
+/// 结果（parse 期已 FATAL 校验）经 facade `set_api_key` 下发——
+/// 双模式自动生效（env UDS_PATH → msg_type=1 远程 / 未设 → 本地
+/// 真实库加密存储）。
+///
+/// 时序：后于 `start_proxy`（推理库已初始化——本地分支可用）。
+/// 交付失败（Delivery）→ WARN 继续（远程服务可能未就绪；HC 可经
+/// `set_api_key` 管理消息后续补发）——管理面操作不做流量面 fail-closed。
+fn apply_startup_api_key(config: &ProxyProcConfig) {
+    if let Some(req) = &config.api_key {
+        if let Err(e) = agentsandbox_proxy::facade::set_api_key(req.clone()) {
+            eprintln!("[WARN] proxy_proc: startup set_api_key delivery failed: {:?}", e);
+        }
+    }
 }
 
 // ---- CA loading ----
@@ -58,8 +95,8 @@ fn read_key_file(path: &str) -> anyhow::Result<Vec<u8>> {
     let mode = meta.permissions().mode();
     if mode & (libc::S_IRGRP | libc::S_IROTH) != 0 {
         anyhow::bail!(
-            "CA key file is group/world readable (mode {:o}); require 0o640 or stricter",
-            mode
+            "CA key file is group/world readable (mode {:o}); require 0o600 or stricter",
+            mode & 0o777
         );
     }
     std::fs::read(path).map_err(|e| anyhow::anyhow!("failed to read CA key {}: {}", path, e))
@@ -111,6 +148,9 @@ fn start_proxy(config: &ProxyProcConfig) -> anyhow::Result<()> {
             port: config.listen_port,
         },
         inference_routes: config.inference_route.iter().cloned().collect(),
+        // 推理库初始化载体（AR-005）：env AGENT_ROUTER_CONFIG_DIR → 指定
+        // 目录；未设 → None（proxy_init 内 init_default——内嵌默认配置）。
+        router_config_dir: config.agent_router_config_dir.clone(),
     };
     proxy_init(&proxy_config).map_err(|e| anyhow::anyhow!("proxy_init failed: {:?}", e))?;
     eprintln!(
@@ -147,6 +187,12 @@ struct ProxyProcConfig {
     listen_ip: std::net::IpAddr,
     listen_port: u16,
     inference_route: Option<InferenceRoute>,
+    /// 启动期 API key 配置（AGENTSANDBOX_API_KEY——2026-09-17）。
+    api_key: Option<agentsandbox_proxy::ApiKeyRequest>,
+    /// 推理路由真实库配置目录（AGENT_ROUTER_CONFIG_DIR——可选）：
+    /// 装配进 `ProxyConfig.router_config_dir`，由 `proxy_init` 统一
+    /// 初始化（未设 → 内嵌默认配置）。
+    agent_router_config_dir: Option<String>,
 }
 
 impl ProxyProcConfig {
@@ -176,6 +222,8 @@ impl ProxyProcConfig {
         }
 
         let inference_route = parse_inference_route()?;
+        let api_key = parse_api_key()?;
+        let agent_router_config_dir = parse_agent_router_config_dir()?;
 
         Ok(Self {
             proxy_sock,
@@ -184,8 +232,83 @@ impl ProxyProcConfig {
             listen_ip,
             listen_port,
             inference_route,
+            api_key,
+            agent_router_config_dir,
         })
     }
+}
+
+/// Parses the agent router config directory from AGENT_ROUTER_CONFIG_DIR
+/// env var (optional).
+///
+/// Set (absolute path) → ProxyConfig.router_config_dir (custom config dir
+/// init at proxy_init); unset/empty → None (embedded default configs).
+/// Non-absolute value → Err (FATAL — consistent with CA path rules).
+/// Log carries no path content (security).
+fn parse_agent_router_config_dir() -> anyhow::Result<Option<String>> {
+    match std::env::var("AGENT_ROUTER_CONFIG_DIR") {
+        Ok(raw) => {
+            let trimmed = raw.trim().to_string();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            if !trimmed.starts_with('/') {
+                anyhow::bail!("AGENT_ROUTER_CONFIG_DIR must be an absolute path");
+            }
+            eprintln!("[INFO] agent router config dir configured");
+            Ok(Some(trimmed))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+/// Parses the API key config from AGENTSANDBOX_API_KEY env var (optional,
+/// 2026-09-17).
+///
+/// Format: simplified `model_id:api_key` pairs, comma-separated
+/// (first-colon split — api_key may contain colons):
+/// `GLM_53:sk-112` / `GLM_53:sk-112,M2:sk2`.
+/// Empty/unset → no api key config (Ok(None)).
+/// Malformed pairs (missing colon / empty fields) → Err (FATAL —
+/// consistent with inference_route).
+/// Log carries item count only (no key content — security).
+fn parse_api_key() -> anyhow::Result<Option<agentsandbox_proxy::ApiKeyRequest>> {
+    use agentsandbox_proxy::{ApiKeyAction, ApiKeyItem, ApiKeyRequest};
+
+    let raw = match std::env::var("AGENTSANDBOX_API_KEY") {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let mut items = Vec::new();
+    for pair in trimmed.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue; // Trailing/duplicate commas — tolerant skip.
+        }
+        let (model_id, api_key) = pair.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!("AGENTSANDBOX_API_KEY: pair missing ':' separator: use model_id:api_key")
+        })?;
+        let (model_id, api_key) = (model_id.trim(), api_key.trim());
+        if model_id.is_empty() || api_key.is_empty() {
+            anyhow::bail!("AGENTSANDBOX_API_KEY: model_id and api_key must be non-empty");
+        }
+        items.push(ApiKeyItem {
+            model_id: model_id.to_string(),
+            api_key: api_key.to_string(),
+        });
+    }
+    if items.is_empty() {
+        return Ok(None);
+    }
+    eprintln!("[INFO] loaded api key config: items={}", items.len());
+    Ok(Some(ApiKeyRequest {
+        action: ApiKeyAction::Set,
+        items,
+    }))
 }
 
 /// Parses a single inference route from AGENTSANDBOX_INFERENCE_ROUTE env var (optional).

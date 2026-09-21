@@ -24,25 +24,32 @@ agentsandbox-inference = { path = "inference" }
 agentsandbox-log = { path = "log" }
 agentsandbox-security = { path = "security" }
 agentsandbox-proxy = { path = "proxy" }
-# Third-party crates
-serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.149"
-thiserror = "=2.0.12"
-anyhow = "=1.0.98"
-tokio = { version = "=1.49.0", features = ["full"] }
-bytes = "=1.11.1"
-libc = "=0.2.180"
-log = "=0.4.27"
-rustls = { version = "=0.23.36", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12", "logging"] }
-hyper = { version = "=1.8.1", default-features = false, features = ["http1", "http2", "server", "client"] }
-hyper-util = { version = "=0.1.19", features = ["server-auto", "tokio"] }
-http = "=1.4.0"
-toml = "=0.8.23" # 需要与serde兼容
-tempfile = "=3.20.0"
+# 版本火车：版本号 = 已测下限（^ 范围兼容外部源码集成——外部依赖树
+# 下限更高时可向上收敛；内部构建经已提交的 Cargo.lock 固定，不漂移。
+# 2026-09-18 由 = 精确锁定放宽——= 与外部集成的更高版本下限冲突）。
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.12"
+anyhow = "1.0.98"
+tokio = { version = "1.49.0", features = ["full"] }
+bytes = "1.11.1"
+libc = "0.2.180"
+log = "0.4.27"
+rustls = { version = "0.23.36", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12", "logging"] }
+hyper = { version = "1.8.1", default-features = false, features = ["http1", "http2", "server", "client"] }
+hyper-util = { version = "0.1.19", features = ["server-auto", "tokio"] }
+http = "1.4.0"
+toml = "0.8.23" # 需要与serde兼容
+tempfile = "3.20.0"
+# 推理路由真实实现（BeDemo C++ 移植，AR-005）——火车成员。
+regex = "1.12.4"
+aes-gcm = "0.10.3"
+base64 = "0.22.1"
+zeroize = "1.9.0"
 
-# 下面这写三方件不在版本火车
-aya = "=0.14.0"
+# 下面这些三方件不在版本火车
+aya = "0.14.0"
 rustls-pemfile = "2"
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "x509-parser"] }
 x509-parser = "0.16"

@@ -19,12 +19,15 @@
 //! - **不存在/空**：本地直调注入的 router（生产默认 mock——真实库
 //!   落地后同 trait 替换）。
 //!
-//! **UDS 协议**（NDJSON——每帧单行 JSON + `\n`，详见 `inference/API.md`）：
-//! - 请求：`{"headers":[["name","value"],...],"body":"..."}`（多值头逐项
-//!   展开保序；body 为 lossy UTF-8 文本）；
-//! - 响应：`{"result":0|1|2,"modifications":[{"action":1|2,"type":1|2,
-//!   "key":"...","value":"..."}]}`（线格式沿用协议字段名 `type`——
-//!   Rust 侧映射 [`agentsandbox_inference::ModifyTarget`]）。
+//! **UDS 协议**（2026-09-17 信封化——NDJSON，每帧单行 JSON + `\n`，
+//! 详见 `inference/API.md`）：
+//! - **请求/响应对称信封** `{"msg_type":N,"body":"<JSON 格式字符串>"}`；
+//! - `msg_type=10`（推理路由）：请求 body = `{"headers":[...],"body":"..."}`
+//!   （多值头逐项展开保序）；响应 body = `{"result":0|1|2,"modifications":
+//!   [{"action":1|2,"type":1|2,"key":"...","value":"..."}]}`；
+//! - `msg_type=1`（set/delete api key，2026-09-17）：请求 body =
+//!   `{"action":"set|delete","items":[{"model_id":"...","api_key":"..."}]}`；
+//!   响应 body = `{"status":0}`（0=成功，非零=失败）。
 //!
 //! **失败语义（fail-closed）**：连接拒绝/IO 错误/超时/响应畸形（非
 //! JSON/字段缺失/枚举值域外/超长）→ 返回 [`InferenceResult::Block`]
@@ -43,13 +46,37 @@ use agentsandbox_inference::{
 };
 
 /// 分发环境变量（存在且非空 = UDS 远程裁决；值 = UDS socket 文件路径）。
-pub const ROUTE_ENV_VAR: &str = "HISEC_ROUT_PORT";
+pub const ROUTE_ENV_VAR: &str = "UDS_PATH";
 
 /// UDS 单请求总超时（connect 即时；读写在流上以 read/write 超时约束）。
 const UDS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 响应行读取上限（防异常服务端返回超长帧撑爆内存）。
 const MAX_RESPONSE_LINE: usize = 16 * 1024 * 1024;
+
+// ===== UDS 信封协议（2026-09-17：请求/响应对称信封）=====
+
+/// 信封消息类型：set/delete api key。
+pub const MSG_TYPE_API_KEY: u8 = 1;
+/// 信封消息类型：推理路由（原裁决协议载荷整体内嵌于 body）。
+pub const MSG_TYPE_ROUTE: u8 = 10;
+
+/// UDS 通信信封（请求与响应对称形态；`body` 为 JSON 格式字符串——
+/// 按 `msg_type` 解释载荷结构）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UdsEnvelope {
+    /// 消息类型（1=set api key / 10=推理路由）。
+    pub msg_type: u8,
+    /// JSON 格式字符串（序列化后的载荷）。
+    pub body: String,
+}
+
+/// api key 响应 body（`msg_type=1`）：`{"status":0}`（0=成功）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UdsApiKeyResponse {
+    /// 0=成功，非零=失败。
+    pub status: u8,
+}
 
 // ===== 线格式 DTO（serde；pub 供测试与参考实现对照）=====
 
@@ -141,29 +168,55 @@ fn from_wire(resp: &UdsResponse) -> Option<InferenceRouteResult> {
 
 // ===== UDS 客户端 =====
 
-/// 单请求 UDS 往返：connect → 写请求行 → 读响应行 → 关闭。
+/// 单请求 UDS 信封往返：connect → 写信封行 → 读信封行 → 关闭。
 ///
-/// 任一环节失败 → Err（调用方 fail-closed Block）。
-fn uds_roundtrip(path: &str, req: &InferenceRequest) -> Option<InferenceRouteResult> {
+/// 任一环节失败 → None（route 调用方 fail-closed Block；api key 调用方
+/// 映射 Delivery）。各阶段独立 warn 日志辅助定位（不含路径与载荷内容
+/// ——日志安全）。
+fn uds_exchange(path: &str, envelope: &UdsEnvelope) -> Option<UdsEnvelope> {
     // 序列化先行（序列化失败 = 程序不变量破坏，等价协议失败）。
-    let line = serde_json::to_string(&to_wire(req)).ok()?;
-    let mut stream = UnixStream::connect(path).ok()?;
+    let line = serde_json::to_string(envelope).unwrap_or_else(|e| {
+        crate::log_warn!("inference", "uds request serialize failed: {e}");
+        String::new()
+    });
+    if line.is_empty() {
+        return None;
+    }
+    let mut stream = match UnixStream::connect(path) {
+        Ok(s) => s,
+        Err(e) => {
+            crate::log_warn!("inference", "uds connect failed: {e}");
+            return None;
+        }
+    };
     let _ = stream.set_read_timeout(Some(UDS_TIMEOUT));
     let _ = stream.set_write_timeout(Some(UDS_TIMEOUT));
 
     // 写请求行（超时约束下的 write_all + flush）。
-    stream.write_all(line.as_bytes()).ok()?;
-    stream.write_all(b"\n").ok()?;
-    stream.flush().ok()?;
+    if let Err(e) = stream.write_all(line.as_bytes())
+        .and_then(|_| stream.write_all(b"\n"))
+        .and_then(|_| stream.flush())
+    {
+        crate::log_warn!("inference", "uds request write failed: {e}");
+        return None;
+    }
+    let req_len = line.len();
 
-    // 读响应行（BufReader 分块读取——超长/EOF → Err；read_line 无上限，
+    // 读响应行（BufReader 分块读取——超长/EOF → None；read_line 无上限，
     // 此处手动按 MAX_RESPONSE_LINE 截断防异常服务端撑爆内存）。
     let mut reader = BufReader::new(stream);
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
-        let n = reader.read(&mut chunk).ok()?;
+        let n = match reader.read(&mut chunk) {
+            Ok(n) => n,
+            Err(e) => {
+                crate::log_warn!("inference", "uds response read failed: {e}");
+                return None;
+            }
+        };
         if n == 0 {
+            crate::log_warn!("inference", "uds response EOF before newline");
             return None; // EOF：响应未完整抵达。
         }
         buf.extend_from_slice(&chunk[..n]);
@@ -171,12 +224,76 @@ fn uds_roundtrip(path: &str, req: &InferenceRequest) -> Option<InferenceRouteRes
             break;
         }
         if buf.len() > MAX_RESPONSE_LINE {
+            crate::log_warn!("inference", "uds response line exceeds limit; dropped");
             return None; // 超长帧——协议畸形。
         }
     }
     let line_end = buf.iter().position(|&b| b == b'\n').unwrap_or(buf.len());
-    let resp: UdsResponse = serde_json::from_slice(&buf[..line_end]).ok()?;
-    from_wire(&resp)
+    let resp: UdsEnvelope = match serde_json::from_slice(&buf[..line_end]) {
+        Ok(r) => r,
+        Err(e) => {
+            crate::log_warn!("inference", "uds response parse failed: {e}");
+            return None;
+        }
+    };
+    // 收发完成观测（info——release 可见；字节数不含内容，日志安全）。
+    crate::log_info!(
+        "inference",
+        "uds roundtrip done: msg_type={} req_bytes={} resp_bytes={}",
+        resp.msg_type,
+        req_len,
+        line_end
+    );
+    Some(resp)
+}
+
+/// 推理路由 UDS 往返（`msg_type=10`）：请求 body = 原裁决协议载荷；
+/// 响应 body 解析为 [`UdsResponse`]。
+fn uds_roundtrip(path: &str, req: &InferenceRequest) -> Option<InferenceRouteResult> {
+    let body = serde_json::to_string(&to_wire(req)).ok()?;
+    let resp = uds_exchange(
+        path,
+        &UdsEnvelope {
+            msg_type: MSG_TYPE_ROUTE,
+            body,
+        },
+    )?;
+    let parsed: UdsResponse = serde_json::from_str(&resp.body).ok()?;
+    from_wire(&parsed).or_else(|| {
+        // 值域外枚举（result/action/target 非法）——协议畸形定位。
+        crate::log_warn!("inference", "uds response enum value out of range; dropped");
+        None
+    })
+}
+
+/// set/delete api key UDS 往返（`msg_type=1`，2026-09-17）：请求 body =
+/// [`ApiKeyRequest`](agentsandbox_inference::ApiKeyRequest) JSON 串；响应
+/// body 解析为 [`UdsApiKeyResponse`]（status=0 成功）。
+///
+/// 失败（通道/解析/status 非零）→ None（调用方映射
+/// [`ApiKeyError::Delivery`](agentsandbox_inference::ApiKeyError)——可重试）。
+pub fn uds_api_key(path: &str, req: &agentsandbox_inference::ApiKeyRequest) -> Option<()> {
+    let body = serde_json::to_string(req).ok()?;
+    let resp = uds_exchange(
+        path,
+        &UdsEnvelope {
+            msg_type: MSG_TYPE_API_KEY,
+            body,
+        },
+    )?;
+    let parsed: UdsApiKeyResponse = serde_json::from_str(&resp.body).ok()?;
+    if parsed.status != 0 {
+        crate::log_warn!("inference", "uds api key rejected: status={}", parsed.status);
+        return None;
+    }
+    Some(())
+}
+
+/// 打桩存储查询转发（测试观测缝——facade `set_api_key` 本地模式消费的
+/// 同一存储；真实外部库落地后随存储替换移除）。
+#[doc(hidden)]
+pub fn stub_api_key_for(model_id: &str) -> Option<String> {
+    agentsandbox_inference::api_key_for(model_id)
 }
 
 // ===== 分发器 =====
@@ -213,7 +330,11 @@ impl InferenceRouter for UdsRouteDispatcher {
                     }
                 })
             }
-            None => self.local.route(req),
+            None => {
+                // 本地直调观测（debug 级——mock 常态路径低噪声）。
+                crate::log_debug!("inference", "route dispatch: local (env unset)");
+                self.local.route(req)
+            }
         }
     }
 }
@@ -306,7 +427,8 @@ mod tests {
         assert!(serde_json::from_str::<UdsResponse>("not-json").is_err());
     }
 
-    // UDS 往返（真实 UnixStream 回环）：server 线程 echo 决策。
+    // UDS 往返（真实 UnixStream 回环，信封协议）：server 线程按 msg_type
+    // 回对称信封（route → UdsResponse body）。
     #[test]
     fn uds_roundtrip_against_local_server() {
         use std::os::unix::net::UnixListener;
@@ -319,16 +441,30 @@ mod tests {
                 let mut reader = BufReader::new(&mut conn);
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() {
-                    let resp = UdsResponse {
-                        result: 1,
-                        modifications: vec![UdsModification {
-                            action: 2,
-                            target: 1,
-                            key: "x-test".to_string(),
-                            value: "rewritten".to_string(),
-                        }],
+                    // 解包请求信封 → 响应对称信封（body = UdsResponse）。
+                    let resp_body = match serde_json::from_str::<UdsEnvelope>(
+                        line.trim_end(),
+                    ) {
+                        Ok(env) if env.msg_type == MSG_TYPE_ROUTE => {
+                            let resp = UdsResponse {
+                                result: 1,
+                                modifications: vec![UdsModification {
+                                    action: 2,
+                                    target: 1,
+                                    key: "x-test".to_string(),
+                                    value: "rewritten".to_string(),
+                                }],
+                            };
+                            serde_json::to_string(&resp).unwrap()
+                        }
+                        _ => r#"{"result":2}"#.to_string(), // 非法信封 → Block。
                     };
-                    let out = serde_json::to_string(&resp).unwrap() + "\n";
+                    let out = serde_json::to_string(&UdsEnvelope {
+                        msg_type: MSG_TYPE_ROUTE,
+                        body: resp_body,
+                    })
+                    .unwrap()
+                        + "\n";
                     let _ = conn.write_all(out.as_bytes());
                 }
             }
@@ -345,6 +481,69 @@ mod tests {
         let out = uds_roundtrip(sock_path.to_str().unwrap(), &req).expect("往返成功");
         assert_eq!(out.result, InferenceResult::Modified);
         assert_eq!(out.modifications[0].key, "x-test");
+    }
+
+    // 信封序列化：msg_type + body 双重编码（body 为 JSON 字符串）。
+    #[test]
+    fn envelope_double_encoding() {
+        let env = UdsEnvelope {
+            msg_type: MSG_TYPE_ROUTE,
+            body: r#"{"headers":[],"body":"x"}"#.to_string(),
+        };
+        let json = serde_json::to_string(&env).unwrap();
+        // body 作为字符串字段转义（内层引号转义——双重编码锚定）。
+        assert!(json.contains(r#""body":"{\"headers\":[],\"body\":\"x\"}""#));
+        let back: UdsEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, env);
+        // msg_type 常量锚定（协议契约）。
+        assert_eq!(MSG_TYPE_API_KEY, 1);
+        assert_eq!(MSG_TYPE_ROUTE, 10);
+    }
+
+    // api key UDS 往返（真实 UnixStream 回环）：msg_type=1 送达 +
+    // status=0 应答 → Some(())；status 非零 → None。
+    #[test]
+    fn uds_api_key_roundtrip() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("api-key.sock");
+        let listener = UnixListener::bind(&sock_path).unwrap();
+        let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let rec = received.clone();
+        std::thread::spawn(move || {
+            if let Ok((mut conn, _)) = listener.accept() {
+                let mut reader = BufReader::new(&mut conn);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_ok() {
+                    if let Ok(env) = serde_json::from_str::<UdsEnvelope>(line.trim_end()) {
+                        rec.lock().unwrap().push(env.body.clone());
+                        let out = serde_json::to_string(&UdsEnvelope {
+                            msg_type: MSG_TYPE_API_KEY,
+                            body: r#"{"status":0}"#.to_string(),
+                        })
+                        .unwrap()
+                            + "\n";
+                        let _ = conn.write_all(out.as_bytes());
+                    }
+                }
+            }
+        });
+
+        let req = agentsandbox_inference::ApiKeyRequest {
+            action: agentsandbox_inference::ApiKeyAction::Set,
+            items: vec![agentsandbox_inference::ApiKeyItem {
+                model_id: "GLM_53".to_string(),
+                api_key: "sk-112".to_string(),
+            }],
+        };
+        uds_api_key(sock_path.to_str().unwrap(), &req).expect("api key roundtrip");
+        // 服务端收到 msg_type=1 的 body（ApiKeyRequest JSON 串）。
+        let bodies = received.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        let parsed: agentsandbox_inference::ApiKeyRequest =
+            serde_json::from_str(&bodies[0]).unwrap();
+        assert_eq!(parsed, req);
     }
 
     // UDS 不可达（路径无监听）→ None → dispatcher fail-closed Block。

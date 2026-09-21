@@ -154,6 +154,14 @@ build_proxy_lib() {
         echo "  [dep] $(basename "$inference_rlib")"
     fi
 
+    # Inference router config templates (real library deployment defaults —
+    # AGENT_ROUTER_CONFIG_DIR points at a directory with these 4 files).
+    if [[ -d "$WORKSPACE_DIR/inference/resources/config" ]]; then
+        mkdir -p "$OUT_DIR/inference-config"
+        cp "$WORKSPACE_DIR"/inference/resources/config/*.json "$OUT_DIR/inference-config/"
+        echo "  [cfg] inference-config/*.json"
+    fi
+
     # Copy public API source as header reference for integrators
     if [[ -f "$WORKSPACE_DIR/proxy/src/lib.rs" ]]; then
         cp "$WORKSPACE_DIR/proxy/src/lib.rs" "$OUT_DIR/header/proxy_api.rs"

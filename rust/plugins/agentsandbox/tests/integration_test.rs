@@ -10,17 +10,17 @@
  * See the Mulan PSL v2 for more details.
  */
 
-//! 集成测试（新 proxy API 重写版）：config TOML 解析 + 新 proxy 容器 API
-//! 契约 + 求值引擎（黑>白>默认）跨模块协作。
+//! 集成测试（2026-09-16 ruleset 结构重写版）：config TOML（[[proxy.ruleset]]）
+//! 解析 + 转换 + 新求值引擎（prio 降序链式）跨模块协作。
 //!
-//! 旧 `FilterEngine::evaluate(&agentsandbox_config::FilterConfig, ..)` 形态已
-//! 随旧 proxy 退役——本测试将 config 模块解析结果**转换**为新 proxy 的
-//! `FilterConfig` 后经新引擎 `agentsandbox_proxy::filter::evaluate` 求值，
-//! 保持「TOML → 解析 → 转换 → 求值」的全链断言。
+//! 保持「TOML → 解析 → 转换 → 求值」全链断言。
 
 use agentsandbox_config::{parse_proxy_policy, parse_security_policy};
 use agentsandbox_proxy::filter::evaluate;
-use agentsandbox_proxy::model::{Action, FilterConfig, Policy, Reason, RuleEntry};
+use agentsandbox_proxy::model::{
+    Action, FilterConfig, HostRule, HostRuleConfig, HostType, Policy, Reason, RuleAction, RuleSet,
+    TargetRule,
+};
 
 const SAMPLE_TOML: &str = r#"
 version = 1
@@ -28,13 +28,24 @@ version = 1
 default_policy = "deny"
 audit_enabled = true
 policy_change_strategy = "drain"
-whitelist = [
-  { domain = "api.example.com", method = "POST", uri = "/v1/chat" },
-  { domain = "*.example.com", method = "*", uri = "*" },
+[[proxy.ruleset]]
+name = "allow-example"
+host = { type = "host", context = "*.example.com", prio = 100 }
+targetrules = [
+  { method = "POST", path = "/v1/chat", action = "allow" },
+  { method = "*", path = "*", action = "allow" },
 ]
-blacklist = [
-  { domain = "*.internal.com", method = "DELETE", uri = "*" },
-  { domain = "api.example.com", method = "DELETE", uri = "*" },
+[[proxy.ruleset]]
+name = "block-internal"
+host = { type = "host", context = "*.internal.com", prio = 300 }
+targetrules = [
+  { method = "DELETE", path = "*", action = "deny" },
+]
+[[proxy.ruleset]]
+name = "block-example-delete"
+host = { type = "host", context = "api.example.com", prio = 200 }
+targetrules = [
+  { method = "DELETE", path = "*", action = "deny" },
 ]
 [security]
 enforcement_mode = "block"
@@ -50,30 +61,75 @@ network_rules = [
 ]
 "#;
 
-/// config 模块解析结果 → 新 proxy FilterConfig 转换（集成方装配形态）。
+/// config 模块解析结果 → proxy FilterConfig 转换（集成方装配形态）。
 ///
-/// 旧 `MatchRule` 字段全 String（"*" 缺省）；新 `RuleEntry` 的 uri/binary
-/// 为 Option——"*" 转为 None（等同缺省全匹配语义）。
+/// 规则集内 targetrules 按 deny>alert>allow 排序（等价 registry
+/// 归一化——测试直连 evaluate 需自带序）。
 fn to_proxy_fc(parsed: &agentsandbox_config::FilterConfig) -> FilterConfig {
-    let conv = |rules: &[agentsandbox_config::MatchRule]| -> Vec<RuleEntry> {
-        rules
-            .iter()
-            .map(|r| RuleEntry {
-                domain: r.domain.clone(),
-                method: r.method.clone(),
-                uri: if r.uri == "*" { None } else { Some(r.uri.clone()) },
-                binary: if r.binary == "*" { None } else { Some(r.binary.clone()) },
-            })
-            .collect()
-    };
+    fn rank(a: &str) -> u8 {
+        match a {
+            "deny" | "block" => 0,
+            "alert" => 1,
+            _ => 2,
+        }
+    }
+    let rule_list = parsed
+        .rule_list
+        .iter()
+        .map(|rs| RuleSet {
+            name: rs.name.clone(),
+            host: HostRule {
+                host_type: match rs.host.host_type.as_str() {
+                    "ip" => HostType::Ip,
+                    _ => HostType::Host,
+                },
+                addr: rs.host.addr.clone(),
+                context: rs.host.context.clone(),
+                prio: rs.host.prio,
+            },
+            targetrules: {
+                let mut ts: Vec<TargetRule> = rs
+                    .targetrules
+                    .iter()
+                    .map(|t| TargetRule {
+                        method: t.method.clone(),
+                        path: t.path.clone(),
+                        action: match t.action.as_str() {
+                            "deny" | "block" => RuleAction::Deny,
+                            "alert" => RuleAction::Alert,
+                            _ => RuleAction::Allow,
+                        },
+                    })
+                    .collect();
+                ts.sort_by_key(|t| rank(match t.action {
+                    RuleAction::Deny => "deny",
+                    RuleAction::Alert => "alert",
+                    RuleAction::Allow => "allow",
+                }));
+                ts
+            },
+            binaryrules: rs
+                .binaryrules
+                .iter()
+                .map(|b| agentsandbox_proxy::model::BinaryRule {
+                    path: b.path.clone(),
+                    action: match b.action.as_str() {
+                        "deny" | "block" => RuleAction::Deny,
+                        "alert" => RuleAction::Alert,
+                        _ => RuleAction::Allow,
+                    },
+                })
+                .collect(),
+            port: rs.port,
+        })
+        .collect();
     FilterConfig {
         default_policy: match parsed.default_policy.as_str() {
             "allow" => Policy::Allow,
             "alert" => Policy::Alert,
             _ => Policy::Deny,
         },
-        whitelist: conv(&parsed.whitelist),
-        blacklist: conv(&parsed.blacklist),
+        rule_list,
     }
 }
 
@@ -83,8 +139,9 @@ fn test_parse_proxy_policy() {
     assert_eq!(fc.default_policy, "deny");
     assert!(fc.audit_enabled);
     assert_eq!(fc.policy_change_strategy, "drain");
-    assert_eq!(fc.whitelist.len(), 2);
-    assert_eq!(fc.blacklist.len(), 2);
+    assert_eq!(fc.rule_list.len(), 3);
+    assert_eq!(fc.rule_list[0].name, "allow-example");
+    assert_eq!(fc.rule_list[0].host.prio, 100);
 }
 
 #[test]
@@ -96,66 +153,95 @@ fn test_parse_security_policy() {
 }
 
 #[test]
-fn test_filter_engine_blacklist_priority() {
+fn test_filter_engine_high_prio_ruleset_wins() {
     let fc = to_proxy_fc(&parse_proxy_policy(SAMPLE_TOML).unwrap());
-    let (action, reason) = evaluate("c-001", "malicious.internal.com", "DELETE", "/admin", None, &fc);
-    assert_eq!(action, Action::Deny);
-    assert_eq!(reason, Reason::BlacklistMatch);
+    // *.internal.com 命中 block-internal(300) deny。
+    let d = evaluate("c-001", "malicious.internal.com", "DELETE", "/admin", None, &[], 443, &fc);
+    assert_eq!(d.action, Action::Deny);
+    assert_eq!(d.reason, Reason::BlacklistMatch);
 }
 
 #[test]
 fn test_filter_engine_whitelist_match() {
     let fc = to_proxy_fc(&parse_proxy_policy(SAMPLE_TOML).unwrap());
-    let (action, reason) = evaluate("c-001", "api.example.com", "POST", "/v1/chat", None, &fc);
-    assert_eq!(action, Action::Allow);
-    assert_eq!(reason, Reason::WhitelistMatch);
+    let d = evaluate("c-001", "api.example.com", "POST", "/v1/chat", None, &[], 443, &fc);
+    assert_eq!(d.action, Action::Allow);
+    assert_eq!(d.reason, Reason::WhitelistMatch);
 }
 
 #[test]
-fn test_filter_engine_blacklist_overrides_whitelist() {
+fn test_filter_engine_prio_overrides_lower() {
     let fc = to_proxy_fc(&parse_proxy_policy(SAMPLE_TOML).unwrap());
-    // 同时命中白名单（*.example.com）与黑名单（api.example.com DELETE）：
-    // 黑名单优先（黑>白>默认）。
-    let (action, reason) = evaluate("c-001", "api.example.com", "DELETE", "/admin/x", None, &fc);
-    assert_eq!(action, Action::Deny);
-    assert_eq!(reason, Reason::BlacklistMatch);
+    // api.example.com DELETE：高 prio block-example-delete(200) 先于
+    // allow-example(100)——deny 决策（prio 序链式）。
+    let d = evaluate("c-001", "api.example.com", "DELETE", "/admin/x", None, &[], 443, &fc);
+    assert_eq!(d.action, Action::Deny);
+    assert_eq!(d.reason, Reason::BlacklistMatch);
 }
 
 #[test]
 fn test_filter_engine_default_policy_deny() {
     let fc = to_proxy_fc(&parse_proxy_policy(SAMPLE_TOML).unwrap());
-    // 既不在白名单也不在黑名单 → default_policy=deny。
-    let (action, reason) = evaluate("c-001", "neutral.example.org", "GET", "/", None, &fc);
-    assert_eq!(action, Action::Deny);
-    assert_eq!(reason, Reason::DefaultPolicy);
+    // 无规则集命中 → default_policy=deny。
+    let d = evaluate("c-001", "neutral.example.org", "GET", "/", None, &[], 443, &fc);
+    assert_eq!(d.action, Action::Deny);
+    assert_eq!(d.reason, Reason::DefaultPolicy);
 }
 
 #[test]
 fn test_parse_proxy_policy_alert_and_invalid() {
-    // default_policy=alert 解析通过（2026-09-09）。
+    // default_policy=alert 解析通过；block 动作别名兼容。
     let alert_toml = r#"
 [proxy]
 default_policy = "alert"
 policy_change_strategy = "drain"
-whitelist = []
-blacklist = []
+[[proxy.ruleset]]
+name = "block-metadata"
+host = { type = "ip", addr = "169.254.169.254", prio = 50 }
+targetrules = [
+  { method = "*", path = "*", action = "block" },
+]
+binaryrules = [
+  { path = "*", action = "block" },
+]
+port = 8843
 "#;
     let fc = parse_proxy_policy(alert_toml).unwrap();
     assert_eq!(fc.default_policy, "alert");
+    assert_eq!(fc.rule_list.len(), 1);
+    assert_eq!(fc.rule_list[0].host.host_type, "ip");
+    assert_eq!(fc.rule_list[0].host.addr.as_deref(), Some("169.254.169.254"));
+    assert_eq!(fc.rule_list[0].port, Some(8843));
+    assert_eq!(fc.rule_list[0].targetrules[0].action, "block");
+    assert_eq!(fc.rule_list[0].binaryrules[0].action, "block");
 
-    // alert 求值语义：黑白未命中 → 放行（告警标记由 proxy 审计层承载）。
+    // alert 求值语义：无命中 → 放行 + alert 标记（Decision 携带）。
     let proxy_fc = to_proxy_fc(&fc);
-    let (action, reason) = evaluate("c-001", "neutral.example.org", "GET", "/", None, &proxy_fc);
-    assert_eq!(action, Action::Allow);
-    assert_eq!(reason, Reason::DefaultPolicy);
+    let d = evaluate("c-001", "neutral.example.org", "GET", "/", None, &[], 443, &proxy_fc);
+    assert_eq!(d.action, Action::Allow);
+    assert_eq!(d.reason, Reason::DefaultPolicy);
+    assert!(d.alert);
 
     // 非法值拒绝。
     let bad_toml = r#"
 [proxy]
 default_policy = "warn"
 policy_change_strategy = "drain"
-whitelist = []
-blacklist = []
+[[proxy.ruleset]]
+name = "x"
+host = { type = "host", context = "a.com", prio = 1 }
 "#;
     assert!(parse_proxy_policy(bad_toml).is_err());
+}
+
+#[test]
+fn test_host_rule_config_helper() {
+    // config 侧 HostRuleConfig::addr_host 辅助（parser 校验消费面）。
+    let h = HostRuleConfig {
+        host_type: "ip".to_string(),
+        addr: Some("10.0.0.1".to_string()),
+        context: None,
+        prio: 5,
+    };
+    assert_eq!(h.addr_host(), Some("10.0.0.1"));
 }

@@ -19,7 +19,10 @@ use agentsandbox_proxy::error::{CaError, ConfigError};
 use agentsandbox_proxy::facade::testing::{self, InstalledRuntime};
 use agentsandbox_proxy::facade::RuntimeRegistry;
 use agentsandbox_proxy::logging::{LogEvent, LogSink, LogSinkError};
-    use agentsandbox_proxy::model::{CaCert, FilterConfig, InferenceRoute, Policy, RuleEntry};
+    use agentsandbox_proxy::model::{
+    CaCert, FilterConfig, HostRule, HostType, InferenceRoute, Policy, RuleAction, RuleSet,
+    TargetRule,
+};
 use agentsandbox_proxy::registry::Resolver;
 
 /// fake 记录的委托调用（入参摘要）。
@@ -103,31 +106,45 @@ impl RuntimeRegistry for FakeRegistry {
 fn valid_fc(domain: &str) -> FilterConfig {
     FilterConfig {
         default_policy: Policy::Deny,
-        whitelist: vec![RuleEntry {
-            domain: domain.to_string(),
-            method: "*".to_string(),
-            uri: Some("/v1/*".to_string()),
-            binary: None,
-            target_ip: None,
-            target_port: None,
+        rule_list: vec![RuleSet {
+            name: "allow".to_string(),
+            host: HostRule {
+                host_type: HostType::Host,
+                addr: None,
+                context: Some(domain.to_string()),
+                prio: 100,
+            },
+            targetrules: vec![TargetRule {
+                method: "*".to_string(),
+                path: "*".to_string(),
+                action: RuleAction::Allow,
+            }],
+            binaryrules: vec![],
+            port: None,
         }],
-        blacklist: vec![],
     }
 }
 
-/// uri 非法（首尾同 `*`）的 fc（K10 非法结构）。
+/// path 多星（K10 非法结构）的 fc。
 fn invalid_fc() -> FilterConfig {
     FilterConfig {
         default_policy: Policy::Deny,
-        whitelist: vec![RuleEntry {
-            domain: "a.com".to_string(),
-            method: "*".to_string(),
-            uri: Some("*v1*".to_string()),
-            binary: None,
-            target_ip: None,
-            target_port: None,
+        rule_list: vec![RuleSet {
+            name: "bad".to_string(),
+            host: HostRule {
+                host_type: HostType::Host,
+                addr: None,
+                context: Some("a.com".to_string()),
+                prio: 100,
+            },
+            targetrules: vec![TargetRule {
+                method: "*".to_string(),
+                path: "*v1*".to_string(),
+                action: RuleAction::Allow,
+            }],
+            binaryrules: vec![],
+            port: None,
         }],
-        blacklist: vec![],
     }
 }
 
@@ -214,7 +231,10 @@ fn tc3_set_invalid_structure_keeps_old() {
     // 旧配置保持。
     let (container, fc) = fake.config.lock().unwrap().clone().unwrap();
     assert_eq!(container, "c-001");
-    assert_eq!(fc.whitelist[0].domain, "old.com");
+    assert_eq!(
+        fc.rule_list[0].host.context.as_deref(),
+        Some("old.com")
+    );
 }
 
 // TC5（重构版）：remove 无该容器配置 → Err(NotFound)。
@@ -264,6 +284,8 @@ async fn proxy_init_validates_endpoints() {
     let cfg = |f: &ContainerEndpoint, routes: Vec<InferenceRoute>| ProxyConfig {
         forwarding: f.clone(),
         inference_routes: routes,
+        // 校验失败用例不触达推理初始化（校验先于 init——None 亦可）。
+        router_config_dir: None,
     };
     let route = |host: &str, url: &str| InferenceRoute {
         host: host.to_string(),

@@ -18,8 +18,7 @@
 //!   过滤配置（同 id 覆盖 / 按 id 删除）；
 //! - [`set_container_ca`]：按容器键控的 MITM CA（双 PEM 结构体）；
 //! - [`proxy_init`]：一次性初始化——绑定 forwarding 端点（接入完整服务
-//!   管道；容器身份由 `ProxyConfig::container_id` 静态绑定端点：accept
-//!   即知 container_id，零运行时反查）；
+//!   管道；容器身份经 [`register_binary_resolver`] 回调连接级运行时解析）；
 //! - [`register_binary_resolver`] / [`register_log_sink`]：进程级回调注册。
 //!
 //! 配置与 CA 均可独立调用（每请求实时查表）；未 set 配置或 CA 的容器
@@ -30,9 +29,11 @@
 
 use std::sync::{Arc, RwLock};
 
+use agentsandbox_inference::ApiKeyError;
+
 use crate::error::{BindError, CaError, ConfigError};
 use crate::logging::LogSink;
-use crate::model::{CaCert, FilterConfig, ProxyConfig, RuleEntry};
+use crate::model::{CaCert, FilterConfig, ProxyConfig};
 use crate::registry::{Registry, Resolver};
 
 /// 内部运行态抽象（委托分发面；生产=Registry 委托实现，
@@ -174,6 +175,50 @@ pub fn register_log_sink(handler: LogSink) {
     runtime().register_log_sink(handler);
 }
 
+/// 设置/删除推理服务的 API key（2026-09-17，AR-005 配套管理面）。
+///
+/// 入参形态（serde）：
+/// `{"action":"set|delete","items":[{"model_id":"GLM_53","api_key":"sk-112"}]}`
+///
+/// - **set**：有则更新、无则添加（upsert）；**delete**：按 `model_id`
+///   删除（`api_key` 字段忽略；不存在幂等成功）；空 `items` = no-op；
+/// - **双模式分发**（与推理路由裁决同模式，每调用读 env
+///   [`ROUTE_ENV_VAR`](crate::inference_uds::ROUTE_ENV_VAR)）：
+///   env 设置 → UDS 远程（`msg_type=1`，失败返回
+///   [`ApiKeyError::Delivery`]——**可重试**，管理面操作不做流量面
+///   fail-closed）；env 未设 → 本地打桩存储
+///   （[`apply_api_key`](agentsandbox_inference::apply_api_key)——真实
+///   外部库落地后替换）。
+pub fn set_api_key(req: agentsandbox_inference::ApiKeyRequest) -> Result<(), ApiKeyError> {
+    // 参数校验：set → model_id/api_key 均非空；delete → model_id 非空
+    //（api_key 忽略）；空 items 短路成功。
+    if !req.items.is_empty() {
+        for item in &req.items {
+            match req.action {
+                agentsandbox_inference::ApiKeyAction::Set => {
+                    if item.model_id.is_empty() || item.api_key.is_empty() {
+                        return Err(ApiKeyError::Invalid);
+                    }
+                }
+                agentsandbox_inference::ApiKeyAction::Delete => {
+                    if item.model_id.is_empty() {
+                        return Err(ApiKeyError::Invalid);
+                    }
+                }
+            }
+        }
+    }
+    let path = std::env::var_os(crate::inference_uds::ROUTE_ENV_VAR).filter(|v| !v.is_empty());
+    match path {
+        Some(path) => {
+            let path = path.to_string_lossy().into_owned();
+            crate::inference_uds::uds_api_key(&path, &req)
+                .ok_or(ApiKeyError::Delivery)
+        }
+        None => agentsandbox_inference::apply_api_key(&req),
+    }
+}
+
 /// proxy 初始化错误。
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
@@ -187,6 +232,10 @@ pub enum ProxyInitError {
     /// 配置非法（container_id 空 / 端口 0 / 路由条目 host 或 url 空）。
     #[error("invalid endpoint")]
     InvalidEndpoint,
+    /// 推理路由库初始化失败（目录不存在/配置非法等——细节仅运行日志，
+    /// 不含路径；发生于一次性 guard 之前，修正配置后可重调）。
+    #[error("inference init failed")]
+    InferenceInit,
 }
 
 /// 全局初始化标记（proxy_init 一次性）。
@@ -200,75 +249,64 @@ static INITIALIZED: std::sync::atomic::AtomicBool =
 ///   （source/target/protocol → container_id + binary_path）；
 /// - **inference_routes**：推理路由列表（host+url 精确匹配；命中即旁通
 ///   过滤引擎，交推理路由外部库裁决——AR-005；空列表 = 无分流）；
-/// - **测试期 CA 兜底（临时）**：读取固定目录 CA 材料
-///   （`/etc/agentsandbox/cert/` 下 `ca_root.crt` + `private.key`）注入
-///   [`DEFAULT_CONTAINER_ID`] 容器——集成方证书获取链路完成前的过渡
-///   行为，届时移除；读取或注入失败仅告警放行（不阻断 init）。
+/// - **router_config_dir**：推理路由真实库初始化（AR-005）——
+///   `Some(dir)` → `init(dir)`；`None` → 内嵌默认配置（`init_default`）。
+///   初始化先于服务装配（`ServeContext::new` 的 `default_router()` 拾取
+///   `AgentRouter`）。
 ///
-/// 前置校验：端口非 0，路由条目 host/url 非空；重复调用返回
-/// `ProxyInitError::AlreadyInitialized`。
+/// 前置校验：端口非 0，路由条目 host/url 非空；推理库初始化失败返回
+/// `ProxyInitError::InferenceInit`（guard 未消耗——修正后可重调）；重复
+/// 调用返回 `ProxyInitError::AlreadyInitialized`。
 pub fn proxy_init(config: &ProxyConfig) -> Result<(), ProxyInitError> {
     validate_endpoint(&config.forwarding)?;
     validate_inference_routes(&config.inference_routes)?;
+    init_inference_router(config)?;
     if INITIALIZED.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return Err(ProxyInitError::AlreadyInitialized);
     }
 
-    // 测试期 CA 兜底（临时）：固定目录双 PEM 读取注入——仅告警语义。
-    load_ca_fallback(DEFAULT_CONTAINER_ID, TEST_CA_CERT_FILE, TEST_CA_KEY_FILE);
-
-    // forwarding 端点：绑定 + spawn serve（携带 container_id）。
+    // forwarding 端点：绑定 + spawn serve。三阶段（bind / nonblocking /
+    // tokio 注册）独立失败日志辅助定位（端口可打印——日志安全豁免；
+    // io 错误消息不含路径）。注意：from_std 隐式要求当前线程处于
+    // tokio runtime 上下文（含 IO driver）——缺失时 panic 而非返回 Err。
     let forward_addr = std::net::SocketAddr::new(config.forwarding.ip, config.forwarding.port);
-    let forward_listener = std::net::TcpListener::bind(forward_addr)
-        .map_err(map_forward_bind)?;
+    let forward_listener = match std::net::TcpListener::bind(forward_addr) {
+        Ok(l) => l,
+        Err(e) => {
+            crate::log_error!(
+                "facade",
+                "forwarding bind failed on port {}: kind={:?} msg={e}",
+                config.forwarding.port,
+                e.kind()
+            );
+            return Err(map_forward_bind(e));
+        }
+    };
     // TcpListener 默认阻塞——转 tokio 需 nonblocking（serve 在 async 上下文）。
-    forward_listener
-        .set_nonblocking(true)
-        .map_err(|_| ProxyInitError::InvalidEndpoint)?;
-    let forward_listener =
-        tokio::net::TcpListener::from_std(forward_listener).map_err(map_forward_bind)?;
+    if let Err(e) = forward_listener.set_nonblocking(true) {
+        crate::log_error!(
+            "facade",
+            "forwarding listener set_nonblocking failed: kind={:?} msg={e}",
+            e.kind()
+        );
+        return Err(ProxyInitError::InvalidEndpoint);
+    }
+    let forward_listener = match tokio::net::TcpListener::from_std(forward_listener) {
+        Ok(l) => l,
+        Err(e) => {
+            crate::log_error!(
+                "facade",
+                "forwarding listener tokio registration failed: kind={:?} msg={e}",
+                e.kind()
+            );
+            return Err(map_forward_bind(e));
+        }
+    };
 
     // 装配 ServeContext（共享生产组件单例——proxy_init 前注入的
     // set_container_* 状态连续生效）并启动 serve 任务。
     spawn_serve(forward_listener, config);
     Ok(())
-}
-
-// ===== 测试期 CA 兜底（临时——集成方证书获取链路完成后移除）=====
-
-/// 测试期默认容器标识（单容器测试形态：CA 兜底注入目标；集成方
-/// resolver 测试期应返回同值——真实多容器身份由 resolver 按连接解析）。
-pub const DEFAULT_CONTAINER_ID: &str = "default";
-
-/// 测试期 CA 证书文件（固定目录；日志中不出现路径——日志安全约束）。
-const TEST_CA_CERT_FILE: &str = "/etc/agentsandbox/cert/ca_root.crt";
-/// 测试期 CA 私钥文件。
-const TEST_CA_KEY_FILE: &str = "/etc/agentsandbox/cert/private.key";
-
-/// 测试期 CA 兜底：双 PEM 读取并经 [`set_container_ca`] 注入当前容器。
-///
-/// 语义：**尽力而为**——文件不可读或材料非法仅运行日志告警并放行
-/// （不阻断 init；该容器 CA 保持未注入状态，后续仍可经公共 API 补注入；
-/// 未注入 CA 的容器 TLS 流量 fail-closed 拒绝，与兜底缺失时行为一致）。
-/// 路径参数化供测试注入（生产固定目录）。
-fn load_ca_fallback(container_id: &str, cert_path: &str, key_path: &str) {
-    let (cert_pem, key_pem) = match (std::fs::read(cert_path), std::fs::read(key_path)) {
-        (Ok(c), Ok(k)) => (c, k),
-        _ => {
-            // 不含路径与错误详情（日志安全——固定描述）。
-            crate::log_warn!("facade", "test ca fallback: material files not readable; skipped");
-            return;
-        }
-    };
-    match set_container_ca(
-        container_id,
-        crate::model::CaCert { cert_pem, key_pem },
-    ) {
-        Ok(()) => crate::log_info!("facade", "test ca fallback: container ca injected"),
-        Err(_) => {
-            crate::log_warn!("facade", "test ca fallback: ca material invalid; skipped");
-        }
-    }
 }
 
 /// spawn serve 任务（共享生产组件单例装配）。
@@ -285,7 +323,8 @@ fn spawn_serve(forward_listener: tokio::net::TcpListener, config: &ProxyConfig) 
         std::time::Duration::from_secs(30),
     ));
     let mut serve_ctx = crate::server::ServeContext::new(registry, cert_services, connector);
-    // 推理路由列表装配（router 默认 mock——crate 引入，真实库落地后替换）。
+    // 推理路由列表装配（router 默认装配在 ServeContext::new——真实库
+    // 优先：crate init 过则 AgentRouter，否则 mock——2026-09-17）。
     serve_ctx.inference_routes = config.inference_routes.clone();
     let ctx = Arc::new(serve_ctx);
     tokio::spawn(async move {
@@ -318,6 +357,23 @@ fn validate_inference_routes(
     Ok(())
 }
 
+/// 推理路由真实库初始化（proxy_init 期，一次性 guard 之前）。
+///
+/// `Some(dir)` → `init(dir)`；`None` → 内嵌默认配置（`init_default`）。
+/// 失败仅运行日志记录错误类别（Display 不含路径——日志安全），返回
+/// [`ProxyInitError::InferenceInit`]；guard 未消耗，修正配置后可重调。
+fn init_inference_router(config: &ProxyConfig) -> Result<(), ProxyInitError> {
+    let result = match &config.router_config_dir {
+        Some(dir) => agentsandbox_inference::init(dir),
+        None => agentsandbox_inference::init_default(),
+    };
+    if let Err(e) = result {
+        crate::log_error!("facade", "inference router init failed: {}", e);
+        return Err(ProxyInitError::InferenceInit);
+    }
+    Ok(())
+}
+
 /// bind 错误映射（forwarding）。
 fn map_forward_bind(e: std::io::Error) -> ProxyInitError {
     match e.kind() {
@@ -329,57 +385,68 @@ fn map_forward_bind(e: std::io::Error) -> ProxyInitError {
 /// K10 filter_config 结构校验（AR-002 说明书 4.3.2 规则——权威实现
 /// 归 AR-002 T3，落地前由门面承接；crate 内部面，公共契约不含此项）。
 ///
-/// 规则：domain/method 非空；domain/method/uri 三维通配模式统一为
-/// 「非空且星号数 ≤ 1」（2026-09-05 统一 glob 决策——`*` 唯一通配符、
-/// 单星任意位置、裸 `*` 全匹配；多星非法）；binary 若声明非空；
-/// default_policy 取值由类型系统保证。
+/// 规则（2026-09-16 结构重设计）：每个规则集——name 非空；host 按类型
+/// 校验（ip → addr 为合法 IP/CIDR；host → context 为合法 glob）；
+/// targetrules 的 method/path 与 binaryrules 的 path 均为合法 glob
+///（非空且星号数 ≤ 1）；port 预留（不校验）；action 取值由类型系统
+/// 保证；default_policy 取值由类型系统保证。
 pub(crate) fn validate_filter_config(fc: &FilterConfig) -> Result<(), ConfigError> {
-    for entry in fc.whitelist.iter().chain(fc.blacklist.iter()) {
-        validate_entry(entry)?;
+    for rs in &fc.rule_list {
+        validate_ruleset(rs)?;
     }
     Ok(())
 }
 
-/// 单条目校验（K10 规则逐条）。
-fn validate_entry(entry: &RuleEntry) -> Result<(), ConfigError> {
-    if entry.domain.is_empty() || entry.method.is_empty() {
+/// 单规则集校验（K10 规则逐条）。
+fn validate_ruleset(rs: &crate::model::RuleSet) -> Result<(), ConfigError> {
+    if rs.name.is_empty() {
         return Err(ConfigError::Format);
     }
-    // 三维通配模式校验（非空 + 单星；uri 仅声明时校验）。
-    if !is_valid_glob_pattern(&entry.domain)
-        || !is_valid_glob_pattern(&entry.method)
-        || entry.uri.as_deref().is_some_and(|u| !is_valid_glob_pattern(u))
-    {
-        return Err(ConfigError::Format);
-    }
-    // 目标 IP / 端口维度语法校验（2026-09-09；仅声明时校验）。
-    if entry.target_ip.as_deref().is_some_and(|p| !is_valid_ip_pattern(p))
-        || entry
-            .target_port
+    // host 按类型校验（字段存在性 + 模式合法性）。
+    let host_ok = match rs.host.host_type {
+        crate::model::HostType::Ip => rs
+            .host
+            .addr
             .as_deref()
-            .is_some_and(|p| !is_valid_port_pattern(p))
+            .is_some_and(is_valid_ip_pattern),
+        crate::model::HostType::Host => rs
+            .host
+            .context
+            .as_deref()
+            .is_some_and(is_valid_glob_pattern),
+    };
+    if !host_ok {
+        return Err(ConfigError::Format);
+    }
+    // targetrules：method + path 均为合法 glob。
+    if rs
+        .targetrules
+        .iter()
+        .any(|t| !is_valid_glob_pattern(&t.method) || !is_valid_glob_pattern(&t.path))
     {
         return Err(ConfigError::Format);
     }
-    if entry.binary.as_deref().is_some_and(str::is_empty) {
+    // binaryrules：path 为合法 glob。
+    if rs
+        .binaryrules
+        .iter()
+        .any(|b| !is_valid_glob_pattern(&b.path))
+    {
         return Err(ConfigError::Format);
     }
-    // default_policy 合法性由枚举类型保证（值域即类型）。
     Ok(())
 }
 
-/// 通配模式合法性（K10：非空且星号数 ≤ 1——domain/method/uri 三维
-/// 统一规则；多星语义应拆分为多条目表达，配置面拒绝防歧义）。
+/// 通配模式合法性（K10：非空且星号数 ≤ 1——host context / targetrule
+/// method·path / binaryrule path 统一规则；多星语义应拆分表达，
+/// 配置面拒绝防歧义）。
 fn is_valid_glob_pattern(pattern: &str) -> bool {
     !pattern.is_empty() && pattern.matches('*').count() <= 1
 }
 
-/// 目标 IP 模式合法性（K10，2026-09-09）：精确 IP（IPv4/IPv6）或
-/// CIDR（`a.b.c.d/n` / `x::y/n`，前缀 ≤ 族上限）；`*` 显式通配合法。
+/// IP 模式合法性（K10，host.type=ip 的 addr）：精确 IP（IPv4/IPv6）
+/// 或 CIDR（`a.b.c.d/n` / `x::y/n`，前缀 ≤ 族上限）。
 fn is_valid_ip_pattern(pattern: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
     let (addr_str, prefix_str) = match pattern.split_once('/') {
         Some((a, p)) => (a, Some(p)),
         None => (pattern, None),
@@ -396,21 +463,6 @@ fn is_valid_ip_pattern(pattern: &str) -> bool {
             },
             Err(_) => false,
         },
-    }
-}
-
-/// 目标端口模式合法性（K10，2026-09-09）：精确（`8443`）或范围
-///（`8000-9000`，含两端且不倒置）；`*` 显式通配合法。
-fn is_valid_port_pattern(pattern: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    match pattern.split_once('-') {
-        Some((lo, hi)) => match (lo.parse::<u16>(), hi.parse::<u16>()) {
-            (Ok(lo), Ok(hi)) => lo <= hi,
-            _ => false,
-        },
-        None => pattern.parse::<u16>().is_ok(),
     }
 }
 
@@ -521,46 +573,33 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{HostRule, HostType, RuleAction, RuleSet, TargetRule};
 
-    // K10 目标 IP/端口模式判定（2026-09-09）。
+    // K10 IP 模式判定（host.type=ip 的 addr）：精确/CIDR 合法；非 IP、
+    // 前缀越界/非数字非法。
     #[test]
-    fn ip_port_pattern_validity() {
-        // IP：精确 / CIDR / 通配。
+    fn ip_pattern_validity() {
         assert!(is_valid_ip_pattern("1.2.3.4"));
         assert!(is_valid_ip_pattern("10.0.0.0/8"));
         assert!(is_valid_ip_pattern("2001:db8::/32"));
         assert!(is_valid_ip_pattern("::1/128"));
-        assert!(is_valid_ip_pattern("*"));
-        // 非法：非 IP / 前缀越界 / 前缀非数字。
         assert!(!is_valid_ip_pattern("not-an-ip"));
         assert!(!is_valid_ip_pattern("10.0.0.0/33"));
         assert!(!is_valid_ip_pattern("2001:db8::/129"));
         assert!(!is_valid_ip_pattern("10.0.0.0/abc"));
         assert!(!is_valid_ip_pattern(""));
-
-        // 端口：精确 / 范围 / 通配。
-        assert!(is_valid_port_pattern("8443"));
-        assert!(is_valid_port_pattern("8000-9000"));
-        assert!(is_valid_port_pattern("*"));
-        // 非法：非数字 / 越界 / 倒置。
-        assert!(!is_valid_port_pattern("abc"));
-        assert!(!is_valid_port_pattern("65536"));
-        assert!(!is_valid_port_pattern("9000-8000"));
-        assert!(!is_valid_port_pattern(""));
     }
 
-    // K10 通配模式判定（三维统一：非空 + 星号数 ≤ 1）。
+    // K10 通配模式判定（非空 + 星号数 ≤ 1——host context / targetrule
+    // method·path / binaryrule path 统一规则）。
     #[test]
     fn glob_pattern_validity() {
-        // 裸值 / 前缀 / 后缀 / 中间星 / 裸星全匹配。
         assert!(is_valid_glob_pattern("/v1/chat"));
         assert!(is_valid_glob_pattern("/v1/*"));
         assert!(is_valid_glob_pattern("*.js"));
-        assert!(is_valid_glob_pattern("/one/box/*/v1")); // 中间星（2026-09-05 放开）
-        assert!(is_valid_glob_pattern("a*b"));
-        assert!(is_valid_glob_pattern("*")); // 裸 * = 全匹配（2026-09-05 翻转）
+        assert!(is_valid_glob_pattern("/one/box/*/v1"));
+        assert!(is_valid_glob_pattern("*"));
         assert!(is_valid_glob_pattern("api.*.example.com"));
-        assert!(is_valid_glob_pattern("/")); // 裸值合法
         // 多星 / 空——非法。
         assert!(!is_valid_glob_pattern("*v1*"));
         assert!(!is_valid_glob_pattern("a*b*c"));
@@ -568,184 +607,76 @@ mod tests {
         assert!(!is_valid_glob_pattern(""));
     }
 
-    // K10 条目校验：domain/method 空、binary 空、三维多星 → Format；
-    // 裸 * 与单星形态合法。
-    #[test]
-    fn entry_validation_rules() {
-        let ok = RuleEntry {
-            domain: "a.com".to_string(),
-            method: "GET".to_string(),
-            uri: Some("/one/box/*/v1".to_string()),
-            binary: Some("python3".to_string()),
-            target_ip: None,
-            target_port: None,
-        };
-        assert!(validate_entry(&ok).is_ok());
-
-        let bad_domain = RuleEntry {
-            domain: String::new(),
-            method: "GET".to_string(),
-            uri: None,
-            binary: None,
-            target_ip: None,
-            target_port: None,
-        };
-        assert_eq!(validate_entry(&bad_domain), Err(ConfigError::Format));
-
-        // 三维多星拒绝（统一规则）。
-        let multi_star_domain = RuleEntry {
-            domain: "a*b*c.com".to_string(),
-            method: "GET".to_string(),
-            uri: None,
-            binary: None,
-            target_ip: None,
-            target_port: None,
-        };
-        assert_eq!(validate_entry(&multi_star_domain), Err(ConfigError::Format));
-
-        let multi_star_method = RuleEntry {
-            domain: "a.com".to_string(),
-            method: "G*T*".to_string(),
-            uri: None,
-            binary: None,
-            target_ip: None,
-            target_port: None,
-        };
-        assert_eq!(validate_entry(&multi_star_method), Err(ConfigError::Format));
-
-        let multi_star_uri = RuleEntry {
-            domain: "a.com".to_string(),
-            method: "GET".to_string(),
-            uri: Some("/a/*/b/*".to_string()),
-            binary: None,
-            target_ip: None,
-            target_port: None,
-        };
-        assert_eq!(validate_entry(&multi_star_uri), Err(ConfigError::Format));
-
-        let bad_uri = RuleEntry {
-            domain: "a.com".to_string(),
-            method: "GET".to_string(),
-            uri: Some("*v1*".to_string()),
-            binary: None,
-            target_ip: None,
-            target_port: None,
-        };
-        assert_eq!(validate_entry(&bad_uri), Err(ConfigError::Format));
-
-        let bad_binary = RuleEntry {
-            domain: "a.com".to_string(),
-            method: "GET".to_string(),
-            uri: None,
-            binary: Some(String::new()),
-            target_ip: None,
-            target_port: None,
-        };
-        assert_eq!(validate_entry(&bad_binary), Err(ConfigError::Format));
-
-        // 裸 * 三维全匹配（合法形态）。
-        let bare_star_ok = RuleEntry {
-            domain: "*".to_string(),
-            method: "*".to_string(),
-            uri: Some("*".to_string()),
-            binary: None,
-            target_ip: None,
-            target_port: None,
-        };
-        assert!(validate_entry(&bare_star_ok).is_ok());
+    /// 构造规则集（host 型 + 单 targetrule + 可选 binaryrules）。
+    fn rs_host(name: &str, context: &str, method: &str, path: &str) -> RuleSet {
+        RuleSet {
+            name: name.to_string(),
+            host: HostRule {
+                host_type: HostType::Host,
+                addr: None,
+                context: Some(context.to_string()),
+                prio: 100,
+            },
+            targetrules: vec![TargetRule {
+                method: method.to_string(),
+                path: path.to_string(),
+                action: RuleAction::Allow,
+            }],
+            binaryrules: vec![],
+            port: None,
+        }
     }
 
-    // 测试期 CA 兜底：文件双读 → set_container_ca 注入；缺失 → 跳过；
-    // 注入失败（材料非法语义）→ 告警放行不 panic。
-    //
-    // 串行锁：load_ca_fallback 发出全局日志事件，须与 logging 测试
-    // 互斥（共享 serial_guard——防回调计数断言交叉污染）。
+    // K10 规则集校验：name 空 / host 字段缺失或非法 / 规则 glob 多星
+    // → Format；合法结构通过；port 预留不校验。
     #[test]
-    fn test_ca_fallback_dispatch() {
-        use std::sync::Mutex;
-        let _serial = crate::logging::testing::serial_guard();
+    fn ruleset_validation_rules() {
+        // 合法：host 型完整结构（含 port 预留字段）。
+        let ok = RuleSet {
+            port: Some(8843),
+            ..rs_host("allow-trusted", "*.trusted.com", "*", "*")
+        };
+        assert!(validate_ruleset(&ok).is_ok());
 
-        /// 记录型 fake（记录 set_container_ca 入参；accept 控制返回）。
-        type RecordedCa = (String, Vec<u8>, Vec<u8>);
-        struct CaRecorder {
-            calls: Mutex<Vec<RecordedCa>>,
-            accept: bool,
-        }
-        impl RuntimeRegistry for CaRecorder {
-            fn set_container_config(
-                &self,
-                _: &str,
-                _: FilterConfig,
-            ) -> Result<(), ConfigError> {
-                Ok(())
-            }
-            fn remove_container_policy(&self, _: &str) -> Result<(), ConfigError> {
-                Ok(())
-            }
-            fn set_container_ca(&self, id: &str, ca: CaCert) -> Result<(), CaError> {
-                self.calls
-                    .lock()
-                    .unwrap()
-                    .push((id.to_string(), ca.cert_pem, ca.key_pem));
-                if self.accept {
-                    Ok(())
-                } else {
-                    Err(CaError::Invalid)
-                }
-            }
-            fn register_binary_resolver(&self, _: Resolver) {}
-            fn register_log_sink(&self, _: LogSink) {}
-        }
+        // name 空。
+        let bad_name = rs_host("", "*.trusted.com", "*", "*");
+        assert_eq!(validate_ruleset(&bad_name), Err(ConfigError::Format));
 
-        // 1. 文件缺失：跳过（无注入、不 panic）。
-        {
-            let fake = Arc::new(CaRecorder {
-                calls: Mutex::new(Vec::new()),
-                accept: true,
-            });
-            let _rt = testing::install(fake.clone());
-            load_ca_fallback("c-t", "/nonexistent/a.crt", "/nonexistent/b.key");
-            assert!(
-                fake.calls.lock().unwrap().is_empty(),
-                "文件缺失不得注入"
-            );
-        }
+        // host 型缺 context。
+        let mut missing_ctx = rs_host("rs", "*.trusted.com", "*", "*");
+        missing_ctx.host.context = None;
+        assert_eq!(validate_ruleset(&missing_ctx), Err(ConfigError::Format));
 
-        // 2/3 共用：临时目录双 PEM 文件（dir 存活至用例末尾——读取时
-        // 文件必须存在）。
-        let dir = tempfile::tempdir().unwrap();
-        let cert_path = dir.path().join("ca_root.crt");
-        let key_path = dir.path().join("private.key");
-        std::fs::write(&cert_path, b"cert-pem-bytes").unwrap();
-        std::fs::write(&key_path, b"key-pem-bytes").unwrap();
-        let cert_path = cert_path.to_string_lossy().into_owned();
-        let key_path = key_path.to_string_lossy().into_owned();
+        // host context 多星。
+        let bad_ctx = rs_host("rs", "*a**b.com", "*", "*");
+        assert_eq!(validate_ruleset(&bad_ctx), Err(ConfigError::Format));
 
-        // 2. 文件可读：内容原样透传 set_container_ca（container_id + 双 PEM）。
-        {
-            let fake = Arc::new(CaRecorder {
-                calls: Mutex::new(Vec::new()),
-                accept: true,
-            });
-            let _rt = testing::install(fake.clone());
-            load_ca_fallback("c-t", &cert_path, &key_path);
-            let calls = fake.calls.lock().unwrap();
-            assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0].0, "c-t");
-            assert_eq!(calls[0].1, b"cert-pem-bytes".to_vec());
-            assert_eq!(calls[0].2, b"key-pem-bytes".to_vec());
-        }
+        // ip 型缺 addr。
+        let mut ip_missing = rs_host("rs", "a.com", "*", "*");
+        ip_missing.host.host_type = HostType::Ip;
+        assert_eq!(validate_ruleset(&ip_missing), Err(ConfigError::Format));
 
-        // 3. 注入失败（材料非法语义）：告警放行不 panic（调用已发生）。
-        {
-            let fake = Arc::new(CaRecorder {
-                calls: Mutex::new(Vec::new()),
-                accept: false,
-            });
-            let _rt = testing::install(fake.clone());
-            load_ca_fallback("c-t", &cert_path, &key_path);
-            assert_eq!(fake.calls.lock().unwrap().len(), 1);
-        }
+        // ip 型 addr 非法 CIDR。
+        let mut ip_bad = rs_host("rs", "a.com", "*", "*");
+        ip_bad.host.host_type = HostType::Ip;
+        ip_bad.host.addr = Some("10.0.0.0/33".to_string());
+        assert_eq!(validate_ruleset(&ip_bad), Err(ConfigError::Format));
+
+        // targetrule method 多星。
+        let bad_method = rs_host("rs", "a.com", "G*T*", "*");
+        assert_eq!(validate_ruleset(&bad_method), Err(ConfigError::Format));
+
+        // targetrule path 空。
+        let bad_path = rs_host("rs", "a.com", "*", "");
+        assert_eq!(validate_ruleset(&bad_path), Err(ConfigError::Format));
+
+        // binaryrule path 多星。
+        let mut bad_bin = rs_host("rs", "a.com", "*", "*");
+        bad_bin.binaryrules = vec![crate::model::BinaryRule {
+            path: "/a/*/b/*".to_string(),
+            action: RuleAction::Deny,
+        }];
+        assert_eq!(validate_ruleset(&bad_bin), Err(ConfigError::Format));
     }
 }
 

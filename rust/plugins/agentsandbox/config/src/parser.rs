@@ -10,9 +10,10 @@ pub fn parse_toml(toml_content: &str) -> Result<TomlConfig, ParseError> {
 }
 
 /// Parses [proxy] section from TOML content and returns validated FilterConfig.
-/// Validates default_policy (allow/deny/alert——alert: unmatched traffic is
-/// allowed with alert-marked audit entry, 2026-09-09), policy_change_strategy
-/// (drain/reset), and whitelist/blacklist rule fields.
+/// Validates default_policy (allow/deny/alert), policy_change_strategy
+/// (drain/reset), and ruleset fields (2026-09-16 structure: name non-empty,
+/// host type-specific field presence, target/binary rule field non-empty,
+/// action values deny/block/alert/allow).
 /// Returns ParseError on validation failure.
 pub fn parse_proxy_policy(toml_content: &str) -> Result<FilterConfig, ParseError> {
     let config = parse_toml(toml_content)?;
@@ -28,17 +29,41 @@ pub fn parse_proxy_policy(toml_content: &str) -> Result<FilterConfig, ParseError
     if fc.policy_change_strategy != "drain" && fc.policy_change_strategy != "reset" {
         return Err(ParseError::TypeMismatch { section: "proxy".to_string() });
     }
-    for (_i, rule) in fc.whitelist.iter().enumerate() {
-        if rule.domain.is_empty() {
+    for rs in fc.rule_list.iter() {
+        if rs.name.is_empty() {
             return Err(ParseError::MissingField { section: "proxy".to_string() });
         }
-    }
-    for (_i, rule) in fc.blacklist.iter().enumerate() {
-        if rule.domain.is_empty() {
-            return Err(ParseError::MissingField { section: "proxy".to_string() });
+        let host_ok = match rs.host.host_type.as_str() {
+            "ip" => rs.host.addr_host().is_some_and(|a| !a.is_empty()),
+            "host" => rs.host.context.as_deref().is_some_and(|c| !c.is_empty()),
+            _ => false,
+        };
+        if !host_ok {
+            return Err(ParseError::TypeMismatch { section: "proxy".to_string() });
+        }
+        for tr in rs.targetrules.iter() {
+            if tr.method.is_empty() || tr.path.is_empty() {
+                return Err(ParseError::MissingField { section: "proxy".to_string() });
+            }
+            if !is_valid_action(&tr.action) {
+                return Err(ParseError::TypeMismatch { section: "proxy".to_string() });
+            }
+        }
+        for br in rs.binaryrules.iter() {
+            if br.path.is_empty() {
+                return Err(ParseError::MissingField { section: "proxy".to_string() });
+            }
+            if !is_valid_action(&br.action) {
+                return Err(ParseError::TypeMismatch { section: "proxy".to_string() });
+            }
         }
     }
     Ok(fc)
+}
+
+/// 规则动作合法值（deny 与 block 同义——HC 侧术语兼容）。
+fn is_valid_action(action: &str) -> bool {
+    matches!(action, "deny" | "block" | "alert" | "allow")
 }
 
 /// Parses [model_route] section from TOML and returns container_port (0 if absent).

@@ -36,14 +36,19 @@ pub mod registry;
 
 pub use error::{BindError, CaError, ConfigError};
 pub use model::{
-    Action, AuditLogEntry, CaCert, ContainerEndpoint, FilterConfig, InferenceRoute, Policy,
-    Protocol, ProxyConfig, Reason, ResolverOutput, RuleEntry, SCENARIO_LIB,
+    Action, AuditEntryType, AuditLogEntry, BinaryRule, CaCert, ContainerEndpoint, Decision,
+    FilterConfig, HostRule, HostType, InferenceRoute, Policy, Protocol, ProxyConfig, Reason,
+    ResolverOutput, RuleAction, RuleSet, TargetRule, SCENARIO_LIB,
 };
 pub use cert::{parse_ca, CertCache, CertIssuer, CertService, ParsedCa};
 pub use registry::{Registry, Resolver};
 pub use facade::{
     proxy_init, register_binary_resolver, register_log_sink, remove_container_policy,
-    set_container_ca, set_container_config,
+    set_api_key, set_container_ca, set_container_config,
 };
 pub use facade::ProxyInitError;
+// API key 管理契约类型（inference crate 契约面经 proxy 根部重导出——
+// 集成方单一引入面，2026-09-17）。
+pub use agentsandbox_inference::{ApiKeyAction, ApiKeyError, ApiKeyItem, ApiKeyRequest};
+pub use inference_uds::{MSG_TYPE_API_KEY, MSG_TYPE_ROUTE, UdsEnvelope};
 pub use logging::{LogEvent, LogKind, LogLevel, LogSink, LogSinkError};
