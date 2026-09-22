@@ -5,31 +5,7 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
-static __always_inline int path_prefix_match(const char *path, const char *prefix) {
-    for (int i = 0; i < MAX_PATH_PATTERN_LEN; i++) {
-        if (prefix[i] == '\0') {
-            return 1;
-        }
-        if (path[i] != prefix[i]) {
-            return 0;
-        }
-    }
-    return 0;
-}
-
-static __always_inline int path_exact_match(const char *path, const char *target) {
-    for (int i = 0; i < MAX_PATH_PATTERN_LEN; i++) {
-        if (path[i] != target[i]) {
-            return 0;
-        }
-        if (path[i] == '\0') {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static __always_inline int get_exe_path(char *buf, int buf_len) {
+static __always_inline int get_exe_inode(__u64 *ino, __u32 *dev) {
     struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
     if (!task) {
         return -1;
@@ -42,9 +18,12 @@ static __always_inline int get_exe_path(char *buf, int buf_len) {
     if (!exe_file) {
         return -1;
     }
-    if (bpf_d_path(&exe_file->f_path, buf, buf_len) < 0) {
+    struct inode *inode = exe_file->f_inode;
+    if (!inode) {
         return -1;
     }
+    *ino = inode->i_ino;
+    *dev = inode->i_sb->s_dev;
     return 0;
 }
 
@@ -54,9 +33,9 @@ static __always_inline int check_path_rules(__u64 cgroup_id, int cap) {
         return 0;
     }
 
-    char exe_path[MAX_EXE_PATH_LEN];
-    __builtin_memset(exe_path, 0, sizeof(exe_path));
-    if (get_exe_path(exe_path, sizeof(exe_path)) < 0) {
+    __u64 ino;
+    __u32 dev;
+    if (get_exe_inode(&ino, &dev) < 0) {
         return 0;
     }
 
@@ -68,13 +47,7 @@ static __always_inline int check_path_rules(__u64 cgroup_id, int cap) {
         }
         struct cap_path_rule *rule = &rules->rules[i];
 
-        int path_matched = 0;
-        if (rule->match_type == PATH_MATCH_PREFIX) {
-            path_matched = path_prefix_match(exe_path, rule->path);
-        } else {
-            path_matched = path_exact_match(exe_path, rule->path);
-        }
-        if (!path_matched) {
+        if (rule->ino != ino || rule->dev != dev) {
             continue;
         }
 
@@ -95,6 +68,10 @@ static __always_inline int emit_event(__u64 cgroup_id, __u32 pid, __u8 enforceme
         return enforcement_mode == 0 ? -EPERM : 0;
     }
 
+    /* ringbuf reserve does not zero memory; clear the record so unset fields
+     * (e.g. operation_detail) are empty NUL-terminated strings, not garbage. */
+    __builtin_memset(event, 0, sizeof(*event));
+
     event->timestamp = bpf_ktime_get_ns();
     event->cgroup_id = cgroup_id;
     event->pid = pid;
@@ -114,7 +91,7 @@ static __always_inline int emit_event(__u64 cgroup_id, __u32 pid, __u8 enforceme
     return 0;
 }
 
-SEC("lsm/security_capable")
+SEC("lsm/capable")
 int BPF_PROG(handle_capable, const struct cred *cred, struct user_namespace *ns, int cap, unsigned int opts) {
     if (cap < 0 || cap >= 64) {
         return 0;

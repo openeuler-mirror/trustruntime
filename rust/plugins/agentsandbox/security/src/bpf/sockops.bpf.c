@@ -15,6 +15,17 @@ char LICENSE[] SEC("license") = "GPL";
  *
  * LRU hash: kernel auto-evicts stale entries — no manual cleanup needed.
  */
+static __always_inline void copy_ip6(__u8 *dst, const __u32 *src) {
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        __u32 v = src[i];
+        dst[i * 4 + 0] = (__u8)v;
+        dst[i * 4 + 1] = (__u8)(v >> 8);
+        dst[i * 4 + 2] = (__u8)(v >> 16);
+        dst[i * 4 + 3] = (__u8)(v >> 24);
+    }
+}
+
 static __always_inline void record_flow(struct bpf_sock_ops *ctx) {
     if (!ctx) {
         return;
@@ -37,10 +48,13 @@ static __always_inline void record_flow(struct bpf_sock_ops *ctx) {
         key.src_port = ctx->local_port;
         key.dst_port = ctx->remote_port;
     } else {
-        /* IPv6: copy full 16-byte addresses. */
+        /* IPv6: copy full 16-byte addresses. ctx->local_ip6/remote_ip6 are
+         * __u32[4]; read them word-by-word (4-byte aligned ctx access) and
+         * expand into bytes, so the verifier sees aligned u32 ctx accesses
+         * instead of the misaligned u16 loads a whole-field memcpy produces. */
         key.family = AF_INET6;
-        __builtin_memcpy(key.src_ip, ctx->local_ip6, 16);
-        __builtin_memcpy(key.dst_ip, ctx->remote_ip6, 16);
+        copy_ip6(key.src_ip, ctx->local_ip6);
+        copy_ip6(key.dst_ip, ctx->remote_ip6);
         key.src_port = ctx->local_port;
         key.dst_port = ctx->remote_port;
     }

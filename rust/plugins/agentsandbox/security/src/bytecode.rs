@@ -13,10 +13,10 @@ pub const ALL_PROGRAM_NAMES: &[&str] = &["capability", "filesystem", "network", 
 /// Returns the embedded bytecode for all BPF programs.
 pub fn all_programs() -> &'static [(&'static str, &'static [u8])] {
     &[
-        ("capability", CAPABILITY_BPF_O),
-        ("filesystem", FILESYSTEM_BPF_O),
         ("network", NETWORK_BPF_O),
         ("sockops", SOCKOPS_BPF_O),
+        ("filesystem", FILESYSTEM_BPF_O),
+        ("capability", CAPABILITY_BPF_O),
     ]
 }
 

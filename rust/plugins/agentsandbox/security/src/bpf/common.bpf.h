@@ -28,7 +28,7 @@
 #define MAX_EXE_PATH_LEN 256
 #define MAX_TARGET_LEN 64
 
-/* Path match type for cap_path_rule.match_type / fs_path_rule.match_type */
+/* Path match type for fs_path_rule.match_type */
 #define PATH_MATCH_EXACT   0
 #define PATH_MATCH_PREFIX  1
 
@@ -69,8 +69,9 @@ struct policy_value {
 
 struct cap_path_rule {
     __u64 cap_mask;
-    __u8 match_type;
-    char path[MAX_PATH_PATTERN_LEN];
+    __u64 ino;
+    __u32 dev;
+    __u32 reserved;
 };
 
 struct cap_path_rules {

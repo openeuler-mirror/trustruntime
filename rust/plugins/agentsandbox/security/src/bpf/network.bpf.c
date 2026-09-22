@@ -53,6 +53,10 @@ static __always_inline int emit_net_event(__u64 cgroup_id, __u32 pid, __u8 actio
         return action == NET_ACTION_BLOCK ? 0 : 1;
     }
 
+    /* ringbuf reserve does not zero memory; clear the record so unset fields
+     * (e.g. operation_detail) are empty NUL-terminated strings, not garbage. */
+    __builtin_memset(event, 0, sizeof(*event));
+
     event->timestamp = bpf_ktime_get_ns();
     event->cgroup_id = cgroup_id;
     event->pid = pid;
