@@ -28,7 +28,7 @@ fn main() {
             println!("cargo:rerun-if-changed={}", src.display());
             let status = Command::new(&clang).args(["-O2", "-g", "-target", "bpf", &format!("-D__TARGET_ARCH_{}", arch), "-I/usr/include", "-Isrc/bpf", "-Wall", "-Wno-unused-variable", "-c", &src.to_string_lossy(), "-o", &obj.to_string_lossy()]).status();
             if !status.map(|s| s.success()).unwrap_or(false) {
-                eprintln!("cargo:warning=Failed to compile BPF program: {}, generating empty object", prog);
+                println!("cargo:warning=Failed to compile BPF program: {}, generating empty object", prog);
                 std::fs::write(&obj, []).ok();
             }
         }

@@ -1,8 +1,13 @@
 use agentsandbox_config::SecurityPolicy;
 use agentsandbox_log::SecurityEvent;
+use aya::Btf;
+use aya::maps::RingBuf;
+use aya::programs::{CgroupAttachMode, CgroupSockAddr, Lsm, ProgramError, SockOps};
 use thiserror::Error;
 use std::collections::HashMap;
+use std::fs::File;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::bytecode;
 
@@ -37,6 +42,9 @@ pub const NET_PROTOCOL_UDP: u8 = libc::IPPROTO_UDP as u8;
 /// `aya::Ebpf::map(name)`. Changing it without updating the BPF C source will cause
 /// map lookups to silently fail (return None).
 pub const CGROUP_LOOKUP_MAP_NAME: &str = "cgroup_lookup_map";
+
+/// Root cgroup v2 path where sockops/connect4 programs are attached.
+const ROOT_CGROUP_PATH: &str = "/sys/fs/cgroup";
 
 /// IPv4 address size in bytes.
 const IPV4_ADDR_LEN: usize = 4;
@@ -92,20 +100,22 @@ pub struct PolicyValue {
 
 unsafe impl aya::Pod for PolicyValue {}
 
-/// A single capability+path rule for kernel-side matching.
-/// `cap_mask`: bitmask of allowed capabilities for this path.
-/// `match_type`: PATH_MATCH_EXACT or PATH_MATCH_PREFIX.
+/// A single capability+executable rule for kernel-side matching.
+/// `cap_mask`: bitmask of allowed capabilities for this executable.
+/// `ino`/`dev`: the executable's (inode, device) identity, resolved at policy
+/// time from a path via stat().
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct CapPathRule {
     pub cap_mask: u64,
-    pub match_type: u8,
-    pub path: [u8; MAX_PATH_PATTERN_LEN],
+    pub ino: u64,
+    pub dev: u32,
+    pub reserved: u32,
 }
 
 unsafe impl aya::Pod for CapPathRule {}
 
-/// Container for path-conditioned capability rules belonging to one cgroup.
+/// Container for executable-identity capability rules belonging to one cgroup.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct CapPathRules {
@@ -123,23 +133,17 @@ impl Default for CapPathRules {
 
 impl Default for CapPathRule {
     fn default() -> Self {
-        Self { cap_mask: 0, match_type: 0, path: [0u8; MAX_PATH_PATTERN_LEN] }
+        Self { cap_mask: 0, ino: 0, dev: 0, reserved: 0 }
     }
 }
 
 impl CapPathRule {
-    pub fn new(cap_bit: u32, path_pattern: &str) -> Option<Self> {
-        let (match_type, cleaned) = compile_glob(path_pattern);
-        let bytes = cleaned.as_bytes();
-        debug_assert!(bytes.len() < MAX_PATH_PATTERN_LEN, "path exceeds MAX_PATH_PATTERN_LEN");
-        let mut path = [0u8; MAX_PATH_PATTERN_LEN];
-        path[..bytes.len()].copy_from_slice(bytes);
-        Some(Self { cap_mask: 1u64 << cap_bit, match_type, path })
-    }
-
-    pub fn path_str(&self) -> &str {
-        let end = self.path.iter().position(|&b| b == 0).unwrap_or(MAX_PATH_PATTERN_LEN);
-        std::str::from_utf8(&self.path[..end]).unwrap_or("")
+    /// Resolves a path to its (dev, ino) identity and builds a rule.
+    /// Returns None if the path cannot be stat'ed (e.g. it does not exist).
+    pub fn new(cap_mask: u64, path: &str) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self { cap_mask, ino: meta.ino(), dev: meta.dev() as u32, reserved: 0 })
     }
 }
 
@@ -490,6 +494,63 @@ pub enum EbpfError {
 }
 
 /// Manages eBPF program lifecycle and BPF map operations.
+/// Binary layout of `struct security_event` (common.bpf.h), written by the BPF
+/// programs into `event_ringbuf`. Field sizes/order MUST stay in sync with
+/// common.bpf.h (event_type[32], operation_detail[128], action/result[16],
+/// process_name[16], all little-endian on x86_64).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct BpfSecurityEvent {
+    timestamp: u64,
+    cgroup_id: u64,
+    event_type: [u8; 32],
+    operation_detail: [u8; 128],
+    action: [u8; 16],
+    result: [u8; 16],
+    process_name: [u8; 16],
+    pid: u32,
+}
+
+fn cstr_to_string(bytes: &[u8]) -> String {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+/// Wall-clock timestamp (epoch seconds) for a freshly-read event.
+/// The kernel only exposes CLOCK_MONOTONIC via bpf_ktime_get_ns(), which can't
+/// be mapped to epoch portably, so we timestamp at read time (bounded by the
+/// poll interval) to keep security.log entries on wall-clock time.
+fn now_epoch_secs() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_default()
+}
+
+/// Parses one raw ringbuf item (kernel-side `struct security_event`) into a
+/// `SecurityEvent` for logging.
+fn parse_security_event(data: &[u8]) -> Option<SecurityEvent> {
+    if data.len() < std::mem::size_of::<BpfSecurityEvent>() {
+        return None;
+    }
+    // SAFETY: BpfSecurityEvent is repr(C) + Copy (plain old data), and
+    // data.len() >= size_of::<BpfSecurityEvent>() was checked above.
+    let ev = unsafe { std::ptr::read_unaligned(data.as_ptr() as *const BpfSecurityEvent) };
+    Some(SecurityEvent {
+        timestamp: now_epoch_secs(),
+        cgroup_id: ev.cgroup_id.to_string(),
+        // Single cgroup per container: group_id == cgroup_id (ContainerId carries
+        // no separate group identity in the current model).
+        group_id: ev.cgroup_id.to_string(),
+        event_type: cstr_to_string(&ev.event_type),
+        operation_detail: cstr_to_string(&ev.operation_detail),
+        action: cstr_to_string(&ev.action),
+        result: cstr_to_string(&ev.result),
+        process_name: cstr_to_string(&ev.process_name),
+        pid: ev.pid,
+    })
+}
+
 pub struct EbpfLoader {
     bpf: Mutex<Vec<aya::Ebpf>>,
     policy_map: Mutex<HashMap<u64, PolicyValue>>,
@@ -540,6 +601,13 @@ impl EbpfLoader {
             b.programs().all(|(n, _)| !new_names.contains(&n))
         });
 
+        let needs_lsm = new_names.iter().any(|n| *n == "capability" || *n == "filesystem");
+        let btf = if needs_lsm {
+            Some(Btf::from_sys_fs().map_err(|e| EbpfError::LoadError(e.to_string()))?)
+        } else {
+            None
+        };
+
         for (name, bytecode) in bytecode::all_programs() {
             if !filter(name) {
                 continue;
@@ -547,8 +615,11 @@ impl EbpfLoader {
             if bytecode.is_empty() {
                 continue;
             }
-            let bpf = aya::Ebpf::load(bytecode)
+            let mut bpf = aya::Ebpf::load(bytecode)
                 .map_err(|e| EbpfError::LoadError(format!("{}: {}", name, e)))?;
+
+            Self::attach_program(&mut bpf, name, btf.as_ref())?;
+
             bpf_guard.push(bpf);
         }
         drop(bpf_guard);
@@ -556,6 +627,50 @@ impl EbpfLoader {
         let mut loaded = self.loaded.lock()
             .map_err(|e| EbpfError::LoadError(e.to_string()))?;
         *loaded = true;
+        Ok(())
+    }
+
+    /// Loads and attaches a single program based on its logical object name.
+    fn attach_program(bpf: &mut aya::Ebpf, name: &str, btf: Option<&Btf>) -> Result<(), EbpfError> {
+        match name {
+            "capability" | "filesystem" => {
+                let btf = btf.ok_or_else(|| EbpfError::LoadError("kernel BTF unavailable".to_string()))?;
+                let (prog_name, hook_name) = match name {
+                    "capability" => ("handle_capable", "capable"),
+                    _ => ("handle_file_open", "file_open"),
+                };
+                let prog: &mut Lsm = bpf.program_mut(prog_name)
+                    .ok_or_else(|| EbpfError::LoadError(format!("{} not found", prog_name)))?
+                    .try_into()
+                    .map_err(|e: ProgramError| EbpfError::LoadError(e.to_string()))?;
+                prog.load(hook_name, btf)
+                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                prog.attach().map_err(|e| EbpfError::LoadError(e.to_string()))?;
+            }
+            "network" => {
+                let cgroup = File::open(ROOT_CGROUP_PATH)
+                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                let prog: &mut CgroupSockAddr = bpf.program_mut("handle_connect4")
+                    .ok_or_else(|| EbpfError::LoadError("handle_connect4 not found".to_string()))?
+                    .try_into()
+                    .map_err(|e: ProgramError| EbpfError::LoadError(e.to_string()))?;
+                prog.load().map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                prog.attach(cgroup, CgroupAttachMode::Single)
+                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+            }
+            "sockops" => {
+                let cgroup = File::open(ROOT_CGROUP_PATH)
+                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                let prog: &mut SockOps = bpf.program_mut("handle_sockops")
+                    .ok_or_else(|| EbpfError::LoadError("handle_sockops not found".to_string()))?
+                    .try_into()
+                    .map_err(|e: ProgramError| EbpfError::LoadError(e.to_string()))?;
+                prog.load().map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                prog.attach(cgroup, CgroupAttachMode::Single)
+                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -698,13 +813,15 @@ impl EbpfLoader {
         let mut rules = CapPathRules::default();
         for pattern in path_order {
             if let Some(mask) = path_to_mask.get(pattern) {
-                let (match_type, cleaned) = compile_glob(pattern);
-                let bytes = cleaned.as_bytes();
-                debug_assert!(bytes.len() < MAX_PATH_PATTERN_LEN, "path exceeds MAX_PATH_PATTERN_LEN");
-                let mut path = [0u8; MAX_PATH_PATTERN_LEN];
-                path[..bytes.len()].copy_from_slice(bytes);
-                rules.rules[rules.count as usize] = CapPathRule { cap_mask: *mask, match_type, path };
-                rules.count += 1;
+                // Glob/prefix patterns cannot be resolved to a single (dev, ino);
+                // skip them. Exact paths that fail stat() are also skipped.
+                if pattern.contains('*') {
+                    continue;
+                }
+                if let Some(rule) = CapPathRule::new(*mask, pattern) {
+                    rules.rules[rules.count as usize] = rule;
+                    rules.count += 1;
+                }
             }
         }
         Ok(rules)
@@ -905,9 +1022,34 @@ impl EbpfLoader {
     }
 
     /// Polls ring buffer for security events from eBPF programs in kernel.
+    ///
+    /// Drains all currently-available events from every loaded program's
+    /// `event_ringbuf` map (each .o has its own copy) and parses them into
+    /// `SecurityEvent`s. Non-blocking: returns immediately, empty if no events.
     pub fn poll_events(&self) -> Result<Vec<SecurityEvent>, EbpfError> {
-        if !self.is_loaded() { return Err(EbpfError::NotLoadedError); }
-        Ok(Vec::new())
+        if !self.is_loaded() {
+            return Err(EbpfError::NotLoadedError);
+        }
+
+        let mut bpf_guard = self.bpf.lock()
+            .map_err(|e| EbpfError::RingBufferError(e.to_string()))?;
+
+        let mut events = Vec::new();
+        for bpf in bpf_guard.iter_mut() {
+            if let Some(map) = bpf.map_mut("event_ringbuf") {
+                let mut ring = RingBuf::try_from(map)
+                    .map_err(|e| EbpfError::RingBufferError(e.to_string()))?;
+                while let Some(item) = ring.next() {
+                    let data: &[u8] = &item;
+                    if let Some(event) = parse_security_event(data) {
+                        events.push(event);
+                    }
+                }
+            }
+        }
+        drop(bpf_guard);
+
+        Ok(events)
     }
 
     /// Returns the number of active policy entries (active containers).
@@ -1113,34 +1255,38 @@ mod tests {
     }
 
     #[test]
-    fn test_cap_path_rule_creation() {
-        let rule = CapPathRule::new(21, "/usr/bin/curl").unwrap();
+    fn test_cap_path_rule_inode_resolution() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = std::env::temp_dir().join(format!("as_cap_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("curl");
+        std::fs::write(&path, b"x").unwrap();
+
+        let rule = CapPathRule::new(1u64 << 21, path.to_str().unwrap()).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
         assert_eq!(rule.cap_mask, 1u64 << 21);
-        assert_eq!(rule.match_type, PATH_MATCH_EXACT);
-        assert_eq!(rule.path_str(), "/usr/bin/curl");
-    }
+        assert_eq!(rule.ino, meta.ino());
+        assert_eq!(rule.dev, meta.dev() as u32);
 
-    #[test]
-    fn test_cap_path_rule_prefix() {
-        let rule = CapPathRule::new(13, "/usr/bin/*").unwrap();
-        assert_eq!(rule.cap_mask, 1u64 << 13);
-        assert_eq!(rule.match_type, PATH_MATCH_PREFIX);
-        assert_eq!(rule.path_str(), "/usr/bin/");
-    }
+        // unresolvable / non-existent paths yield None
+        assert!(CapPathRule::new(0, "/nonexistent/xyzzy").is_none());
 
-    #[test]
-    #[should_panic]
-    fn test_cap_path_rule_long_path_panics() {
-        let long_path = "/usr/bin/".to_string() + &"a".repeat(300);
-        let _ = CapPathRule::new(21, &long_path).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn test_update_from_security_policy_path_rules() {
         let loader = EbpfLoader::new();
         loader.load_programs(None).unwrap();
+
+        let dir = std::env::temp_dir().join(format!("as_cap_upd_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let curl_path = dir.join("curl");
+        std::fs::write(&curl_path, b"x").unwrap();
+        let curl_path = curl_path.to_str().unwrap().to_string();
+
         let policy = policy_with_cap_paths(&[
-            ("cap_net_raw", Some("/usr/bin/curl")),
+            ("cap_net_raw", Some(&curl_path)),
             ("cap_sys_admin", Some("/usr/sbin/*")),
             ("cap_sys_ptrace", None),
         ]);
@@ -1153,11 +1299,12 @@ mod tests {
         assert_eq!(pv.has_path_rules, 1);
 
         let rules = loader.get_cap_path_rules(123).unwrap();
-        assert_eq!(rules.count, 2);
+        // only the exact path resolves to an inode; the glob is skipped
+        assert_eq!(rules.count, 1);
         assert_eq!(rules.rules[0].cap_mask, 1u64 << 13);
-        assert_eq!(rules.rules[0].match_type, PATH_MATCH_EXACT);
-        assert_eq!(rules.rules[1].cap_mask, 1u64 << 21);
-        assert_eq!(rules.rules[1].match_type, PATH_MATCH_PREFIX);
+        assert_ne!(rules.rules[0].ino, 0);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1177,13 +1324,21 @@ mod tests {
     fn test_remove_policy_clears_path_rules() {
         let loader = EbpfLoader::new();
         loader.load_programs(None).unwrap();
-        let policy = policy_with_cap_paths(&[("cap_net_raw", Some("/usr/bin/curl"))]);
+        let dir = std::env::temp_dir().join(format!("as_cap_rm_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let curl_path = dir.join("curl");
+        std::fs::write(&curl_path, b"x").unwrap();
+        let curl_path = curl_path.to_str().unwrap().to_string();
+
+        let policy = policy_with_cap_paths(&[("cap_net_raw", Some(&curl_path))]);
         loader.update_from_security_policy(789, &policy, 0).unwrap();
         assert!(loader.get_cap_path_rules(789).is_some());
 
         loader.remove_policy(789).unwrap();
         assert!(loader.get_cap_path_rules(789).is_none());
         assert!(loader.get_policy(789).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

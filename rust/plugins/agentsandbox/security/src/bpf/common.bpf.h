@@ -1,7 +1,22 @@
 #ifndef __COMMON_BPF_H
 #define __COMMON_BPF_H
 
-#include <linux/types.h>
+/*
+ * Basic types (__u64 etc.) and BPF_MAP_TYPE_* enums must be provided by the
+ * including translation unit *before* this header:
+ *   - <vmlinux.h>   for capability/filesystem (CO-RE internal kernel structs)
+ *   - <linux/bpf.h> for network/sockops (UAPI-only programs)
+ */
+#include <bpf/bpf_helpers.h>
+
+/* Address-family constants are #defines in the kernel and therefore absent from
+ * vmlinux.h; the stripped Ubuntu linux-libc-dev <linux/socket.h> also omits them. */
+#ifndef AF_INET
+#define AF_INET 2
+#endif
+#ifndef AF_INET6
+#define AF_INET6 10
+#endif
 
 #define MAX_CGROUP_ID_LEN 256
 #define MAX_EVENT_DETAIL 128
@@ -13,7 +28,7 @@
 #define MAX_EXE_PATH_LEN 256
 #define MAX_TARGET_LEN 64
 
-/* Path match type for cap_path_rule.match_type / fs_path_rule.match_type */
+/* Path match type for fs_path_rule.match_type */
 #define PATH_MATCH_EXACT   0
 #define PATH_MATCH_PREFIX  1
 
@@ -54,8 +69,9 @@ struct policy_value {
 
 struct cap_path_rule {
     __u64 cap_mask;
-    __u8 match_type;
-    char path[MAX_PATH_PATTERN_LEN];
+    __u64 ino;
+    __u32 dev;
+    __u32 reserved;
 };
 
 struct cap_path_rules {

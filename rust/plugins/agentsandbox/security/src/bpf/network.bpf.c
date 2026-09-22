@@ -1,9 +1,7 @@
-#include "common.bpf.h"
 #include <linux/bpf.h>
-#include <bpf/bpf_helpers.h>
+#include "common.bpf.h"
 #include <bpf/bpf_tracing.h>
-#include <linux/in.h>
-#include <linux/socket.h>
+#include <bpf/bpf_endian.h>
 #include <linux/errno.h>
 
 char LICENSE[] SEC("license") = "GPL";
@@ -54,6 +52,10 @@ static __always_inline int emit_net_event(__u64 cgroup_id, __u32 pid, __u8 actio
     if (!event) {
         return action == NET_ACTION_BLOCK ? 0 : 1;
     }
+
+    /* ringbuf reserve does not zero memory; clear the record so unset fields
+     * (e.g. operation_detail) are empty NUL-terminated strings, not garbage. */
+    __builtin_memset(event, 0, sizeof(*event));
 
     event->timestamp = bpf_ktime_get_ns();
     event->cgroup_id = cgroup_id;

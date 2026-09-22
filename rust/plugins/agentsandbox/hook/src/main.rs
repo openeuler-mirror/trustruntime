@@ -1,7 +1,9 @@
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use std::os::unix::fs::MetadataExt;
 
 use serde::{Deserialize, Serialize};
 use agentsandbox_config::ContainerId;
@@ -23,15 +25,24 @@ struct RegisterResponse {
 /// Reads cgroup_id from /proc/self/cgroup.
 fn read_cgroup_id() -> anyhow::Result<u64> {
     let content = fs::read_to_string("/proc/self/cgroup")?;
-    let line = content.lines().next()
-        .ok_or_else(|| anyhow::anyhow!("empty cgroup file"))?;
-    let cgroup_path = line.split(':').nth(2)
-        .ok_or_else(|| anyhow::anyhow!("malformed cgroup line: {}", line))?;
-    let cgroup_id = cgroup_path.rsplit('/').next()
-        .ok_or_else(|| anyhow::anyhow!("no cgroup id in path: {}", cgroup_path))?;
-    let cgroup_id = cgroup_id.parse::<u64>()
-        .map_err(|_| anyhow::anyhow!("cgroup_id not numeric: {}", cgroup_id))?;
-    Ok(cgroup_id)
+    let line = content.lines().next().ok_or_else(|| anyhow::anyhow!("empty cgroup file"))?;
+
+    let line_vec:Vec<&str> = line.split(':').collect();
+    let (hier, subsys, path) = match line_vec.as_slice() {
+        [hier, subsys, path] => (hier, subsys, path),
+        _ => return Err(anyhow::anyhow!("invalid cgroup file")),
+    };
+
+    let full = if *hier == "0" && *subsys == "" {
+        // cgroup v2: 0::/
+        format!("/sys/fs/cgroup{}", path)
+    } else {
+        // cgroup v1: hier:subsys:path
+        format!("/sys/fs/cgroup/{}{}", subsys, path)
+    };
+
+    let meta = fs::metadata(full)?;
+    Ok(meta.ino())
 }
 
 /// Sends registration message to HiController and receives response.
@@ -41,6 +52,9 @@ fn send_registration(sock_path: &str, container_id: ContainerId, config_path: &s
     let json = serde_json::to_string(&msg)?;
     stream.write_all(json.as_bytes())?;
     stream.write_all(b"\n")?;
+    stream.flush()?;
+
+    stream.shutdown(Shutdown::Write)?;
 
     let mut buf = Vec::new();
     stream.read_to_end(&mut buf)?;

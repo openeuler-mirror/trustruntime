@@ -1,19 +1,41 @@
-#include "common.bpf.h"
 #include <vmlinux.h>
-#include <linux/bpf.h>
-#include <bpf/bpf_helpers.h>
+#include "common.bpf.h"
 #include <bpf/bpf_tracing.h>
-#include <linux/fcntl.h>
 #include <linux/errno.h>
+
+/* Kernel-internal FMODE_* flags are #defines in include/linux/fs.h, not present
+ * in vmlinux.h (BTF dump) nor any UAPI header. Define the values the program reads. */
+#define FMODE_READ  0x1
+#define FMODE_WRITE 0x2
+#define FMODE_EXEC  0x4
 
 char LICENSE[] SEC("license") = "GPL";
 
+static __always_inline __u64 load_u64(const char *p) {
+    __u64 v;
+    __builtin_memcpy(&v, p, sizeof(v));
+    return v;
+}
+
+static __always_inline int fs_has_zero(__u64 v) {
+    return ((v - 0x0101010101010101ULL) & ~v & 0x8080808080808080ULL) != 0;
+}
+
 static __always_inline int fs_path_prefix_match(const char *path, const char *prefix) {
-    for (int i = 0; i < MAX_PATH_PATTERN_LEN; i++) {
-        if (prefix[i] == '\0') {
+#pragma clang loop unroll(disable)
+    for (int i = 0; i < MAX_PATH_PATTERN_LEN / 8; i++) {
+        __u64 a = load_u64(path + i * 8);
+        __u64 b = load_u64(prefix + i * 8);
+        __u64 z = ~b & (b - 0x0101010101010101ULL) & 0x8080808080808080ULL;
+        if (z) {
+            __u64 lowest = z & (~z + 1);
+            __u64 mask = lowest | (lowest - 1);
+            if ((a & mask) != (b & mask)) {
+                return 0;
+            }
             return 1;
         }
-        if (path[i] != prefix[i]) {
+        if (a != b) {
             return 0;
         }
     }
@@ -21,11 +43,14 @@ static __always_inline int fs_path_prefix_match(const char *path, const char *pr
 }
 
 static __always_inline int fs_path_exact_match(const char *path, const char *target) {
-    for (int i = 0; i < MAX_PATH_PATTERN_LEN; i++) {
-        if (path[i] != target[i]) {
+#pragma clang loop unroll(disable)
+    for (int i = 0; i < MAX_PATH_PATTERN_LEN / 8; i++) {
+        __u64 a = load_u64(path + i * 8);
+        __u64 b = load_u64(target + i * 8);
+        if (a != b) {
             return 0;
         }
-        if (path[i] == '\0') {
+        if (fs_has_zero(a)) {
             return 1;
         }
     }
@@ -59,6 +84,7 @@ static __always_inline int check_fs_path_rules(__u64 cgroup_id, __u8 requested_p
         return -1;
     }
 
+#pragma clang loop unroll(disable)
     for (int i = 0; i < MAX_FS_PATH_RULES; i++) {
         if (i >= rules->count) {
             break;
@@ -94,6 +120,10 @@ static __always_inline int emit_fs_event(
         return mode == 0 ? -EACCES : 0;
     }
 
+    /* ringbuf reserve does not zero memory; clear the record so unset fields
+     * (e.g. operation_detail) are empty NUL-terminated strings, not garbage. */
+    __builtin_memset(event, 0, sizeof(*event));
+
     event->timestamp = bpf_ktime_get_ns();
     event->cgroup_id = cgroup_id;
     event->pid = pid;
@@ -113,7 +143,7 @@ static __always_inline int emit_fs_event(
     return 0;
 }
 
-SEC("lsm/security_file_open")
+SEC("lsm/file_open")
 int BPF_PROG(handle_file_open, struct file *file) {
     if (!file) {
         return 0;
@@ -123,7 +153,7 @@ int BPF_PROG(handle_file_open, struct file *file) {
 
     struct policy_value *pv = bpf_map_lookup_elem(&policy_map, &cgroup_id);
     if (!pv) {
-        return -EPERM;
+        return 0;
     }
 
     struct sock_block_entry *blocked_sock = bpf_map_lookup_elem(&sock_block_map, &cgroup_id);

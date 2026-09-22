@@ -90,25 +90,35 @@ impl Management {
         Ok(())
     }
 
+    /// Periodically drains eBPF ring buffer events and writes them to security.log.
+    fn start_event_poller(&self) {
+        let integration = self.integration.clone();
+        thread::spawn(move || loop {
+            if let Err(e) = integration.process_events() {
+                eprintln!("security event poll failed: {}", e);
+            }
+            thread::sleep(std::time::Duration::from_millis(100));
+        });
+    }
+
     /// Runs the main event loop: config monitoring + sock listener for container lifecycle.
     pub async fn run(self: Arc<Self>, sock_listener: SockListener, sender: &dyn MessageSender) -> Result<(), MgmtError> {
         self.start_config_monitor(sender)?;
+        self.start_event_poller();
         let mgmt = self.clone();
         let sender_box: Box<dyn MessageSender + Send> = sender.clone_box();
 
-        tokio::task::spawn_blocking(move || {
-            sock_listener.listen(move |msg| {
-                match msg.action {
-                    ContainerAction::Register => {
-                        if let Some(config_path) = &msg.config_path {
-                            apply_container_config(config_path, msg.container_id, &mgmt, &sender_box);
-                        }
-                    }
-                    ContainerAction::Unregister => {
-                        unregister_container(msg.container_id, &mgmt, &sender_box);
+        sock_listener.listen(move |msg| {
+            match msg.action {
+                ContainerAction::Register => {
+                    if let Some(config_path) = &msg.config_path {
+                        apply_container_config(config_path, msg.container_id, &mgmt, &sender_box);
                     }
                 }
-            }).ok();
+                ContainerAction::Unregister => {
+                    unregister_container(msg.container_id, &mgmt, &sender_box);
+                }
+            }
         }).await.map_err(|e| MgmtError::SockError(e.to_string()))?;
         Ok(())
     }
