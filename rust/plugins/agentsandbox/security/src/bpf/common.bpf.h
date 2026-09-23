@@ -69,9 +69,8 @@ struct policy_value {
 
 struct cap_path_rule {
     __u64 cap_mask;
-    __u64 ino;
-    __u32 dev;
-    __u32 reserved;
+    __u8 match_type;
+    char path[MAX_PATH_PATTERN_LEN];
 };
 
 struct cap_path_rules {
@@ -138,6 +137,23 @@ struct {
     __type(key, __u64);
     __type(value, struct cap_path_rules);
 } cap_path_rules_map SEC(".maps");
+
+/* Per-task executable path cache.
+ * key:   tgid (__u32) — thread group id from bpf_get_current_pid_tgid() >> 32
+ * value: char[MAX_EXE_PATH_LEN] — NUL-terminated absolute executable path
+ *
+ * Written by the bprm_check_security LSM program (sleepable hook): the
+ * executable path is resolved via bpf_d_path (allowed there) once per exec.
+ * The non-sleepable capable hook reads
+ * this map to resolve path-conditioned capability rules without bpf_d_path.
+ * LRU hash auto-evicts entries for exited processes; no manual cleanup needed.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u32);
+    __type(value, char[MAX_EXE_PATH_LEN]);
+} task_exe_path_map SEC(".maps");
 
 /* Filesystem path permission rules map.
  * key:   cgroup_id (__u64) — identifies the container/cgroup

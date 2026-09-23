@@ -100,22 +100,20 @@ pub struct PolicyValue {
 
 unsafe impl aya::Pod for PolicyValue {}
 
-/// A single capability+executable rule for kernel-side matching.
-/// `cap_mask`: bitmask of allowed capabilities for this executable.
-/// `ino`/`dev`: the executable's (inode, device) identity, resolved at policy
-/// time from a path via stat().
+/// A single capability+path rule for kernel-side matching.
+/// `cap_mask`: bitmask of denied capabilities for this path.
+/// `match_type`: PATH_MATCH_EXACT or PATH_MATCH_PREFIX.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct CapPathRule {
     pub cap_mask: u64,
-    pub ino: u64,
-    pub dev: u32,
-    pub reserved: u32,
+    pub match_type: u8,
+    pub path: [u8; MAX_PATH_PATTERN_LEN],
 }
 
 unsafe impl aya::Pod for CapPathRule {}
 
-/// Container for executable-identity capability rules belonging to one cgroup.
+/// Container for path-conditioned capability rules belonging to one cgroup.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct CapPathRules {
@@ -133,17 +131,23 @@ impl Default for CapPathRules {
 
 impl Default for CapPathRule {
     fn default() -> Self {
-        Self { cap_mask: 0, ino: 0, dev: 0, reserved: 0 }
+        Self { cap_mask: 0, match_type: 0, path: [0u8; MAX_PATH_PATTERN_LEN] }
     }
 }
 
 impl CapPathRule {
-    /// Resolves a path to its (dev, ino) identity and builds a rule.
-    /// Returns None if the path cannot be stat'ed (e.g. it does not exist).
-    pub fn new(cap_mask: u64, path: &str) -> Option<Self> {
-        use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(path).ok()?;
-        Some(Self { cap_mask, ino: meta.ino(), dev: meta.dev() as u32, reserved: 0 })
+    pub fn new(cap_bit: u32, path_pattern: &str) -> Option<Self> {
+        let (match_type, cleaned) = compile_glob(path_pattern);
+        let bytes = cleaned.as_bytes();
+        debug_assert!(bytes.len() < MAX_PATH_PATTERN_LEN, "path exceeds MAX_PATH_PATTERN_LEN");
+        let mut path = [0u8; MAX_PATH_PATTERN_LEN];
+        path[..bytes.len()].copy_from_slice(bytes);
+        Some(Self { cap_mask: 1u64 << cap_bit, match_type, path })
+    }
+
+    pub fn path_str(&self) -> &str {
+        let end = self.path.iter().position(|&b| b == 0).unwrap_or(MAX_PATH_PATTERN_LEN);
+        std::str::from_utf8(&self.path[..end]).unwrap_or("")
     }
 }
 
@@ -635,17 +639,22 @@ impl EbpfLoader {
         match name {
             "capability" | "filesystem" => {
                 let btf = btf.ok_or_else(|| EbpfError::LoadError("kernel BTF unavailable".to_string()))?;
-                let (prog_name, hook_name) = match name {
-                    "capability" => ("handle_capable", "capable"),
-                    _ => ("handle_file_open", "file_open"),
+                let hooks: &[(&str, &str)] = match name {
+                    "capability" => &[
+                        ("handle_capable", "capable"),
+                        ("handle_bprm_exec", "bprm_check_security"),
+                    ],
+                    _ => &[("handle_file_open", "file_open")],
                 };
-                let prog: &mut Lsm = bpf.program_mut(prog_name)
-                    .ok_or_else(|| EbpfError::LoadError(format!("{} not found", prog_name)))?
-                    .try_into()
-                    .map_err(|e: ProgramError| EbpfError::LoadError(e.to_string()))?;
-                prog.load(hook_name, btf)
-                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
-                prog.attach().map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                for (prog_name, hook_name) in hooks {
+                    let prog: &mut Lsm = bpf.program_mut(prog_name)
+                        .ok_or_else(|| EbpfError::LoadError(format!("{} not found", prog_name)))?
+                        .try_into()
+                        .map_err(|e: ProgramError| EbpfError::LoadError(e.to_string()))?;
+                    prog.load(hook_name, btf)
+                        .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                    prog.attach().map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                }
             }
             "network" => {
                 let cgroup = File::open(ROOT_CGROUP_PATH)
@@ -813,15 +822,13 @@ impl EbpfLoader {
         let mut rules = CapPathRules::default();
         for pattern in path_order {
             if let Some(mask) = path_to_mask.get(pattern) {
-                // Glob/prefix patterns cannot be resolved to a single (dev, ino);
-                // skip them. Exact paths that fail stat() are also skipped.
-                if pattern.contains('*') {
-                    continue;
-                }
-                if let Some(rule) = CapPathRule::new(*mask, pattern) {
-                    rules.rules[rules.count as usize] = rule;
-                    rules.count += 1;
-                }
+                let (match_type, cleaned) = compile_glob(pattern);
+                let bytes = cleaned.as_bytes();
+                debug_assert!(bytes.len() < MAX_PATH_PATTERN_LEN, "path exceeds MAX_PATH_PATTERN_LEN");
+                let mut path = [0u8; MAX_PATH_PATTERN_LEN];
+                path[..bytes.len()].copy_from_slice(bytes);
+                rules.rules[rules.count as usize] = CapPathRule { cap_mask: *mask, match_type, path };
+                rules.count += 1;
             }
         }
         Ok(rules)
@@ -1255,38 +1262,34 @@ mod tests {
     }
 
     #[test]
-    fn test_cap_path_rule_inode_resolution() {
-        use std::os::unix::fs::MetadataExt;
-        let dir = std::env::temp_dir().join(format!("as_cap_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("curl");
-        std::fs::write(&path, b"x").unwrap();
-
-        let rule = CapPathRule::new(1u64 << 21, path.to_str().unwrap()).unwrap();
-        let meta = std::fs::metadata(&path).unwrap();
+    fn test_cap_path_rule_creation() {
+        let rule = CapPathRule::new(21, "/usr/bin/curl").unwrap();
         assert_eq!(rule.cap_mask, 1u64 << 21);
-        assert_eq!(rule.ino, meta.ino());
-        assert_eq!(rule.dev, meta.dev() as u32);
+        assert_eq!(rule.match_type, PATH_MATCH_EXACT);
+        assert_eq!(rule.path_str(), "/usr/bin/curl");
+    }
 
-        // unresolvable / non-existent paths yield None
-        assert!(CapPathRule::new(0, "/nonexistent/xyzzy").is_none());
+    #[test]
+    fn test_cap_path_rule_prefix() {
+        let rule = CapPathRule::new(13, "/usr/bin/*").unwrap();
+        assert_eq!(rule.cap_mask, 1u64 << 13);
+        assert_eq!(rule.match_type, PATH_MATCH_PREFIX);
+        assert_eq!(rule.path_str(), "/usr/bin/");
+    }
 
-        std::fs::remove_dir_all(&dir).ok();
+    #[test]
+    #[should_panic]
+    fn test_cap_path_rule_long_path_panics() {
+        let long_path = "/usr/bin/".to_string() + &"a".repeat(300);
+        let _ = CapPathRule::new(21, &long_path).unwrap();
     }
 
     #[test]
     fn test_update_from_security_policy_path_rules() {
         let loader = EbpfLoader::new();
         loader.load_programs(None).unwrap();
-
-        let dir = std::env::temp_dir().join(format!("as_cap_upd_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let curl_path = dir.join("curl");
-        std::fs::write(&curl_path, b"x").unwrap();
-        let curl_path = curl_path.to_str().unwrap().to_string();
-
         let policy = policy_with_cap_paths(&[
-            ("cap_net_raw", Some(&curl_path)),
+            ("cap_net_raw", Some("/usr/bin/curl")),
             ("cap_sys_admin", Some("/usr/sbin/*")),
             ("cap_sys_ptrace", None),
         ]);
@@ -1299,12 +1302,11 @@ mod tests {
         assert_eq!(pv.has_path_rules, 1);
 
         let rules = loader.get_cap_path_rules(123).unwrap();
-        // only the exact path resolves to an inode; the glob is skipped
-        assert_eq!(rules.count, 1);
+        assert_eq!(rules.count, 2);
         assert_eq!(rules.rules[0].cap_mask, 1u64 << 13);
-        assert_ne!(rules.rules[0].ino, 0);
-
-        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(rules.rules[0].match_type, PATH_MATCH_EXACT);
+        assert_eq!(rules.rules[1].cap_mask, 1u64 << 21);
+        assert_eq!(rules.rules[1].match_type, PATH_MATCH_PREFIX);
     }
 
     #[test]
@@ -1324,21 +1326,13 @@ mod tests {
     fn test_remove_policy_clears_path_rules() {
         let loader = EbpfLoader::new();
         loader.load_programs(None).unwrap();
-        let dir = std::env::temp_dir().join(format!("as_cap_rm_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let curl_path = dir.join("curl");
-        std::fs::write(&curl_path, b"x").unwrap();
-        let curl_path = curl_path.to_str().unwrap().to_string();
-
-        let policy = policy_with_cap_paths(&[("cap_net_raw", Some(&curl_path))]);
+        let policy = policy_with_cap_paths(&[("cap_net_raw", Some("/usr/bin/curl"))]);
         loader.update_from_security_policy(789, &policy, 0).unwrap();
         assert!(loader.get_cap_path_rules(789).is_some());
 
         loader.remove_policy(789).unwrap();
         assert!(loader.get_cap_path_rules(789).is_none());
         assert!(loader.get_policy(789).is_none());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

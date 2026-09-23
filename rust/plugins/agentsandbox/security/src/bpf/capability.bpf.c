@@ -1,29 +1,77 @@
 #include <vmlinux.h>
 #include "common.bpf.h"
+#include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 #include <linux/errno.h>
 
 char LICENSE[] SEC("license") = "GPL";
 
-static __always_inline int get_exe_inode(__u64 *ino, __u32 *dev) {
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
-    if (!task) {
-        return -1;
+static __always_inline __u64 load_u64(const char *p) {
+    __u64 v;
+    __builtin_memcpy(&v, p, sizeof(v));
+    return v;
+}
+
+static __always_inline int has_zero(__u64 v) {
+    return ((v - 0x0101010101010101ULL) & ~v & 0x8080808080808080ULL) != 0;
+}
+
+static __always_inline int path_prefix_match(const char *path, const char *prefix) {
+#pragma clang loop unroll(disable)
+    for (int i = 0; i < MAX_PATH_PATTERN_LEN / 8; i++) {
+        __u64 a = load_u64(path + i * 8);
+        __u64 b = load_u64(prefix + i * 8);
+        __u64 z = ~b & (b - 0x0101010101010101ULL) & 0x8080808080808080ULL;
+        if (z) {
+            __u64 lowest = z & (~z + 1);
+            __u64 mask = lowest | (lowest - 1);
+            if ((a & mask) != (b & mask)) {
+                return 0;
+            }
+            return 1;
+        }
+        if (a != b) {
+            return 0;
+        }
     }
-    struct mm_struct *mm = task->mm;
-    if (!mm) {
-        return -1;
+    return 0;
+}
+
+static __always_inline int path_exact_match(const char *path, const char *target) {
+#pragma clang loop unroll(disable)
+    for (int i = 0; i < MAX_PATH_PATTERN_LEN / 8; i++) {
+        __u64 a = load_u64(path + i * 8);
+        __u64 b = load_u64(target + i * 8);
+        if (a != b) {
+            return 0;
+        }
+        if (has_zero(a)) {
+            return 1;
+        }
     }
-    struct file *exe_file = mm->exe_file;
-    if (!exe_file) {
-        return -1;
+    return 0;
+}
+
+/* Sleepable hook: caches the executable's absolute path at exec time.
+ *
+ * Fires exactly once per execve via bprm_check_security. bprm->file is the
+ * executable's struct file (not the interpreter or any shared library), so we
+ * resolve its path with bpf_d_path (allowed here, sleepable) and cache it keyed
+ * by tgid so the non-sleepable capable hook can look it up without bpf_d_path. */
+SEC("lsm/bprm_check_security")
+int BPF_PROG(handle_bprm_exec, struct linux_binprm *bprm) {
+    if (!bprm || !bprm->file) {
+        return 0;
     }
-    struct inode *inode = exe_file->f_inode;
-    if (!inode) {
-        return -1;
+
+    char path[MAX_EXE_PATH_LEN];
+    __builtin_memset(path, 0, sizeof(path));
+    if (bpf_d_path(&bprm->file->f_path, path, sizeof(path)) < 0) {
+        return 0;
     }
-    *ino = inode->i_ino;
-    *dev = inode->i_sb->s_dev;
+
+    __u32 tgid = bpf_get_current_pid_tgid() >> 32;
+    bpf_map_update_elem(&task_exe_path_map, &tgid, path, BPF_ANY);
     return 0;
 }
 
@@ -33,9 +81,9 @@ static __always_inline int check_path_rules(__u64 cgroup_id, int cap) {
         return 0;
     }
 
-    __u64 ino;
-    __u32 dev;
-    if (get_exe_inode(&ino, &dev) < 0) {
+    __u32 tgid = bpf_get_current_pid_tgid() >> 32;
+    const char *exe_path = bpf_map_lookup_elem(&task_exe_path_map, &tgid);
+    if (!exe_path) {
         return 0;
     }
 
@@ -47,14 +95,20 @@ static __always_inline int check_path_rules(__u64 cgroup_id, int cap) {
         }
         struct cap_path_rule *rule = &rules->rules[i];
 
-        if (rule->ino != ino || rule->dev != dev) {
+        int path_matched = 0;
+        if (rule->match_type == PATH_MATCH_PREFIX) {
+            path_matched = path_prefix_match(exe_path, rule->path);
+        } else {
+            path_matched = path_exact_match(exe_path, rule->path);
+        }
+        if (!path_matched) {
             continue;
         }
 
+        /* scoped deny: 路径匹配 + cap 在 deny 列表 → 拦截 */
         if (rule->cap_mask & cap_bit) {
-            return 0;
+            return 1;
         }
-        return 1;
     }
     return 0;
 }
@@ -101,7 +155,7 @@ int BPF_PROG(handle_capable, const struct cred *cred, struct user_namespace *ns,
 
     struct policy_value *pv = bpf_map_lookup_elem(&policy_map, &cgroup_id);
     if (!pv) {
-        return -EPERM;
+        return 0;
     }
 
     __u64 cap_bit = 1ULL << cap;
