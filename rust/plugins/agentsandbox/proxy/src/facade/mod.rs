@@ -610,6 +610,7 @@ mod tests {
     /// 构造规则集（host 型 + 单 targetrule + 可选 binaryrules）。
     fn rs_host(name: &str, context: &str, method: &str, path: &str) -> RuleSet {
         RuleSet {
+            rule_id: None,
             name: name.to_string(),
             host: HostRule {
                 host_type: HostType::Host,

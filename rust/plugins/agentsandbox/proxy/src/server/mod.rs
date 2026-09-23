@@ -458,7 +458,7 @@ async fn handle_request(
     //    规则含 binary 条件且未解析 → binary_not_found fail-closed）。
     if fc.has_binary_condition() && conn.binary_path.is_none() {
         let meta = ReqMeta { container_id: &container_id, domain: &domain, method: req.method(), uri: req.uri(), target_ips: &None };
-        let entry = deny_entry(&ctx, &conn, &meta, Reason::BinaryNotFound);
+        let entry = deny_entry(&ctx, &conn, &meta, Reason::BinaryNotFound, None);
         return Ok(audit_deny(&entry, Reason::BinaryNotFound));
     }
 
@@ -470,7 +470,7 @@ async fn handle_request(
             None => {
                 crate::log_warn!("server", "dns resolve failed; blocked (fail-closed)");
                 let meta = ReqMeta { container_id: &container_id, domain: &domain, method: req.method(), uri: req.uri(), target_ips: &None };
-                let entry = deny_entry(&ctx, &conn, &meta, Reason::DnsResolveError);
+                let entry = deny_entry(&ctx, &conn, &meta, Reason::DnsResolveError, None);
                 return Ok(audit_deny(&entry, Reason::DnsResolveError));
             }
         }
@@ -505,6 +505,8 @@ async fn handle_request(
         &fc,
     );
     let (action, reason, alert) = (decision.action, decision.reason, decision.alert);
+    // 命中规则集标识（规则命中决策携带——随审计/告警条目输出）。
+    let rule_id = decision.rule_id.as_deref();
     if action == Action::Deny {
         // 策略拒绝观测（info 级——release 可见；debug→info 升级，
         // 2026-09-15）。
@@ -518,14 +520,26 @@ async fn handle_request(
             container_id
         );
         let meta = ReqMeta { container_id: &container_id, domain: &domain, method: req.method(), uri: req.uri(), target_ips: &target_ip_str };
-        let entry = deny_entry(&ctx, &conn, &meta, reason);
+        let entry = deny_entry(&ctx, &conn, &meta, reason, rule_id);
         return Ok(audit_deny(&entry, reason));
     }
 
     // 4. Upgrade（h1）：101 升级后转纯隧道（本函数在 upgrade 前返回
     //    101 响应骨架——隧道由 on_upgrade 任务承接）。
     if is_upgrade_request(&req) {
-        return handle_upgrade(req, ctx, conn, domain, container_id, reason, alert, host_port, target_ip_str).await;
+        return handle_upgrade(
+            req,
+            ctx,
+            conn,
+            domain,
+            container_id,
+            reason,
+            alert,
+            rule_id,
+            host_port,
+            target_ip_str,
+        )
+        .await;
     }
 
     // 5. allow：目标连接 + 转发 + 流式回传 + 审计（真实 status_code——Q6 修复）。
@@ -535,7 +549,19 @@ async fn handle_request(
         b.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
             .boxed()
     });
-    forward_request(req, ctx, conn, domain, container_id, reason, alert, host_port, target_ip_str).await
+    forward_request(
+        req,
+        ctx,
+        conn,
+        domain,
+        container_id,
+        reason,
+        alert,
+        rule_id,
+        host_port,
+        target_ip_str,
+    )
+    .await
 }
 
 /// Upgrade 请求判定（h1：GET + 非空 Upgrade 头——隧道分支判别器）。
@@ -662,7 +688,7 @@ async fn handle_inference(
                 uri: &parts.uri,
                 target_ips: &None,
             };
-            let entry = deny_entry(&ctx, &conn, &meta, Reason::InferenceRoute);
+            let entry = deny_entry(&ctx, &conn, &meta, Reason::InferenceRoute, None);
             return Ok(audit_deny(&entry, Reason::InferenceRoute));
         }
         // Forward：修改列表忽略（防御性——外部库应为空列表）。
@@ -700,7 +726,7 @@ async fn handle_inference(
     // 4. 统一转发路径（目标连接 + 转发 + 审计 allow + 真实 status +
     //    流式回传；reason=inference_route；host_port 透传——与非推理
     //    路径端口语义一致，2026-09-15 日志观测暴露的传递缺失修复）。
-    forward_request(fwd_req, ctx, conn, domain, container_id, Reason::InferenceRoute, false, host_port, None).await
+    forward_request(fwd_req, ctx, conn, domain, container_id, Reason::InferenceRoute, false, None, host_port, None).await
 }
 
 /// 调试日志用请求头格式化：`[name: value; ...]`（多值头逐值展开；
@@ -811,6 +837,7 @@ async fn forward_request(
     container_id: String,
     reason: Reason,
     alert: bool,
+    rule_id: Option<&str>,
     host_port: Option<u16>,
     target_ip_str: Option<String>,
 ) -> Result<Response<B>, std::convert::Infallible> {
@@ -834,7 +861,7 @@ async fn forward_request(
                 e.reason(),
                 container_id
             );
-            let entry = deny_entry(&ctx, &conn, &meta, e.reason());
+            let entry = deny_entry(&ctx, &conn, &meta, e.reason(), rule_id);
             return Ok(audit_deny(&entry, e.reason()));
         }
     };
@@ -860,7 +887,15 @@ async fn forward_request(
 
     // 审计（真实 status_code——Q6 修复；先于响应回传发起方：审计 Err
     // 时不回传，无未审计流量）。
-    if let Some(blocked) = audit_allow(&allow_entry(&ctx, &conn, &meta, reason, status.as_u16(), alert)) {
+    if let Some(blocked) = audit_allow(&allow_entry(
+        &ctx,
+        &conn,
+        &meta,
+        reason,
+        status.as_u16(),
+        alert,
+        rule_id,
+    )) {
         conn_handle.abort();
         return Ok(blocked);
     }
@@ -1076,6 +1111,7 @@ async fn handle_upgrade(
     container_id: String,
     reason: Reason,
     alert: bool,
+    rule_id: Option<&str>,
     host_port: Option<u16>,
     target_ip_str: Option<String>,
 ) -> Result<Response<B>, std::convert::Infallible> {
@@ -1106,7 +1142,7 @@ async fn handle_upgrade(
                 e.reason(),
                 container_id
             );
-            let entry = deny_entry(&ctx, &conn, &meta, e.reason());
+            let entry = deny_entry(&ctx, &conn, &meta, e.reason(), rule_id);
             return Ok(audit_deny(&entry, e.reason()));
         }
     };
@@ -1138,7 +1174,9 @@ async fn handle_upgrade(
     let status = parse_status_line(&resp_buf);
 
     // 4. 审计（升级连接 status；先于 101 回传发起方——fail-closed）。
-    if let Some(blocked) = audit_allow(&allow_entry(&ctx, &conn, &meta, reason, status, alert)) {
+    if let Some(blocked) = audit_allow(&allow_entry(
+        &ctx, &conn, &meta, reason, status, alert, rule_id,
+    )) {
         return Ok(blocked);
     }
 
@@ -1297,9 +1335,10 @@ fn build_entry(
     source_ip: Option<&str>,
     target_ip: Option<&str>,
     entry_type: crate::model::AuditEntryType,
+    rule_id: Option<&str>,
 ) -> AuditLogEntry {
     AuditLogEntry {
-        timestamp: crate::model::utc_now_iso8601(),
+        timestamp: crate::model::utc_now_millis(),
         container_id: container_id.to_string(),
         scenario: scenario.to_string(),
         domain: domain.to_string(),
@@ -1311,6 +1350,7 @@ fn build_entry(
         source_ip: source_ip.map(str::to_string),
         target_ip: target_ip.map(str::to_string),
         entry_type,
+        rule_id: rule_id.map(str::to_string),
     }
 }
 
@@ -1335,6 +1375,7 @@ fn deny_entry(
     conn: &ConnContext,
     meta: &ReqMeta<'_>,
     reason: Reason,
+    rule_id: Option<&str>,
 ) -> AuditLogEntry {
     let _ = conn;
     build_entry(
@@ -1349,6 +1390,7 @@ fn deny_entry(
         None,
         meta.target_ips.as_deref(),
         crate::model::AuditEntryType::Audit,
+        rule_id,
     )
 }
 
@@ -1356,7 +1398,8 @@ fn deny_entry(
 /// 普通转发为真实 status_code，Upgrade 为 101）。
 ///
 /// `alert`：default_policy=alert 且黑白未命中的放行——条目标记告警
-///（type=1，2026-09-09）；其余常规审计（type=0）。
+///（type=1，2026-09-09）；其余常规审计（type=0）。`rule_id`：命中
+/// 规则集的语义标识（规则命中决策携带；默认策略/旁路类 None）。
 fn allow_entry(
     ctx: &ServeContext,
     conn: &ConnContext,
@@ -1364,6 +1407,7 @@ fn allow_entry(
     reason: Reason,
     status: u16,
     alert: bool,
+    rule_id: Option<&str>,
 ) -> AuditLogEntry {
     build_entry(
         ctx.scenario,
@@ -1381,6 +1425,7 @@ fn allow_entry(
         } else {
             crate::model::AuditEntryType::Audit
         },
+        rule_id,
     )
 }
 
@@ -1428,6 +1473,7 @@ fn config_missing_response(
         Some(&conn.peer.ip().to_string()),
         None,
         AuditEntryType::Audit,
+        None,
     );
     audit_deny(&entry, Reason::ConfigNotFound)
 }
@@ -1824,18 +1870,18 @@ mod tests {
         };
 
         // alert 标记 → type=Alert + action=allow。
-        let entry = allow_entry(&ctx, &conn, &meta, Reason::DefaultPolicy, 200, true);
+        let entry = allow_entry(&ctx, &conn, &meta, Reason::DefaultPolicy, 200, true, None);
         assert_eq!(entry.entry_type, AuditEntryType::Alert);
         assert_eq!(entry.action, Action::Allow);
         assert_eq!(entry.reason, Reason::DefaultPolicy);
         assert_eq!(entry.status_code, 200);
 
         // 常规 allow → type=Audit。
-        let entry = allow_entry(&ctx, &conn, &meta, Reason::WhitelistMatch, 200, false);
+        let entry = allow_entry(&ctx, &conn, &meta, Reason::WhitelistMatch, 200, false, None);
         assert_eq!(entry.entry_type, AuditEntryType::Audit);
 
         // deny 路径恒 Audit。
-        let entry = deny_entry(&ctx, &conn, &meta, Reason::BlacklistMatch);
+        let entry = deny_entry(&ctx, &conn, &meta, Reason::BlacklistMatch, None);
         assert_eq!(entry.entry_type, AuditEntryType::Audit);
         assert_eq!(entry.action, Action::Deny);
     }

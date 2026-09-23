@@ -107,6 +107,7 @@ fn valid_fc(domain: &str) -> FilterConfig {
     FilterConfig {
         default_policy: Policy::Deny,
         rule_list: vec![RuleSet {
+            rule_id: None,
             name: "allow".to_string(),
             host: HostRule {
                 host_type: HostType::Host,
@@ -130,6 +131,7 @@ fn invalid_fc() -> FilterConfig {
     FilterConfig {
         default_policy: Policy::Deny,
         rule_list: vec![RuleSet {
+            rule_id: None,
             name: "bad".to_string(),
             host: HostRule {
                 host_type: HostType::Host,

@@ -342,7 +342,8 @@ mod tests {
 
     fn sample_entry() -> AuditLogEntry {
         AuditLogEntry {
-            timestamp: "2026-08-31T00:00:00Z".to_string(),
+            rule_id: None,
+            timestamp: 1_787_708_579_123,
             container_id: "c-test".to_string(),
             scenario: "lib".to_string(),
             domain: "api.example.com".to_string(),
