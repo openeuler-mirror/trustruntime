@@ -24,7 +24,7 @@ static __always_inline int path_prefix_match(const char *path, const char *prefi
         __u64 z = ~b & (b - 0x0101010101010101ULL) & 0x8080808080808080ULL;
         if (z) {
             __u64 lowest = z & (~z + 1);
-            __u64 mask = lowest | (lowest - 1);
+            __u64 mask = (lowest >> 7) - 1;
             if ((a & mask) != (b & mask)) {
                 return 0;
             }
