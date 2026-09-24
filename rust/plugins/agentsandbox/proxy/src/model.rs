@@ -136,6 +136,10 @@ pub struct BinaryRule {
 pub struct RuleSet {
     /// 规则集名（非空——观测/审计定位）。
     pub name: String,
+    /// 规则集标识（可选——配置方语义 ID；命中该规则集的决策在审计/
+    /// 告警条目中原样携带；未配置则审计不输出该字段）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
     /// 主机匹配条件（含 prio 优先级）。
     pub host: HostRule,
     /// 目标规则（method+path → action）。
@@ -168,8 +172,10 @@ pub struct FilterConfig {
 /// 求值决策（K3 契约返回——2026-09-16 起 evaluate 返回此结构）。
 ///
 /// `alert`：告警标记（alert 规则命中或 default_policy=alert）——审计
-/// 条目 type=1（放行 + 告警）；action 恒为真实流量动作（allow/deny）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 条目 type=1（放行 + 告警）；action 恒为真实流量动作（allow/deny）；
+/// `rule_id`：命中规则集的语义标识（规则命中决策携带——随审计/告警
+/// 条目输出；默认策略决策为 None）。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decision {
     /// 流量动作（allow=转发 / deny=阻断）。
     pub action: Action,
@@ -177,6 +183,8 @@ pub struct Decision {
     pub reason: Reason,
     /// 告警标记（审计条目 type=1）。
     pub alert: bool,
+    /// 命中规则集的 rule_id（规则命中决策；默认策略为 None）。
+    pub rule_id: Option<String>,
 }
 
 impl FilterConfig {
@@ -232,15 +240,17 @@ impl TryFrom<u8> for AuditEntryType {
 }
 
 /// 审计日志条目（AR-003 AR-clarify §2.3.1；AR-001 组装、K4 传递；
-/// 2026-09-09 扩展 type 字段——12 字段）。
+/// 2026-09-09 扩展 type 字段；2026-09-18 扩展 rule_id——13 字段）。
 ///
 /// `status_code`：目标响应码，拒绝路径为 0；`source_ip`（场景一容器源 IP）与
 /// `target_ip` 可空（`None` 序列化为 null，不省略字段）；`entry_type`：
-/// 0=审计 / 1=告警（旧条目无该字段时反序列化为 Audit——向后兼容）。
+/// 0=审计 / 1=告警（旧条目无该字段时反序列化为 Audit——向后兼容）；
+/// `rule_id`：命中规则集的语义标识（仅规则命中决策输出——未配置或
+/// 默认策略/旁路类决策省略该字段，条目形状向后兼容）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditLogEntry {
-    /// UTC ISO-8601（秒精度，如 `2026-08-26T01:42:59Z`）。
-    pub timestamp: String,
+    /// Unix 毫秒时间戳（数值直接输出——不做格式化）。
+    pub timestamp: u64,
     /// 容器标识（监听端点绑定的 container_id——2026-09-01 API 重设计）。
     pub container_id: String,
     /// 审计场景标识："kata" / "lib"。
@@ -264,6 +274,9 @@ pub struct AuditLogEntry {
     /// 条目类型（协议字段 type：0=审计 / 1=告警）。
     #[serde(rename = "type", default)]
     pub entry_type: AuditEntryType,
+    /// 命中规则集的语义标识（仅规则命中决策输出；默认策略/旁路类省略）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
 }
 
 /// 审计场景标识常量（K4："kata" 场景一 / "lib" 场景二）。
@@ -274,32 +287,13 @@ pub const SCENARIO_KATA: &str = "kata";
 /// 场景二（lib 集成）场景标识。
 pub const SCENARIO_LIB: &str = "lib";
 
-/// 生成 UTC ISO-8601 时间戳（秒精度，无外部时间库依赖）。
-pub fn utc_now_iso8601() -> String {
-    let secs = std::time::SystemTime::now()
+/// 当前 Unix 毫秒时间戳（无格式化——审计条目直接输出数值；时钟早于
+/// 纪元时返回 0——防御性收敛，与既有语义一致）。
+pub fn utc_now_millis() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    iso8601_from_unix(secs)
-}
-
-/// 纪元秒 → UTC ISO-8601（秒精度；公历民用日期经 civil_from_days 算法换算）。
-fn iso8601_from_unix(secs: i64) -> String {
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    // 公历民用日期（Howard Hinnant civil_from_days 算法）。
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let mth = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if mth <= 2 { y + 1 } else { y };
-    format!("{y:04}-{mth:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -308,6 +302,7 @@ mod tests {
 
     fn entry(binaryrules: u32) -> FilterConfig {
         let mk_ruleset = |binaryrules: u32| RuleSet {
+            rule_id: None,
             name: "rs".to_string(),
             host: HostRule {
                 host_type: HostType::Host,
@@ -356,6 +351,7 @@ mod tests {
         let mk = |host_type: HostType| FilterConfig {
             default_policy: Policy::Deny,
             rule_list: vec![RuleSet {
+                rule_id: None,
                 name: "rs".to_string(),
                 host: HostRule {
                     host_type,
@@ -379,12 +375,13 @@ mod tests {
     }
 
     // 规则结构 serde：JSON（UDS refresh_policy 通道）往返 + block 别名 +
-    // port 预留字段透传。
+    // port/rule_id 预留字段透传。
     #[test]
     fn ruleset_serde_roundtrip() {
         let fc = FilterConfig {
             default_policy: Policy::Deny,
             rule_list: vec![RuleSet {
+                rule_id: Some("rule-md-001".to_string()),
                 name: "block-metadata-service".to_string(),
                 host: HostRule {
                     host_type: HostType::Ip,
@@ -410,6 +407,15 @@ mod tests {
         assert!(json.contains("\"type\":\"ip\""));
         assert!(json.contains("\"prio\":50"));
         assert!(json.contains("\"port\":8843"));
+        assert!(json.contains("\"rule_id\":\"rule-md-001\""));
+
+        // rule_id 未配置 → 序列化省略（线形状兼容）。
+        let mut fc_no_id = fc.clone();
+        fc_no_id.rule_list[0].rule_id = None;
+        let json_no_id = serde_json::to_string(&fc_no_id).unwrap();
+        assert!(!json_no_id.contains("rule_id"));
+        let back_no_id: FilterConfig = serde_json::from_str(&json_no_id).unwrap();
+        assert_eq!(back_no_id, fc_no_id);
 
         // block 别名（HC 侧 TOML 术语）→ Deny。
         let from_alias: RuleAction = serde_json::from_str("\"block\"").unwrap();
@@ -444,12 +450,13 @@ mod tests {
         );
     }
 
-    // K4 契约序列化：audit_log_entry 12 字段（可空字段为 null 不省略；
-    // type 数值映射 0/1）。
+    // K4 契约序列化：audit_log_entry 12+1 字段（可空字段为 null 不省略；
+    // type 数值映射 0/1；rule_id 仅命中时输出）。
     #[test]
     fn audit_entry_serde_fields() {
         let e = AuditLogEntry {
-            timestamp: "2026-08-26T01:42:59Z".to_string(),
+            rule_id: None,
+            timestamp: 1_787_708_579_123,
             container_id: "c-test".to_string(),
             scenario: "kata".to_string(),
             domain: "api.example.com".to_string(),
@@ -463,14 +470,25 @@ mod tests {
             entry_type: AuditEntryType::Audit,
         };
         let json = serde_json::to_string(&e).unwrap();
-        assert!(json.contains("\"timestamp\":\"2026-08-26T01:42:59Z\""));
+        assert!(json.contains("\"timestamp\":1787708579123"));
         assert!(json.contains("\"status_code\":0"));
         assert!(json.contains("\"target_ip\":null"));
         assert!(json.contains("\"type\":0"));
+        // rule_id 未命中 → 字段省略（非命中条目形状向后兼容）。
+        assert!(!json.contains("rule_id"));
         let back: AuditLogEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(back, e);
 
-        // 告警条目：type=1。
+        // 规则命中条目：rule_id 输出 + 往返。
+        let hit = AuditLogEntry {
+            rule_id: Some("rule-a-001".to_string()),
+            ..e.clone()
+        };
+        let json = serde_json::to_string(&hit).unwrap();
+        assert!(json.contains("\"rule_id\":\"rule-a-001\""));
+        assert_eq!(serde_json::from_str::<AuditLogEntry>(&json).unwrap(), hit);
+
+        // 告警条目：type=1（rule_id 同构携带——告警与审计共用条目）。
         let alert = AuditLogEntry {
             action: Action::Allow,
             reason: Reason::DefaultPolicy,
@@ -486,7 +504,7 @@ mod tests {
     #[test]
     fn audit_entry_type_compatibility() {
         let legacy = r#"{
-            "timestamp":"2026-08-26T01:42:59Z","container_id":"c","scenario":"lib",
+            "timestamp":1787708579123,"container_id":"c","scenario":"lib",
             "domain":"a.com","url_path":"/","method":"GET","status_code":200,
             "action":"allow","reason":"default_policy","source_ip":null,"target_ip":null
         }"#;
@@ -502,24 +520,17 @@ mod tests {
         assert!(AuditEntryType::try_from(3u8).is_err());
     }
 
-    // 时间戳格式：UTC ISO-8601 秒精度。已知纪元值断言（civil_from_days
-    // 算法的闰日/年边界锁定）+ 当前时间形态校验。
+    // 时间戳形态：Unix 毫秒数值（无格式化）——纪元下界 + 量级断言。
     #[test]
-    fn utc_now_iso8601_shape() {
-        assert_eq!(iso8601_from_unix(0), "1970-01-01T00:00:00Z");
-        // 2024-02-29T00:00:00Z（闰日）。
-        assert_eq!(iso8601_from_unix(1_709_164_800), "2024-02-29T00:00:00Z");
-        // 2026-08-26T01:42:59Z（与 AuditLogEntry 示例 timestamp 互证）。
-        assert_eq!(
-            iso8601_from_unix(1_787_708_579),
-            "2026-08-26T01:42:59Z"
-        );
-        // 纪元前（负值）换算正确性（1969-12-31T23:59:59Z）。
-        assert_eq!(iso8601_from_unix(-1), "1969-12-31T23:59:59Z");
-        let ts = utc_now_iso8601();
-        assert_eq!(ts.len(), 20, "ts = {ts}");
-        assert!(ts.ends_with('Z'));
-        assert!(ts.starts_with("20"));
+    fn utc_now_millis_shape() {
+        let ts = utc_now_millis();
+        // 纪元下界：不早于 2020-01-01（测试环境时钟健全性粗校验）。
+        assert!(ts >= 1_577_836_800_000, "ts = {ts}");
+        // 毫秒量级：13 位数值（2286 年前不会达到 10^14）。
+        assert!(ts < 10_000_000_000_000, "ts = {ts}");
+        // 数值输出（serde 数值形态由 audit_entry_serde_fields 锁定）。
+        let now = utc_now_millis();
+        assert!(now >= ts, "单调性粗校验（同进程内不回退）");
     }
 }
 

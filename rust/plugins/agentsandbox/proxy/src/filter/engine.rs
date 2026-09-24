@@ -87,6 +87,9 @@ pub fn evaluate(
             crate::log_debug!("filter", "ruleset skipped: name={} prio={}", rs.name, rs.host.prio);
             continue;
         }
+        // 命中规则集的语义标识（决策与审计/告警条目携带；未配置为 None）。
+        let rule_id = rs.rule_id.clone();
+        let rule_id_dbg = rs.rule_id.as_deref().unwrap_or("-");
         // binaryrules：deny/alert 命中即决策；allow 透传（无决策——排序
         // 保证 allow 段最后，透传后落入 targetrules）。
         for br in &rs.binaryrules {
@@ -97,28 +100,32 @@ pub fn evaluate(
                 RuleAction::Deny => {
                     crate::log_debug!(
                         "filter",
-                        "rule matched: ruleset={} prio={} kind=binary action=deny",
+                        "rule matched: ruleset={} rule_id={} prio={} kind=binary action=deny",
                         rs.name,
+                        rule_id_dbg,
                         rs.host.prio
                     );
                     return Decision {
                         action: Action::Deny,
                         reason: Reason::BlacklistMatch,
                         alert: false,
-                    }
+                        rule_id,
+                    };
                 }
                 RuleAction::Alert => {
                     crate::log_debug!(
                         "filter",
-                        "rule matched: ruleset={} prio={} kind=binary action=alert",
+                        "rule matched: ruleset={} rule_id={} prio={} kind=binary action=alert",
                         rs.name,
+                        rule_id_dbg,
                         rs.host.prio
                     );
                     return Decision {
                         action: Action::Allow,
                         reason: Reason::BlacklistMatch,
                         alert: true,
-                    }
+                        rule_id,
+                    };
                 }
                 RuleAction::Allow => {} // 透传。
             }
@@ -132,41 +139,47 @@ pub fn evaluate(
                 RuleAction::Deny => {
                     crate::log_debug!(
                         "filter",
-                        "rule matched: ruleset={} prio={} kind=target action=deny",
+                        "rule matched: ruleset={} rule_id={} prio={} kind=target action=deny",
                         rs.name,
+                        rule_id_dbg,
                         rs.host.prio
                     );
                     return Decision {
                         action: Action::Deny,
                         reason: Reason::BlacklistMatch,
                         alert: false,
-                    }
+                        rule_id,
+                    };
                 }
                 RuleAction::Alert => {
                     crate::log_debug!(
                         "filter",
-                        "rule matched: ruleset={} prio={} kind=target action=alert",
+                        "rule matched: ruleset={} rule_id={} prio={} kind=target action=alert",
                         rs.name,
+                        rule_id_dbg,
                         rs.host.prio
                     );
                     return Decision {
                         action: Action::Allow,
                         reason: Reason::BlacklistMatch,
                         alert: true,
-                    }
+                        rule_id,
+                    };
                 }
                 RuleAction::Allow => {
                     crate::log_debug!(
                         "filter",
-                        "rule matched: ruleset={} prio={} kind=target action=allow",
+                        "rule matched: ruleset={} rule_id={} prio={} kind=target action=allow",
                         rs.name,
+                        rule_id_dbg,
                         rs.host.prio
                     );
                     return Decision {
                         action: Action::Allow,
                         reason: Reason::WhitelistMatch,
                         alert: false,
-                    }
+                        rule_id,
+                    };
                 }
             }
         }
@@ -174,23 +187,26 @@ pub fn evaluate(
         crate::log_debug!("filter", "ruleset no rule hit: name={} prio={}", rs.name, rs.host.prio);
     }
 
-    // 默认策略（全部规则集未命中）。
+    // 默认策略（全部规则集未命中——无规则集上下文，rule_id 为 None）。
     crate::log_debug!("filter", "no ruleset hit; default policy applies");
     match fc.default_policy {
         Policy::Allow => Decision {
             action: Action::Allow,
             reason: Reason::DefaultPolicy,
             alert: false,
+            rule_id: None,
         },
         Policy::Deny => Decision {
             action: Action::Deny,
             reason: Reason::DefaultPolicy,
             alert: false,
+            rule_id: None,
         },
         Policy::Alert => Decision {
             action: Action::Allow,
             reason: Reason::DefaultPolicy,
             alert: true,
+            rule_id: None,
         },
     }
 }
@@ -226,6 +242,7 @@ mod tests {
 
     fn mk_host_ruleset(context: &str, prio: u32, targets: Vec<TargetRule>) -> RuleSet {
         RuleSet {
+            rule_id: None,
             name: format!("rs-{context}"),
             host: HostRule {
                 host_type: HostType::Host,
@@ -241,6 +258,7 @@ mod tests {
 
     fn mk_ip_ruleset(addr: &str, prio: u32, targets: Vec<TargetRule>) -> RuleSet {
         RuleSet {
+            rule_id: None,
             name: format!("rs-{addr}"),
             host: HostRule {
                 host_type: HostType::Ip,
@@ -276,6 +294,7 @@ mod tests {
     // TC1：prio 降序链式——高优先级规则集先决策；未命中回退低优先级。
     #[test]
     fn tc1_prio_order_chain() {
+        let _serial = crate::logging::testing::serial_guard();
         let conf = fc(
             Policy::Deny,
             vec![
@@ -291,6 +310,7 @@ mod tests {
         assert_eq!(
             eval("dual.com", "GET", "/admin/x", &conf),
             Decision {
+                rule_id: None,
                 action: Action::Deny,
                 reason: Reason::BlacklistMatch,
                 alert: false
@@ -300,6 +320,7 @@ mod tests {
         assert_eq!(
             eval("dual.com", "GET", "/v1/x", &conf),
             Decision {
+                rule_id: None,
                 action: Action::Allow,
                 reason: Reason::WhitelistMatch,
                 alert: false
@@ -310,6 +331,7 @@ mod tests {
     // TC2：host 匹配——type=host glob 命中/不命中。
     #[test]
     fn tc2_host_glob_matching() {
+        let _serial = crate::logging::testing::serial_guard();
         let conf = fc(
             Policy::Deny,
             vec![mk_host_ruleset("*.example.com", 100, vec![t("*", "*", RuleAction::Allow)])],
@@ -327,6 +349,7 @@ mod tests {
     // TC3：host 匹配——type=ip（DNS 预解析 IP 任一命中；CIDR 网段）。
     #[test]
     fn tc3_host_ip_matching() {
+        let _serial = crate::logging::testing::serial_guard();
         let conf = fc(
             Policy::Deny,
             vec![mk_ip_ruleset("10.0.0.0/8", 100, vec![t("*", "*", RuleAction::Deny)])],
@@ -351,6 +374,7 @@ mod tests {
     // TC4：targetrules 维度——method + path AND 匹配。
     #[test]
     fn tc4_targetrule_method_path() {
+        let _serial = crate::logging::testing::serial_guard();
         let conf = fc(
             Policy::Deny,
             vec![mk_host_ruleset(
@@ -375,6 +399,7 @@ mod tests {
     // TC5：action 三态——deny/alert/allow 的 Decision 形态。
     #[test]
     fn tc5_action_three_states() {
+        let _serial = crate::logging::testing::serial_guard();
         let mk = |action: RuleAction| {
             fc(
                 Policy::Deny,
@@ -384,6 +409,7 @@ mod tests {
         assert_eq!(
             eval("a.com", "GET", "/", &mk(RuleAction::Deny)),
             Decision {
+                rule_id: None,
                 action: Action::Deny,
                 reason: Reason::BlacklistMatch,
                 alert: false
@@ -392,6 +418,7 @@ mod tests {
         assert_eq!(
             eval("a.com", "GET", "/", &mk(RuleAction::Alert)),
             Decision {
+                rule_id: None,
                 action: Action::Allow,
                 reason: Reason::BlacklistMatch,
                 alert: true
@@ -400,6 +427,7 @@ mod tests {
         assert_eq!(
             eval("a.com", "GET", "/", &mk(RuleAction::Allow)),
             Decision {
+                rule_id: None,
                 action: Action::Allow,
                 reason: Reason::WhitelistMatch,
                 alert: false
@@ -411,6 +439,7 @@ mod tests {
     //（registry 归一化后形态；deny 命中优先）。
     #[test]
     fn tc6_action_precedence_within_ruleset() {
+        let _serial = crate::logging::testing::serial_guard();
         // 手工构造已排序形态（deny → alert → allow——存储归一化结果）。
         let conf = fc(
             Policy::Deny,
@@ -428,6 +457,7 @@ mod tests {
         assert_eq!(
             eval("a.com", "GET", "/x", &conf),
             Decision {
+                rule_id: None,
                 action: Action::Deny,
                 reason: Reason::BlacklistMatch,
                 alert: false
@@ -437,6 +467,7 @@ mod tests {
         assert_eq!(
             eval("a.com", "POST", "/x", &conf),
             Decision {
+                rule_id: None,
                 action: Action::Allow,
                 reason: Reason::BlacklistMatch,
                 alert: true
@@ -446,6 +477,7 @@ mod tests {
         assert_eq!(
             eval("a.com", "GET", "/y", &conf),
             Decision {
+                rule_id: None,
                 action: Action::Allow,
                 reason: Reason::WhitelistMatch,
                 alert: false
@@ -457,6 +489,7 @@ mod tests {
     // glob 匹配 binary_path。
     #[test]
     fn tc7_binaryrules() {
+        let _serial = crate::logging::testing::serial_guard();
         let mut rs = mk_host_ruleset("a.com", 100, vec![t("*", "*", RuleAction::Allow)]);
         rs.binaryrules = vec![
             BinaryRule {
@@ -477,6 +510,7 @@ mod tests {
         assert_eq!(
             evaluate("g", "a.com", "GET", "/", Some("/usr/bin/wget"), &[], 443, &conf),
             Decision {
+                rule_id: None,
                 action: Action::Deny,
                 reason: Reason::BlacklistMatch,
                 alert: false
@@ -486,6 +520,7 @@ mod tests {
         assert_eq!(
             evaluate("g", "a.com", "GET", "/", Some("/usr/bin/curl"), &[], 443, &conf),
             Decision {
+                rule_id: None,
                 action: Action::Allow,
                 reason: Reason::BlacklistMatch,
                 alert: true
@@ -495,6 +530,7 @@ mod tests {
         assert_eq!(
             evaluate("g", "a.com", "GET", "/", Some("/usr/bin/python3"), &[], 443, &conf),
             Decision {
+                rule_id: None,
                 action: Action::Allow,
                 reason: Reason::WhitelistMatch,
                 alert: false
@@ -510,10 +546,12 @@ mod tests {
     // TC8：默认策略三态（无规则集命中）。
     #[test]
     fn tc8_default_policy_states() {
+        let _serial = crate::logging::testing::serial_guard();
         let empty = |p: Policy| fc(p, vec![]);
         assert_eq!(
             eval("x.com", "GET", "/", &empty(Policy::Deny)),
             Decision {
+                rule_id: None,
                 action: Action::Deny,
                 reason: Reason::DefaultPolicy,
                 alert: false
@@ -522,6 +560,7 @@ mod tests {
         assert_eq!(
             eval("x.com", "GET", "/", &empty(Policy::Allow)),
             Decision {
+                rule_id: None,
                 action: Action::Allow,
                 reason: Reason::DefaultPolicy,
                 alert: false
@@ -530,6 +569,7 @@ mod tests {
         assert_eq!(
             eval("x.com", "GET", "/", &empty(Policy::Alert)),
             Decision {
+                rule_id: None,
                 action: Action::Allow,
                 reason: Reason::DefaultPolicy,
                 alert: true
@@ -540,6 +580,7 @@ mod tests {
     // TC9：port 预留——规则集带 port 字段不影响匹配（任意端口均命中）。
     #[test]
     fn tc9_port_reserved_ignored() {
+        let _serial = crate::logging::testing::serial_guard();
         let mut rs = mk_host_ruleset("a.com", 100, vec![t("*", "*", RuleAction::Allow)]);
         rs.port = Some(8843);
         let conf = fc(Policy::Deny, vec![rs]);
@@ -550,5 +591,34 @@ mod tests {
                 "port={port} 应命中（预留不参与匹配）"
             );
         }
+    }
+
+    // TC10：rule_id 传播——规则命中决策携带命中规则集的 rule_id；
+    // 默认策略决策为 None（无规则集上下文）。
+    #[test]
+    fn tc10_rule_id_propagation() {
+        let _serial = crate::logging::testing::serial_guard();
+        let mut hit = mk_host_ruleset("a.com", 100, vec![t("GET", "/v1/*", RuleAction::Allow)]);
+        hit.rule_id = Some("rule-a-001".to_string());
+        let other = mk_host_ruleset("b.com", 90, vec![t("*", "*", RuleAction::Deny)]);
+        let conf = fc(Policy::Deny, vec![hit, other.clone()]);
+
+        // 规则命中（target allow）→ 携带命中规则集的 rule_id。
+        let d = eval("a.com", "GET", "/v1/x", &conf);
+        assert_eq!(d.action, Action::Allow);
+        assert_eq!(d.rule_id.as_deref(), Some("rule-a-001"));
+
+        // 主机不匹配的规则集不参与 → 默认策略 → rule_id 为 None。
+        let d = eval("c.org", "GET", "/v1/x", &conf);
+        assert_eq!(d.action, Action::Deny);
+        assert_eq!(d.reason, Reason::DefaultPolicy);
+        assert_eq!(d.rule_id, None);
+
+        // 未配置 rule_id 的规则集命中 → 决策携带 None。
+        let conf2 = fc(Policy::Deny, vec![other]);
+        let d = eval("b.com", "GET", "/x", &conf2);
+        assert_eq!(d.action, Action::Deny);
+        assert_eq!(d.reason, Reason::BlacklistMatch);
+        assert_eq!(d.rule_id, None);
     }
 }

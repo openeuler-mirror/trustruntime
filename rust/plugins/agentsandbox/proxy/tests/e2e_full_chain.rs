@@ -36,6 +36,7 @@ fn fc(whitelist_domain: &str) -> FilterConfig {
     FilterConfig {
         default_policy: Policy::Deny,
         rule_list: vec![RuleSet {
+            rule_id: Some("e2e-allow-rule".to_string()),
             name: "allow".to_string(),
             host: HostRule {
                 host_type: HostType::Host,
@@ -240,6 +241,8 @@ async fn case_e2e_deny_returns_403() {
     assert_eq!(entry.status_code, 0);
     assert_eq!(entry.domain, TEST_DOMAIN);
     assert_eq!(entry.scenario, SCENARIO_LIB);
+    // 默认策略决策（无规则命中）——审计不携带 rule_id。
+    assert_eq!(entry.rule_id, None);
 }
 
 // E2E-2：allow 转发（本地 fake 目标：DNS 名指向 127.0.0.1 经 hosts 不可行
@@ -269,6 +272,9 @@ async fn case_e2e_target_failure_returns_502() {
         entry.reason
     );
     assert_eq!(entry.status_code, 0);
+    // 规则命中（WhitelistMatch）后的目标失败——rule_id 经 forward_request
+    // 透传至 deny 条目。
+    assert_eq!(entry.rule_id.as_deref(), Some("e2e-allow-rule"));
 }
 
 // E2E-3：配置缺失 → 503 + 审计 config_not_found。
@@ -462,6 +468,8 @@ async fn case_e2e_allow_forwards_with_real_status_code() {
     assert_eq!(entry.action, Action::Allow);
     assert_eq!(entry.status_code, 200, "真实目标响应码");
     assert_eq!(entry.reason, Reason::WhitelistMatch);
+    // 规则命中 allow——审计条目携带命中规则集的 rule_id。
+    assert_eq!(entry.rule_id.as_deref(), Some("e2e-allow-rule"));
 }
 
 // E2E-8：目标拒绝（端口释放）→ 502 + connection_refused 精确归因。

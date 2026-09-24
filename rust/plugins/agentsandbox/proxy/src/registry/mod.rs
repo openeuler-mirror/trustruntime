@@ -202,6 +202,7 @@ mod tests {
         FilterConfig {
             default_policy: Policy::Deny,
             rule_list: vec![RuleSet {
+                rule_id: None,
                 name: "test-rs".to_string(),
                 host: HostRule {
                     host_type: HostType::Host,
@@ -388,6 +389,7 @@ mod tests {
             default_policy: Policy::Deny,
             rule_list: vec![
                 RuleSet {
+                    rule_id: None,
                     name: "low".to_string(),
                     host: HostRule {
                         host_type: HostType::Host,
@@ -404,6 +406,7 @@ mod tests {
                     port: None,
                 },
                 RuleSet {
+                    rule_id: None,
                     name: "high".to_string(),
                     host: HostRule {
                         host_type: HostType::Host,

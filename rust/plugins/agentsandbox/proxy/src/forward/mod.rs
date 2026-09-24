@@ -274,6 +274,8 @@ mod tests {
     // K9 错误映射：reason 常量对齐审计枚举。
     #[test]
     fn target_connect_error_reasons() {
+        let _serial = crate::logging::testing::serial_guard();
+
         assert_eq!(
             TargetConnectError::TargetTls.reason(),
             Reason::TargetTlsError
