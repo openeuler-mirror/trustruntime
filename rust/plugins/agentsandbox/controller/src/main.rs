@@ -2,7 +2,7 @@ use agentsandbox_controller::{Management, SockListener, UnixSocketSender};
 use agentsandbox_log::LogConfig;
 use std::env;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{PermissionsExt, FileTypeExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -97,7 +97,7 @@ fn resolve_file_path(key: &str, path: &str) -> Result<String, anyhow::Error> {
         anyhow::bail!("{}: parent directory does not exist or not a dir: {}", key, parent.display());
     }
     let resolved_parent = realpath(&parent.to_string_lossy())?;
-    if p.exists() && !p.is_file() {
+    if p.exists() && !p.metadata()?.file_type().is_socket() {
         anyhow::bail!("{}: path exists but is not a regular file: {}", key, path);
     }
     match p.file_name() {
