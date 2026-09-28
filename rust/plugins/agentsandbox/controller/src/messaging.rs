@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Error, ErrorKind, Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +44,8 @@ impl MessageSender for UnixSocketSender {
         let json = serde_json::to_string(msg).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
         stream.write_all(json.as_bytes())?;
         stream.write_all(b"\n")?;
+        stream.flush()?;
+        stream.shutdown(Shutdown::Write)?;
         let mut buf = Vec::new();
         stream.read_to_end(&mut buf)?;
         serde_json::from_slice(&buf).map_err(|e| Error::new(ErrorKind::InvalidData, e))
