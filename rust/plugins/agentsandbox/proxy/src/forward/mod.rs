@@ -116,28 +116,43 @@ impl TargetConnector {
         alpn: &[String],
     ) -> Result<TlsStream<TcpStream>, TargetConnectError> {
         let deadline = tokio::time::Instant::now() + self.timeout;
-        // TCP 连接（含域名解析）：单一 deadline 预算。阶段日志（warn）与
-        // server 层枚举日志双层共存——原始错误详情在此层保留（定位辅助）。
-        let tcp = match tokio::time::timeout_at(deadline, TcpStream::connect((host, port))).await
-        {
-            Err(_) => {
-                crate::log_warn!(
-                    "forward",
-                    "target connect deadline exceeded (tcp): host={host} port={port}"
-                );
-                return Err(TargetConnectError::Timeout);
-            }
-            Ok(Err(e)) => {
-                crate::log_warn!(
-                    "forward",
-                    "target tcp connect failed: host={host} port={port} err={e}"
-                );
-                return Err(map_tcp_connect_error(e));
-            }
-            Ok(Ok(tcp)) => tcp,
-        };
+        let tcp = tcp_connect(host, port, deadline, "target").await?;
+        self.tls_handshake(tcp, sni, alpn, deadline).await
+    }
+
+    /// 经上游代理建立到 `host:port` 的 TLS 连接（TCP 连上游 → CONNECT
+    /// 隧道 → 隧道内与真实目标 TLS 握手；SNI/ALPN/证书校验语义与直连
+    /// 一致——MITM 重发起模型保留）。
+    ///
+    /// 单一 deadline 预算贯穿上游 TCP+CONNECT+目标 TLS（D3 口径）。
+    /// 错误映射复用 K9 三类：上游 TCP 失败按 io kind 归类（refused/
+    /// timeout 精确，其余 TargetTls 兜底）；CONNECT 非成功响应（非 2xx/
+    /// 畸形/EOF）→TargetTls；隧道内 TLS 失败→TargetTls。根因经 warn 级
+    /// 阶段日志区分（upstream 语境）。
+    pub async fn connect_via(
+        &self,
+        upstream: &crate::model::UpstreamEndpoint,
+        host: &str,
+        port: u16,
+        sni: &str,
+        alpn: &[String],
+    ) -> Result<TlsStream<TcpStream>, TargetConnectError> {
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        let tcp = tcp_connect(&upstream.host, upstream.port, deadline, "upstream").await?;
+        let tunnel = connect_handshake(tcp, host, port, deadline).await?;
+        self.tls_handshake(tunnel, sni, alpn, deadline).await
+    }
+
+    /// TLS 握手阶段（既有 TCP 流上；SNI 域名校验 + ALPN 协商——直连与
+    /// 上游隧道共用）。
+    async fn tls_handshake(
+        &self,
+        tcp: TcpStream,
+        sni: &str,
+        alpn: &[String],
+        deadline: tokio::time::Instant,
+    ) -> Result<TlsStream<TcpStream>, TargetConnectError> {
         let _ = tcp.set_nodelay(true);
-        // TLS 握手（客户端侧，SNI 域名校验）：同一 deadline 剩余预算。
         let name = match rustls::pki_types::ServerName::try_from(sni.to_string()) {
             Ok(n) => n,
             Err(_) => {
@@ -150,19 +165,157 @@ impl TargetConnector {
             Err(_) => {
                 crate::log_warn!(
                     "forward",
-                    "target connect deadline exceeded (tls): host={host} port={port}"
+                    "target connect deadline exceeded (tls): host={sni}"
                 );
                 Err(TargetConnectError::Timeout)
             }
             Ok(Err(e)) => {
-                crate::log_warn!("forward", "target tls handshake failed: host={host} err={e}");
+                crate::log_warn!("forward", "target tls handshake failed: host={sni} err={e}");
                 Err(TargetConnectError::TargetTls)
             }
             Ok(Ok(stream)) => {
-                crate::log_debug!("forward", "target connected: host={host} port={port}");
+                crate::log_debug!("forward", "target connected: host={sni}");
                 Ok(stream)
             }
         }
+    }
+}
+
+/// 经上游代理建立明文隧道（TCP 连上游 → CONNECT 握手；隧道即出站流，
+/// 明文 HTTP origin-form 直传——DNS 由上游解析）。
+///
+/// 错误映射同 [`TargetConnector::connect_via`]（K9 三类）。供
+/// `server` 明文路径与 Upgrade 明文路径共用。
+pub async fn connect_upstream_plain(
+    upstream: &crate::model::UpstreamEndpoint,
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<TcpStream, TargetConnectError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let tcp = tcp_connect(&upstream.host, upstream.port, deadline, "upstream").await?;
+    connect_handshake(tcp, host, port, deadline).await
+}
+
+/// TCP 连接阶段（deadline 约束；`label` 区分直连/上游日志语境）。
+///
+/// 含域名解析（`TcpStream::connect` 内建）；失败原始错误 warn 级观测
+/// （DNS getaddrinfo 错误串在此保留——K9 兜底归类前）。
+async fn tcp_connect(
+    host: &str,
+    port: u16,
+    deadline: tokio::time::Instant,
+    label: &str,
+) -> Result<TcpStream, TargetConnectError> {
+    match tokio::time::timeout_at(deadline, TcpStream::connect((host, port))).await {
+        Err(_) => {
+            crate::log_warn!(
+                "forward",
+                "{label} connect deadline exceeded (tcp): host={host} port={port}"
+            );
+            Err(TargetConnectError::Timeout)
+        }
+        Ok(Err(e)) => {
+            crate::log_warn!(
+                "forward",
+                "{label} tcp connect failed: host={host} port={port} err={e}"
+            );
+            Err(map_tcp_connect_error(e))
+        }
+        Ok(Ok(tcp)) => Ok(tcp),
+    }
+}
+
+/// CONNECT 隧道握手（写 `CONNECT host:port` 请求 → 读响应头 → 2xx 即
+/// 隧道建立，返回该 TCP 流）。
+///
+/// 响应头**逐字节读至 `\r\n\r\n`**——零 leftover（超读字节会混入隧道
+/// 首包，TLS ClientHello 前不得有代理侧杂散字节）；8KB 上限防异常上游。
+/// EOF/畸形/非 2xx → TargetTls（上游侧失败；K9 复用，根因经日志区分）。
+async fn connect_handshake(
+    mut tcp: TcpStream,
+    host: &str,
+    port: u16,
+    deadline: tokio::time::Instant,
+) -> Result<TcpStream, TargetConnectError> {
+    let _ = tcp.set_nodelay(true);
+    // CONNECT 请求（Host 头为惯例补齐——部分上游强校验）。
+    let req = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n");
+    match tokio::time::timeout_at(deadline, tcp.write_all(req.as_bytes())).await {
+        Err(_) => {
+            crate::log_warn!(
+                "forward",
+                "upstream connect deadline exceeded: host={host} port={port}"
+            );
+            return Err(TargetConnectError::Timeout);
+        }
+        Ok(Err(e)) => {
+            crate::log_warn!(
+                "forward",
+                "upstream connect write failed: host={host} port={port} err={e}"
+            );
+            return Err(TargetConnectError::TargetTls);
+        }
+        Ok(Ok(())) => {}
+    }
+    // 响应头逐字节读（≤8KB；见函数文档——零 leftover 依据）。
+    let mut head = Vec::with_capacity(128);
+    let mut byte = [0u8; 1];
+    loop {
+        match tokio::time::timeout_at(deadline, tcp.read(&mut byte)).await {
+            Err(_) => {
+                crate::log_warn!(
+                    "forward",
+                    "upstream connect deadline exceeded: host={host} port={port}"
+                );
+                return Err(TargetConnectError::Timeout);
+            }
+            Ok(Ok(0)) => {
+                crate::log_warn!(
+                    "forward",
+                    "upstream connect eof before response: host={host} port={port}"
+                );
+                return Err(TargetConnectError::TargetTls);
+            }
+            Ok(Ok(_)) => {
+                head.push(byte[0]);
+                if head.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+                if head.len() > 8192 {
+                    crate::log_warn!(
+                        "forward",
+                        "upstream connect response oversized: host={host} port={port}"
+                    );
+                    return Err(TargetConnectError::TargetTls);
+                }
+            }
+            Ok(Err(e)) => {
+                crate::log_warn!(
+                    "forward",
+                    "upstream connect read failed: host={host} port={port} err={e}"
+                );
+                return Err(TargetConnectError::TargetTls);
+            }
+        }
+    }
+    // 状态行解析：`HTTP/1.x 2xx ...`（仅认 2xx——200/201 等）。
+    let head_text = String::from_utf8_lossy(&head);
+    let status_line = head_text.lines().next().unwrap_or_default();
+    let ok = status_line.starts_with("HTTP/")
+        && status_line
+            .split_whitespace()
+            .nth(1)
+            .is_some_and(|code| code.starts_with('2'));
+    if ok {
+        crate::log_debug!("forward", "upstream tunnel established: target={host}:{port}");
+        Ok(tcp)
+    } else {
+        crate::log_warn!(
+            "forward",
+            "upstream connect rejected: host={host} port={port} status_line={status_line}"
+        );
+        Err(TargetConnectError::TargetTls)
     }
 }
 
@@ -384,5 +537,154 @@ mod tests {
             got.extend_from_slice(&buf[..n]);
         }
         assert_eq!(got, b"response-bytes");
+    }
+
+    // ===== 上游 CONNECT 隧道（2026-10 上游代理转发）=====
+
+    /// fake 上游代理：读 CONNECT 请求头 → 回 canned 响应（空 = 读头后
+    /// 即关，EOF 用例）→ 回显透传（成功用例隧道可用性验证）。
+    /// 返回 (端口, 收到的 CONNECT 请求头)。
+    async fn spawn_fake_upstream(
+        response: &'static [u8],
+    ) -> (u16, tokio::sync::oneshot::Receiver<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        tokio::spawn(async move {
+            let Ok((mut tcp, _)) = listener.accept().await else {
+                return;
+            };
+            // 逐字节读 CONNECT 请求头（镜像生产读法）。
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            loop {
+                match tcp.read(&mut byte).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {
+                        head.push(byte[0]);
+                        if head.ends_with(b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let _ = tcp.write_all(response).await;
+            let _ = tx.send(String::from_utf8_lossy(&head).to_string());
+            if response.is_empty() {
+                return; // EOF 用例：不发响应直接结束（连接关闭）。
+            }
+            // 回显：隧道数据原样返回（成功用例验证隧道为透明字节管道）。
+            let (mut r, mut w) = tcp.split();
+            let _ = tokio::io::copy(&mut r, &mut w).await;
+        });
+        (port, rx)
+    }
+
+    fn upstream_at(port: u16) -> crate::model::UpstreamEndpoint {
+        crate::model::UpstreamEndpoint {
+            host: "127.0.0.1".to_string(),
+            port,
+        }
+    }
+
+    // 上游隧道：CONNECT 200 → 隧道可用（透明回显）+ CONNECT 请求头格式。
+    //（串行锁跨 await：current-thread 运行时单测试任务，安全——同 server
+    // 测试先例。）
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn upstream_plain_tunnel_success() {
+        let _serial = crate::logging::testing::serial_guard();
+        let (port, rx) =
+            spawn_fake_upstream(b"HTTP/1.1 200 Connection established\r\n\r\n").await;
+        let mut tunnel = connect_upstream_plain(
+            &upstream_at(port),
+            "test.example.com",
+            443,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        // 隧道透明性：写入即回显（上游零改写）。
+        tunnel.write_all(b"ping").await.unwrap();
+        let mut buf = [0u8; 4];
+        tunnel.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+        // CONNECT 请求头格式（method + authority + Host 头）。
+        let head = rx.await.unwrap();
+        assert!(
+            head.starts_with("CONNECT test.example.com:443 HTTP/1.1\r\n"),
+            "head={head}"
+        );
+        assert!(head.contains("Host: test.example.com:443\r\n"));
+    }
+
+    // 上游隧道：CONNECT 403 → TargetTls（上游侧失败兜底归类）。
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn upstream_connect_rejected() {
+        let _serial = crate::logging::testing::serial_guard();
+        let (port, _rx) = spawn_fake_upstream(b"HTTP/1.1 403 Forbidden\r\n\r\n").await;
+        let err = connect_upstream_plain(
+            &upstream_at(port),
+            "test.example.com",
+            443,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, TargetConnectError::TargetTls);
+    }
+
+    // 上游隧道：畸形响应（非 HTTP 状态行）→ TargetTls。
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn upstream_connect_malformed_response() {
+        let _serial = crate::logging::testing::serial_guard();
+        let (port, _rx) = spawn_fake_upstream(b"garbage-not-http\r\n\r\n").await;
+        let err = connect_upstream_plain(
+            &upstream_at(port),
+            "test.example.com",
+            443,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, TargetConnectError::TargetTls);
+    }
+
+    // 上游隧道：响应前 EOF（上游读头后即关）→ TargetTls。
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn upstream_connect_eof_before_response() {
+        let _serial = crate::logging::testing::serial_guard();
+        let (port, _rx) = spawn_fake_upstream(b"").await;
+        let err = connect_upstream_plain(
+            &upstream_at(port),
+            "test.example.com",
+            443,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, TargetConnectError::TargetTls);
+    }
+
+    // 上游隧道：上游 TCP 拒绝 → Refused（K9 精确归类复用）。
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn upstream_tcp_refused() {
+        let _serial = crate::logging::testing::serial_guard();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let err = connect_upstream_plain(
+            &upstream_at(port),
+            "test.example.com",
+            443,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, TargetConnectError::Refused);
     }
 }

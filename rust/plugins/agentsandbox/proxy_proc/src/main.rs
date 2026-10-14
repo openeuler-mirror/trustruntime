@@ -1,3 +1,21 @@
+//! proxy_proc：agentsandbox-proxy 的生产进程宿主。
+//!
+//! 环境变量面：
+//! - 必填：`AGENTSANDBOX_PROXY_LISTEN_ADDR` / `AGENTSANDBOX_PROXY_LISTEN_PORT` /
+//!   `AGENTSANDBOX_PROXY_SOCK`（UDS 绝对路径）/ `AGENTSANDBOX_CA_CERT_PATH` /
+//!   `AGENTSANDBOX_CA_KEY_PATH`；
+//! - 可选：`AGENTSANDBOX_INFERENCE_ROUTE`（JSON）/ `AGENTSANDBOX_API_KEY` /
+//!   `AGENT_ROUTER_CONFIG_DIR`（绝对路径）；
+//! - 透传（2026-10，库侧 `proxy_init` 读取）：`http_proxy` / `https_proxy`
+//!   （支持大写，小写优先；`[http://]host:port`）——出站目标连接经上游
+//!   CONNECT 隧道转发，未设直连；非法值启动失败（fail-closed）。
+//!
+//! 双向代理形态（2026-10）：
+//! - **入站**：透明 eBPF 拦截（MITM 全解密过滤）+ 显式 CONNECT（客户端
+//!   可将 `http_proxy`/`https_proxy` 指向本进程——盲隧道，按 CONNECT
+//!   域名求值/推理宿主裁决）；
+//! - **出站**：`http_proxy`/`https_proxy` 设置时经上游转发，未设直连。
+
 use agentsandbox_proxy::facade::{proxy_init, register_binary_resolver, register_log_sink};
 use agentsandbox_proxy::logging::{LogEvent, LogSinkError};
 use agentsandbox_proxy::model::{CaCert, ContainerEndpoint, InferenceRoute, ProxyConfig};
@@ -57,7 +75,10 @@ fn run() -> anyhow::Result<()> {
 fn apply_startup_api_key(config: &ProxyProcConfig) {
     if let Some(req) = &config.api_key {
         if let Err(e) = agentsandbox_proxy::facade::set_api_key(req.clone()) {
-            eprintln!("[WARN] proxy_proc: startup set_api_key delivery failed: {:?}", e);
+            eprintln!(
+                "[WARN] proxy_proc: startup set_api_key delivery failed: {:?}",
+                e
+            );
         }
     }
 }
@@ -112,8 +133,12 @@ fn register_ebpf_resolver() -> anyhow::Result<()> {
     // 暴露出来）；若 controller 尚未 pin（后启动），lookup_cgroup_by_flow 会
     // 在每次查表 miss 时懒重试打开，一旦 controller pin 完成即自愈，无需重启。
     let loader = Arc::new(agentsandbox_security::EbpfLoader::new());
-    if let Err(e) = loader.open_pinned_lookup_map(agentsandbox_security::CGROUP_LOOKUP_MAP_PIN_PATH) {
-        eprintln!("[WARN] eBPF cgroup lookup map not ready yet (will retry on demand): {}", e);
+    if let Err(e) = loader.open_pinned_lookup_map(agentsandbox_security::CGROUP_LOOKUP_MAP_PIN_PATH)
+    {
+        eprintln!(
+            "[WARN] eBPF cgroup lookup map not ready yet (will retry on demand): {}",
+            e
+        );
     }
     let resolver: Resolver = create_ebpf_resolver(loader);
     register_binary_resolver(resolver);
@@ -123,10 +148,11 @@ fn register_ebpf_resolver() -> anyhow::Result<()> {
 // ---- Log sink registration ----
 
 fn setup_log_sink() {
-    let sink: agentsandbox_proxy::logging::LogSink = Arc::new(|event: &LogEvent| -> Result<(), LogSinkError> {
-        eprintln!("[AUDIT] {}", event.message);
-        Ok(())
-    });
+    let sink: agentsandbox_proxy::logging::LogSink =
+        Arc::new(|event: &LogEvent| -> Result<(), LogSinkError> {
+            eprintln!("[AUDIT] {}", event.message);
+            Ok(())
+        });
     register_log_sink(sink);
 }
 
@@ -170,17 +196,27 @@ fn start_proxy(config: &ProxyProcConfig) -> anyhow::Result<()> {
 
 fn start_config_receiver(config: &ProxyProcConfig) -> anyhow::Result<()> {
     if !config.proxy_sock.starts_with('/') {
-        anyhow::bail!("AGENTSANDBOX_PROXY_SOCK must be an absolute path: {}", config.proxy_sock);
+        anyhow::bail!(
+            "AGENTSANDBOX_PROXY_SOCK must be an absolute path: {}",
+            config.proxy_sock
+        );
     }
     let parent = std::path::Path::new(&config.proxy_sock)
         .parent()
         .ok_or_else(|| anyhow::anyhow!("AGENTSANDBOX_PROXY_SOCK has no parent directory"))?;
     if !parent.exists() {
-        anyhow::bail!("AGENTSANDBOX_PROXY_SOCK parent directory does not exist: {}", parent.display());
+        anyhow::bail!(
+            "AGENTSANDBOX_PROXY_SOCK parent directory does not exist: {}",
+            parent.display()
+        );
     }
     let receiver = ConfigReceiver::new(&config.proxy_sock);
     receiver.listen().map_err(|e| {
-        anyhow::anyhow!("config receiver listen on {} failed: {}", config.proxy_sock, e)
+        anyhow::anyhow!(
+            "config receiver listen on {} failed: {}",
+            config.proxy_sock,
+            e
+        )
     })
 }
 
@@ -219,12 +255,18 @@ impl ProxyProcConfig {
 
         let ca_cert_path = require_env("AGENTSANDBOX_CA_CERT_PATH")?;
         if !ca_cert_path.starts_with('/') {
-            anyhow::bail!("AGENTSANDBOX_CA_CERT_PATH must be an absolute path: {}", ca_cert_path);
+            anyhow::bail!(
+                "AGENTSANDBOX_CA_CERT_PATH must be an absolute path: {}",
+                ca_cert_path
+            );
         }
 
         let ca_key_path = require_env("AGENTSANDBOX_CA_KEY_PATH")?;
         if !ca_key_path.starts_with('/') {
-            anyhow::bail!("AGENTSANDBOX_CA_KEY_PATH must be an absolute path: {}", ca_key_path);
+            anyhow::bail!(
+                "AGENTSANDBOX_CA_KEY_PATH must be an absolute path: {}",
+                ca_key_path
+            );
         }
 
         let inference_route = parse_inference_route()?;
@@ -296,7 +338,9 @@ fn parse_api_key() -> anyhow::Result<Option<agentsandbox_proxy::ApiKeyRequest>> 
             continue; // Trailing/duplicate commas — tolerant skip.
         }
         let (model_id, api_key) = pair.split_once(':').ok_or_else(|| {
-            anyhow::anyhow!("AGENTSANDBOX_API_KEY: pair missing ':' separator: use model_id:api_key")
+            anyhow::anyhow!(
+                "AGENTSANDBOX_API_KEY: pair missing ':' separator: use model_id:api_key"
+            )
         })?;
         let (model_id, api_key) = (model_id.trim(), api_key.trim());
         if model_id.is_empty() || api_key.is_empty() {
@@ -334,7 +378,10 @@ fn parse_inference_route() -> anyhow::Result<Option<InferenceRoute>> {
             if route.host.is_empty() || route.url.is_empty() {
                 anyhow::bail!("AGENTSANDBOX_INFERENCE_ROUTE: host and url must be non-empty");
             }
-            eprintln!("[INFO] loaded inference route: {} {}", route.host, route.url);
+            eprintln!(
+                "[INFO] loaded inference route: {} {}",
+                route.host, route.url
+            );
             Ok(Some(route))
         }
         Err(_) => Ok(None),

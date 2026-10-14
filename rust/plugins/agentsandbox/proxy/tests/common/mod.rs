@@ -42,8 +42,7 @@ impl TestPki {
         let key = rcgen::KeyPair::generate().unwrap();
         let ca_cert = params.self_signed(&key).unwrap();
         // 复用生产解析路径（PEM → ParsedCa），保证 fake 目标证书与真实签发链同构。
-        let parsed =
-            parse_ca(ca_cert.pem().as_bytes(), key.serialize_pem().as_bytes()).unwrap();
+        let parsed = parse_ca(ca_cert.pem().as_bytes(), key.serialize_pem().as_bytes()).unwrap();
         let mut roots = RootCertStore::empty();
         roots.add(ca_cert.der().clone()).unwrap();
         Self {
