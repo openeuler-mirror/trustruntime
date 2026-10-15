@@ -105,9 +105,15 @@ fn read_key_file(path: &str) -> anyhow::Result<Vec<u8>> {
 // ---- eBPF resolver registration ----
 
 fn register_ebpf_resolver() -> anyhow::Result<()> {
+    // proxy_proc 不再自行加载 sockops 程序——那会创建一个独立（且为空）的
+    // cgroup_lookup_map 内核实例，与 controller 加载的实例互相不可见，导致
+    // resolver 永远查不到 flow→cgroup_id。改为打开 controller 已 pin 到 bpffs
+    // 的同一 map 实例（跨进程共享）。此处启动时先尝试打开一次（提前把 WARN
+    // 暴露出来）；若 controller 尚未 pin（后启动），lookup_cgroup_by_flow 会
+    // 在每次查表 miss 时懒重试打开，一旦 controller pin 完成即自愈，无需重启。
     let loader = Arc::new(agentsandbox_security::EbpfLoader::new());
-    if let Err(e) = loader.load_programs(Some(&["sockops"])) {
-        eprintln!("[WARN] eBPF sockops load failed (running in stub mode): {}", e);
+    if let Err(e) = loader.open_pinned_lookup_map(agentsandbox_security::CGROUP_LOOKUP_MAP_PIN_PATH) {
+        eprintln!("[WARN] eBPF cgroup lookup map not ready yet (will retry on demand): {}", e);
     }
     let resolver: Resolver = create_ebpf_resolver(loader);
     register_binary_resolver(resolver);

@@ -1,6 +1,7 @@
 #include <linux/bpf.h>
 #include <linux/in.h>
 #include <linux/socket.h>
+#include <bpf/bpf_endian.h>
 #include "common.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -44,9 +45,12 @@ static __always_inline void record_flow(struct bpf_sock_ops *ctx) {
          * using the same raw byte order (sockaddr_in.sin_addr.s_addr). */
         __builtin_memcpy(key.src_ip, &ctx->local_ip4, 4);
         __builtin_memcpy(key.dst_ip, &ctx->remote_ip4, 4);
-        /* local_port/remote_port in bpf_sock_ops are in host byte order. */
+        /* bpf_sock_ops: local_port is in host byte order and can be used directly;
+         * remote_port stores the 16-bit port (in network byte order) in the upper
+         * 16 bits of a __u32 (with the lower 16 bits set to 0), so it must first be
+         * right-shifted by 16 (>>16) and then passed to bpf_ntohs to restore it. */
         key.src_port = ctx->local_port;
-        key.dst_port = ctx->remote_port;
+        key.dst_port = bpf_ntohs(ctx->remote_port >> 16);
     } else {
         /* IPv6: copy full 16-byte addresses. ctx->local_ip6/remote_ip6 are
          * __u32[4]; read them word-by-word (4-byte aligned ctx access) and
@@ -56,7 +60,7 @@ static __always_inline void record_flow(struct bpf_sock_ops *ctx) {
         copy_ip6(key.src_ip, ctx->local_ip6);
         copy_ip6(key.dst_ip, ctx->remote_ip6);
         key.src_port = ctx->local_port;
-        key.dst_port = ctx->remote_port;
+        key.dst_port = bpf_ntohs(ctx->remote_port >> 16);
     }
 
     bpf_map_update_elem(&cgroup_lookup_map, &key, &cgroup_id, BPF_ANY);

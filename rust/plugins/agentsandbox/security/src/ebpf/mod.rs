@@ -43,6 +43,15 @@ pub const NET_PROTOCOL_UDP: u8 = libc::IPPROTO_UDP as u8;
 /// map lookups to silently fail (return None).
 pub const CGROUP_LOOKUP_MAP_NAME: &str = "cgroup_lookup_map";
 
+/// bpffs pin path for the cross-process shared `cgroup_lookup_map`.
+///
+/// The controller (owner of the sockops program) pins the map here after
+/// loading it; proxy_proc opens this same kernel map instance via
+/// `aya::maps::MapData::from_pin` instead of loading its own sockops program.
+/// Without a shared pin, each process would create an independent, empty map
+/// instance and the flow→cgroup lookup in proxy_proc would always miss.
+pub const CGROUP_LOOKUP_MAP_PIN_PATH: &str = "/sys/fs/bpf/agentsandbox/cgroup_lookup_map";
+
 /// Root cgroup v2 path where sockops/connect4 programs are attached.
 const ROOT_CGROUP_PATH: &str = "/sys/fs/cgroup";
 
@@ -564,6 +573,7 @@ pub struct EbpfLoader {
     sock_block_map: Mutex<HashMap<u64, SockBlockEntry>>,
     proxy_config: Mutex<Option<ProxyConfig>>,
     loaded: Mutex<bool>,
+    lookup_map: Mutex<Option<aya::maps::Map>>,
 }
 
 impl EbpfLoader {
@@ -578,6 +588,7 @@ impl EbpfLoader {
             sock_block_map: Mutex::new(HashMap::new()),
             proxy_config: Mutex::new(None),
             loaded: Mutex::new(false),
+            lookup_map: Mutex::new(None),
         }
     }
 
@@ -623,6 +634,10 @@ impl EbpfLoader {
                 .map_err(|e| EbpfError::LoadError(format!("{}: {}", name, e)))?;
 
             Self::attach_program(&mut bpf, name, btf.as_ref())?;
+
+            if *name == "sockops" {
+                Self::pin_lookup_map(&bpf);
+            }
 
             bpf_guard.push(bpf);
         }
@@ -681,6 +696,30 @@ impl EbpfLoader {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Pins the sockops `cgroup_lookup_map` to bpffs so that proxy_proc can open
+    /// the same kernel map instance across processes. Best-effort: a pin failure
+    /// (e.g. bpffs not mounted) only logs a warning and does not fail the load.
+    /// Any stale pin left by a previous process is removed first so the path
+    /// always points at the current map instance.
+    fn pin_lookup_map(bpf: &aya::Ebpf) {
+        let Some(map) = bpf.map(CGROUP_LOOKUP_MAP_NAME) else {
+            eprintln!("[WARN] eBPF: {} map not found in sockops object", CGROUP_LOOKUP_MAP_NAME);
+            return;
+        };
+        let Some(dir) = std::path::Path::new(CGROUP_LOOKUP_MAP_PIN_PATH).parent() else {
+            eprintln!("[WARN] eBPF: pin path has no parent: {}", CGROUP_LOOKUP_MAP_PIN_PATH);
+            return;
+        };
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("[WARN] eBPF: create bpffs pin dir failed: {}", e);
+            return;
+        }
+        let _ = std::fs::remove_file(CGROUP_LOOKUP_MAP_PIN_PATH);
+        if let Err(e) = map.pin(CGROUP_LOOKUP_MAP_PIN_PATH) {
+            eprintln!("[WARN] eBPF: pin {} failed: {}", CGROUP_LOOKUP_MAP_PIN_PATH, e);
+        }
     }
 
     /// Sets the global proxy address (IP + proxy port + model route port) for network redirect.
@@ -1089,6 +1128,9 @@ impl EbpfLoader {
         if let Ok(mut cfg) = self.proxy_config.lock() {
             *cfg = None;
         }
+        if let Ok(mut lm) = self.lookup_map.lock() {
+            *lm = None;
+        }
 
         let mut loaded = self.loaded.lock()
             .map_err(|e| EbpfError::LoadError(e.to_string()))?;
@@ -1096,27 +1138,79 @@ impl EbpfLoader {
         Ok(())
     }
 
+    /// Opens a shared `cgroup_lookup_map` pinned to bpffs by another process
+    /// (the controller). Used by proxy_proc so its resolver reads the same
+    /// kernel map instance that the controller's sockops program writes to.
+    pub fn open_pinned_lookup_map(&self, pin_path: &str) -> Result<(), EbpfError> {
+        let map = Self::open_pinned_map(pin_path)?;
+        let mut slot = self.lookup_map.lock()
+            .map_err(|e| EbpfError::MapError(e.to_string()))?;
+        *slot = Some(map);
+        Ok(())
+    }
+
+    /// Opens a pinned bpffs map by path.
+    fn open_pinned_map(pin_path: &str) -> Result<aya::maps::Map, EbpfError> {
+        let map_data = aya::maps::MapData::from_pin(pin_path)
+            .map_err(|e| EbpfError::MapError(format!("open pinned {}: {}", pin_path, e)))?;
+        aya::maps::Map::from_map_data(map_data)
+            .map_err(|e| EbpfError::MapError(format!("open pinned {}: {}", pin_path, e)))
+    }
+
     /// Looks up cgroup_id by flow key (5-tuple) from the kernel BPF cgroup_lookup_map.
     ///
     /// The map is written by eBPF sockops.bpf.c on BPF_SOCK_OPS_ACTIVE_ESTABLISHED
     /// (LRU hash, kernel auto-evicts stale entries).
     /// proxy_proc constructs a FlowKey from getpeername + getsockname, then queries this method.
+    ///
+    /// The shared map is opened lazily and refreshed on miss, so the resolver
+    /// self-heals in both cross-process scenarios without a proxy_proc restart:
+    /// - proxy_proc starts before the controller pins the map; and
+    /// - the controller restarts and re-pins a new map instance (the cached fd
+    ///   would otherwise point at an orphaned map nobody writes to anymore).
     pub fn lookup_cgroup_by_flow(&self, key: &FlowKey) -> Option<u64> {
-        if !self.is_loaded() {
-            return None;
+        // 先查缓存的共享 map。
+        let lookup = self.lookup_map.lock().ok()?;
+        if let Some(map) = lookup.as_ref() {
+            if let Some(cid) = Self::lookup_in_map(map, key) {
+                return Some(cid);
+            }
+        }
+        // 显式释放 guard，否则下方 re-open 路径再次加锁会自死锁。
+        drop(lookup);
+
+        // miss：从 bpffs 重新打开（覆盖 controller 后启动未 pin、controller
+        // 重启 re-pin 新实例两种场景）。打开成功即刷新缓存，使后续查表用
+        // 最新 map；本次若命中则直接返回。
+        if let Ok(map) = Self::open_pinned_map(CGROUP_LOOKUP_MAP_PIN_PATH) {
+            let hit = Self::lookup_in_map(&map, key);
+            if let Ok(mut slot) = self.lookup_map.lock() {
+                *slot = Some(map);
+            }
+            if let Some(cid) = hit {
+                return Some(cid);
+            }
         }
 
-        let bpf_guard = self.bpf.lock().ok()?;
-        for bpf in bpf_guard.iter() {
-            if let Some(map) = bpf.map(CGROUP_LOOKUP_MAP_NAME) {
-                if let Ok(hm) = aya::maps::HashMap::<_, FlowKey, u64>::try_from(map) {
-                    if let Ok(cgroup_id) = hm.get(key, 0) {
-                        return Some(cgroup_id);
+        // 本进程内已加载程序兜底（controller 侧单进程场景）。
+        if self.is_loaded() {
+            let bpf_guard = self.bpf.lock().ok()?;
+            for bpf in bpf_guard.iter() {
+                if let Some(map) = bpf.map(CGROUP_LOOKUP_MAP_NAME) {
+                    if let Some(cid) = Self::lookup_in_map(map, key) {
+                        return Some(cid);
                     }
                 }
             }
         }
         None
+    }
+
+    /// Queries `cgroup_lookup_map` for a single flow key.
+    fn lookup_in_map(map: &aya::maps::Map, key: &FlowKey) -> Option<u64> {
+        aya::maps::HashMap::<_, FlowKey, u64>::try_from(map)
+            .ok()
+            .and_then(|hm| hm.get(key, 0).ok())
     }
 
     /// Returns true if eBPF programs are currently loaded.
