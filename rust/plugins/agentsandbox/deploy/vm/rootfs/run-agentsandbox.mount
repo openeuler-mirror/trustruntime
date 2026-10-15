@@ -1,0 +1,12 @@
+[Unit]
+Description=AgentSandbox runtime tmpfs
+Before=agentsandbox.service proxy.service
+
+[Mount]
+What=tmpfs
+Where=/run/agentsandbox
+Type=tmpfs
+Options=mode=0755,size=4m
+
+[Install]
+WantedBy=multi-user.target
