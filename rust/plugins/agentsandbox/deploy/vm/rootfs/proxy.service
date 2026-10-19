@@ -1,12 +1,16 @@
 [Unit]
 Description=AgentSandbox Proxy
 After=agentsandbox.service
+Requires=agentsandbox.service
 
 [Service]
 Type=simple
+EnvironmentFile=/etc/agentsandbox/agentsandbox.env
 ExecStart=/usr/bin/agentsandbox-proxy
+StandardOutput=append:/tmp/proxy.log
+StandardError=inherit
 Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=basic.target
