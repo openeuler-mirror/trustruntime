@@ -6,6 +6,98 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
+static int32_t pre_pend_name(Bufs *str_buf, struct qstr d_name, int32_t offset) {
+    int32_t offset_tmp = offset;
+    char slash = '/';
+    offset_tmp -= (int32_t)(d_name.len + 1);
+    if (offset_tmp < 0) {
+        return -1;
+    }
+
+    long sz = bpf_probe_read_str(&(str_buf->buf[((uint32_t)offset_tmp) & (MAX_COMBIND_LENGTH - 1)]),
+                                 (d_name.len + 1) & (MAX_COMBIND_LENGTH - 1),
+                                 d_name.name);
+    if (sz > 1) {
+        bpf_probe_read(&(str_buf->buf[((uint32_t)offset_tmp + d_name.len) & (MAX_COMBIND_LENGTH - 1)]),
+                       1, &slash);
+    } else {
+        offset_tmp += (int32_t)(d_name.len + 1);
+    }
+    return offset_tmp;
+}
+
+static inline struct mount *get_real_mount(struct vfsmount *mnt) {
+    return container_of(mnt, struct mount, mnt);
+}
+
+static int32_t pre_pend_path(struct path *path, Bufs *str_buf) {
+    if ((path == NULL) || (str_buf == NULL)) {
+        return -1;
+    }
+
+    char slash = '/';
+    char null = '\0';
+    int32_t offset = MAX_COMBIND_LENGTH;
+    struct dentry *dentry = path->dentry;
+    struct vfsmount *vfsmnt = path->mnt;
+    struct mount *mnt = get_real_mount(vfsmnt);
+    struct dentry *d_parent;
+    struct dentry *mnt_root;
+    struct qstr d_name;
+
+    #pragma unroll
+    for (int32_t i = 0; i < MAX_LOOP_LIMIT; i++) {
+        d_parent = BPF_CORE_READ(dentry, d_parent);
+        mnt_root = BPF_CORE_READ(vfsmnt, mnt_root);
+        if (dentry == mnt_root) {
+            if (mnt != BPF_CORE_READ(mnt, mnt_parent)) {
+                dentry = BPF_CORE_READ(mnt, mnt_mountpoint);
+                mnt = BPF_CORE_READ(mnt, mnt_parent);
+                vfsmnt = &mnt->mnt;
+                continue;
+            }
+            break;
+        }
+
+        if (dentry == d_parent) {
+            break;
+        }
+
+        d_name = BPF_CORE_READ(dentry, d_name);
+        offset = pre_pend_name(str_buf, d_name, offset);
+        if (offset < 1) {
+            break;
+        }
+        dentry = d_parent;
+    }
+
+    if ((offset == MAX_COMBIND_LENGTH) || (offset < 1)) {
+        return -1;
+    }
+
+    bpf_probe_read(&(str_buf->buf[MAX_COMBIND_LENGTH - 1]), 1, &null);
+    offset--;
+    bpf_probe_read(&(str_buf->buf[((uint32_t)offset) & (MAX_COMBIND_LENGTH - 1)]), 1, &slash);
+
+    return offset;
+}
+
+static char *get_source() {
+    struct task_struct *task = (struct task_struct *)(uintptr_t)bpf_get_current_task();
+    int32_t buf_idx = CAP_SOURCE_BUF;
+    Bufs *file_buf = bpf_map_lookup_elem(&g_bufs, &buf_idx);
+    if (file_buf == NULL) {
+        return NULL;
+    }
+    struct path file_path = BPF_CORE_READ(task, mm, exe_file, f_path);
+    int32_t file_off = pre_pend_path(&file_path, file_buf);
+    if (file_off < 0) {
+        return NULL;
+    }
+    char *source = &(file_buf->buf[((uint32_t)file_off) & (MAX_COMBIND_LENGTH - 1)]);
+    return source;
+}
+
 static __always_inline __u64 load_u64(const char *p) {
     __u64 v;
     __builtin_memcpy(&v, p, sizeof(v));
@@ -52,29 +144,6 @@ static __always_inline int path_exact_match(const char *path, const char *target
     return 0;
 }
 
-/* Sleepable hook: caches the executable's absolute path at exec time.
- *
- * Fires exactly once per execve via bprm_check_security. bprm->file is the
- * executable's struct file (not the interpreter or any shared library), so we
- * resolve its path with bpf_d_path (allowed here, sleepable) and cache it keyed
- * by tgid so the non-sleepable capable hook can look it up without bpf_d_path. */
-SEC("lsm/bprm_check_security")
-int BPF_PROG(handle_bprm_exec, struct linux_binprm *bprm) {
-    if (!bprm || !bprm->file) {
-        return 0;
-    }
-
-    char path[MAX_EXE_PATH_LEN];
-    __builtin_memset(path, 0, sizeof(path));
-    if (bpf_d_path(&bprm->file->f_path, path, sizeof(path)) < 0) {
-        return 0;
-    }
-
-    __u32 tgid = bpf_get_current_pid_tgid() >> 32;
-    bpf_map_update_elem(&task_exe_path_map, &tgid, path, BPF_ANY);
-    return 0;
-}
-
 static __always_inline int check_path_rules(__u64 cgroup_id, int cap) {
     struct cap_path_rules *rules = bpf_map_lookup_elem(&cap_path_rules_map, &cgroup_id);
     if (!rules) {
@@ -82,7 +151,7 @@ static __always_inline int check_path_rules(__u64 cgroup_id, int cap) {
     }
 
     __u32 tgid = bpf_get_current_pid_tgid() >> 32;
-    const char *exe_path = bpf_map_lookup_elem(&task_exe_path_map, &tgid);
+    const char *exe_path = get_source();
     if (!exe_path) {
         return 0;
     }
