@@ -71,16 +71,10 @@ static __always_inline __u8 fmode_to_perm(fmode_t fmode) {
     return perm;
 }
 
-static __always_inline int check_fs_path_rules(__u64 cgroup_id, __u8 requested_perm, struct file *file) {
+static __always_inline int check_fs_path_rules(__u64 cgroup_id, __u8 requested_perm, const char *file_path) {
 
     struct fs_path_rules *rules = bpf_map_lookup_elem(&fs_path_rules_map, &cgroup_id);
     if (!rules) {
-        return -1;
-    }
-
-    char file_path[MAX_EXE_PATH_LEN];
-    __builtin_memset(file_path, 0, sizeof(file_path));
-    if (bpf_d_path(&file->f_path, file_path, sizeof(file_path)) < 0) {
         return -1;
     }
 
@@ -107,6 +101,15 @@ static __always_inline int check_fs_path_rules(__u64 cgroup_id, __u8 requested_p
         return 0;
     }
     return -1;
+}
+
+static __always_inline int check_fs_path_rules_file(__u64 cgroup_id, __u8 requested_perm, struct file *file) {
+    char file_path[MAX_EXE_PATH_LEN];
+    __builtin_memset(file_path, 0, sizeof(file_path));
+    if (bpf_d_path(&file->f_path, file_path, sizeof(file_path)) < 0) {
+        return -1;
+    }
+    return check_fs_path_rules(cgroup_id, requested_perm, file_path);
 }
 
 static __always_inline int emit_fs_event(
@@ -173,7 +176,7 @@ int BPF_PROG(handle_file_open, struct file *file) {
         return 0;
     }
 
-    int blocked = check_fs_path_rules(cgroup_id, requested_perm, file);
+    int blocked = check_fs_path_rules_file(cgroup_id, requested_perm, file);
     if (blocked == 0) {
         return 0;
     }
@@ -183,4 +186,39 @@ int BPF_PROG(handle_file_open, struct file *file) {
 
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     return emit_fs_event(cgroup_id, pid, pv->enforcement_mode);
+}
+
+/* Sleepable hook: enforces exec permission on the executable's path and caches
+ * its absolute path for the non-sleepable capable hook.
+ *
+ * Fires exactly once per execve via bprm_check_security. bprm->file is the
+ * executable's struct file (not the interpreter or any shared library), so we
+ * resolve its path with bpf_d_path (allowed here, sleepable). Unlike
+ * file_open, whose f_mode never carries FMODE_EXEC, bprm_check_security is the
+ * authoritative point to gate execution against fs_path_rules with
+ * FS_PERM_EXEC. On success the path is cached keyed by tgid. */
+SEC("lsm/bprm_check_security")
+int BPF_PROG(handle_bprm_exec, struct linux_binprm *bprm) {
+    if (!bprm || !bprm->file) {
+        return 0;
+    }
+
+    char path[MAX_EXE_PATH_LEN];
+    __builtin_memset(path, 0, sizeof(path));
+    if (bpf_d_path(&bprm->file->f_path, path, sizeof(path)) < 0) {
+        return 0;
+    }
+
+    __u32 tgid = bpf_get_current_pid_tgid() >> 32;
+
+    __u64 cgroup_id = bpf_get_current_cgroup_id();
+    struct policy_value *pv = bpf_map_lookup_elem(&policy_map, &cgroup_id);
+    if (pv) {
+        int blocked = check_fs_path_rules(cgroup_id, FS_PERM_EXEC, path);
+        int allowed = (blocked == 0) || (blocked < 0 && pv->default_action == NET_ACTION_ALLOW);
+        if (!allowed) {
+            return emit_fs_event(cgroup_id, tgid, pv->enforcement_mode);
+        }
+    }
+    return 0;
 }

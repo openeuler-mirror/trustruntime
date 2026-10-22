@@ -27,6 +27,9 @@
 #define MAX_NETWORK_RULES 32
 #define MAX_EXE_PATH_LEN 256
 #define MAX_TARGET_LEN 64
+#define MAX_BUFFER_SIZE 512
+#define MAX_COMBIND_LENGTH 256
+#define MAX_LOOP_LIMIT 30
 
 /* Path match type for fs_path_rule.match_type */
 #define PATH_MATCH_EXACT   0
@@ -113,6 +116,22 @@ struct sock_block_entry {
     char path[MAX_PATH_PATTERN_LEN];
 };
 
+typedef struct MapBuffers {
+    char buf[MAX_BUFFER_SIZE];
+} Bufs;
+
+enum BufIdxTypeForHook {
+    CAP_SOURCE_BUF,
+    HOOK_BUF_MAX
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, HOOK_BUF_MAX);
+    __type(key, __u32);
+    __type(value, Bufs);
+} g_bufs SEC(".maps");
+
 /* Container security policy map.
  * key:   cgroup_id (__u64) — identifies the container/cgroup
  * value: struct policy_value — enforcement mode + cap bitmask + path-rule flag
@@ -137,23 +156,6 @@ struct {
     __type(key, __u64);
     __type(value, struct cap_path_rules);
 } cap_path_rules_map SEC(".maps");
-
-/* Per-task executable path cache.
- * key:   tgid (__u32) — thread group id from bpf_get_current_pid_tgid() >> 32
- * value: char[MAX_EXE_PATH_LEN] — NUL-terminated absolute executable path
- *
- * Written by the bprm_check_security LSM program (sleepable hook): the
- * executable path is resolved via bpf_d_path (allowed there) once per exec.
- * The non-sleepable capable hook reads
- * this map to resolve path-conditioned capability rules without bpf_d_path.
- * LRU hash auto-evicts entries for exited processes; no manual cleanup needed.
- */
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 65536);
-    __type(key, __u32);
-    __type(value, char[MAX_EXE_PATH_LEN]);
-} task_exe_path_map SEC(".maps");
 
 /* Filesystem path permission rules map.
  * key:   cgroup_id (__u64) — identifies the container/cgroup

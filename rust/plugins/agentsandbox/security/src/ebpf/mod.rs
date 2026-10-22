@@ -655,11 +655,11 @@ impl EbpfLoader {
             "capability" | "filesystem" => {
                 let btf = btf.ok_or_else(|| EbpfError::LoadError("kernel BTF unavailable".to_string()))?;
                 let hooks: &[(&str, &str)] = match name {
-                    "capability" => &[
-                        ("handle_capable", "capable"),
+                    "capability" => &[("handle_capable", "capable")],
+                    _ => &[
+                        ("handle_file_open", "file_open"),
                         ("handle_bprm_exec", "bprm_check_security"),
                     ],
-                    _ => &[("handle_file_open", "file_open")],
                 };
                 for (prog_name, hook_name) in hooks {
                     let prog: &mut Lsm = bpf.program_mut(prog_name)
