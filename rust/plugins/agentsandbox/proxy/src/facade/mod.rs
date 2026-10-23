@@ -41,7 +41,8 @@ use crate::registry::{Registry, Resolver};
 #[doc(hidden)]
 pub trait RuntimeRegistry: Send + Sync {
     /// 设置容器过滤配置。
-    fn set_container_config(&self, container_id: &str, fc: FilterConfig) -> Result<(), ConfigError>;
+    fn set_container_config(&self, container_id: &str, fc: FilterConfig)
+        -> Result<(), ConfigError>;
     /// 清除容器过滤配置。
     fn remove_container_policy(&self, container_id: &str) -> Result<(), ConfigError>;
     /// 设置容器 CA。
@@ -62,11 +63,14 @@ fn production_components() -> (Arc<Registry>, Arc<crate::cert::ContainerCertServ
     static CERTS: std::sync::OnceLock<Arc<crate::cert::ContainerCertServices>> =
         std::sync::OnceLock::new();
     (
-        REGISTRY.get_or_init(|| {
-            Arc::new(Registry::new().with_config_validator(Arc::new(validate_filter_config)))
-        })
-        .clone(),
-        CERTS.get_or_init(|| Arc::new(crate::cert::ContainerCertServices::new())).clone(),
+        REGISTRY
+            .get_or_init(|| {
+                Arc::new(Registry::new().with_config_validator(Arc::new(validate_filter_config)))
+            })
+            .clone(),
+        CERTS
+            .get_or_init(|| Arc::new(crate::cert::ContainerCertServices::new()))
+            .clone(),
     )
 }
 
@@ -128,10 +132,7 @@ fn production_runtime() -> Arc<dyn RuntimeRegistry> {
 ///
 /// 参数校验：container_id 非空；结构经 K10 校验（uri 模式等）——非法返回
 /// `ConfigError::Format` 且保持该容器旧配置（fail-closed）。
-pub fn set_container_config(
-    container_id: &str,
-    fc: FilterConfig,
-) -> Result<(), ConfigError> {
+pub fn set_container_config(container_id: &str, fc: FilterConfig) -> Result<(), ConfigError> {
     if container_id.is_empty() {
         return Err(ConfigError::Format);
     }
@@ -212,8 +213,7 @@ pub fn set_api_key(req: agentsandbox_inference::ApiKeyRequest) -> Result<(), Api
     match path {
         Some(path) => {
             let path = path.to_string_lossy().into_owned();
-            crate::inference_uds::uds_api_key(&path, &req)
-                .ok_or(ApiKeyError::Delivery)
+            crate::inference_uds::uds_api_key(&path, &req).ok_or(ApiKeyError::Delivery)
         }
         None => agentsandbox_inference::apply_api_key(&req),
     }
@@ -232,6 +232,11 @@ pub enum ProxyInitError {
     /// 配置非法（container_id 空 / 端口 0 / 路由条目 host 或 url 空）。
     #[error("invalid endpoint")]
     InvalidEndpoint,
+    /// 上游代理 env 非法（`http_proxy`/`https_proxy` 非
+    /// `[http://]host:port` 形态或端口 0——fail-closed 拒启，防
+    /// 「以为走代理实际直连」的静默降级）。
+    #[error("invalid upstream proxy env")]
+    InvalidUpstreamProxy,
     /// 推理路由库初始化失败（目录不存在/配置非法等——细节仅运行日志，
     /// 不含路径；发生于一次性 guard 之前，修正配置后可重调）。
     #[error("inference init failed")]
@@ -239,8 +244,7 @@ pub enum ProxyInitError {
 }
 
 /// 全局初始化标记（proxy_init 一次性）。
-static INITIALIZED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// proxy 初始化（一次性调用）。
 ///
@@ -252,7 +256,18 @@ static INITIALIZED: std::sync::atomic::AtomicBool =
 /// - **router_config_dir**：推理路由真实库初始化（AR-005）——
 ///   `Some(dir)` → `init(dir)`；`None` → 内嵌默认配置（`init_default`）。
 ///   初始化先于服务装配（`ServeContext::new` 的 `default_router()` 拾取
-///   `AgentRouter`）。
+///   `AgentRouter`）；
+/// - **上游代理 env**（2026-10）：进程环境 `http_proxy`（明文路径）/
+///   `https_proxy`（TLS 路径；均支持大写形态，小写优先；值形态
+///   `[http://]host:port`）。设置后出站目标连接经上游 CONNECT 隧道
+///   转发（目标 DNS 由上游解析），未设直连（现状行为不变）；两变量
+///   独立生效。非法值返回 [`ProxyInitError::InvalidUpstreamProxy`]
+///   拒启（fail-closed——防「以为走代理实际直连」的静默降级）。
+/// - **显式 CONNECT**（2026-10）：客户端可以 `http_proxy`/`https_proxy`
+///   指向本 proxy（curl 等标准工具的显式代理形态）——`CONNECT
+///   host:port` 请求经策略求值（推理路由宿主命中则交库裁决隧道放行）
+///   后建立盲隧道（proxy 不做 MITM——隧道内流量端到端加密不可见，
+///   完整可见性由透明 eBPF 模式提供）。
 ///
 /// 前置校验：端口非 0，路由条目 host/url 非空；推理库初始化失败返回
 /// `ProxyInitError::InferenceInit`（guard 未消耗——修正后可重调）；重复
@@ -261,6 +276,9 @@ pub fn proxy_init(config: &ProxyConfig) -> Result<(), ProxyInitError> {
     validate_endpoint(&config.forwarding)?;
     validate_inference_routes(&config.inference_routes)?;
     init_inference_router(config)?;
+    // 上游代理 env 解析（guard 之前——修正 env 后可重调；非法值拒启）。
+    let upstream_http = read_upstream_env(ENV_HTTP_PROXY, ENV_HTTP_PROXY_UPPER)?;
+    let upstream_https = read_upstream_env(ENV_HTTPS_PROXY, ENV_HTTPS_PROXY_UPPER)?;
     if INITIALIZED.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return Err(ProxyInitError::AlreadyInitialized);
     }
@@ -305,12 +323,17 @@ pub fn proxy_init(config: &ProxyConfig) -> Result<(), ProxyInitError> {
 
     // 装配 ServeContext（共享生产组件单例——proxy_init 前注入的
     // set_container_* 状态连续生效）并启动 serve 任务。
-    spawn_serve(forward_listener, config);
+    spawn_serve(forward_listener, config, upstream_http, upstream_https);
     Ok(())
 }
 
 /// spawn serve 任务（共享生产组件单例装配）。
-fn spawn_serve(forward_listener: tokio::net::TcpListener, config: &ProxyConfig) {
+fn spawn_serve(
+    forward_listener: tokio::net::TcpListener,
+    config: &ProxyConfig,
+    upstream_http: Option<crate::model::UpstreamEndpoint>,
+    upstream_https: Option<crate::model::UpstreamEndpoint>,
+) {
     let (registry, cert_services) = production_components();
 
     // 目标信任锚：系统根（生产——真实目标站点验证）；连接超时 30s。
@@ -326,6 +349,23 @@ fn spawn_serve(forward_listener: tokio::net::TcpListener, config: &ProxyConfig) 
     // 推理路由列表装配（router 默认装配在 ServeContext::new——真实库
     // 优先：crate init 过则 AgentRouter，否则 mock——2026-09-17）。
     serve_ctx.inference_routes = config.inference_routes.clone();
+    // 上游代理装配（env `http_proxy`/`https_proxy`——None = 直连）。
+    serve_ctx.upstream_http = upstream_http;
+    serve_ctx.upstream_https = upstream_https;
+    if serve_ctx.upstream_http.is_some() || serve_ctx.upstream_https.is_some() {
+        crate::log_info!(
+            "facade",
+            "upstream proxy enabled: http={} https={}",
+            serve_ctx.upstream_http.as_ref().map_or_else(
+                || "direct".to_string(),
+                |u| format!("{}:{}", u.host, u.port)
+            ),
+            serve_ctx.upstream_https.as_ref().map_or_else(
+                || "direct".to_string(),
+                |u| format!("{}:{}", u.host, u.port)
+            )
+        );
+    }
     let ctx = Arc::new(serve_ctx);
     tokio::spawn(async move {
         crate::server::serve(forward_listener, ctx).await;
@@ -344,6 +384,70 @@ fn validate_endpoint(endpoint: &crate::model::ContainerEndpoint) -> Result<(), P
         return Err(ProxyInitError::InvalidEndpoint);
     }
     Ok(())
+}
+
+/// 上游代理 env 变量（标准转发代理语义——小写优先，大写兜底；
+/// 值形态 `[http://]host:port`，未设/空 = 直连）。
+const ENV_HTTP_PROXY: &str = "http_proxy";
+const ENV_HTTP_PROXY_UPPER: &str = "HTTP_PROXY";
+const ENV_HTTPS_PROXY: &str = "https_proxy";
+const ENV_HTTPS_PROXY_UPPER: &str = "HTTPS_PROXY";
+
+/// 读取上游代理 env（小写优先，大写兜底；空值视为未设）。
+///
+/// 非法值返回 [`ProxyInitError::InvalidUpstreamProxy`]（fail-closed
+/// 拒启——不静默降级直连）。
+fn read_upstream_env(
+    name: &str,
+    upper: &str,
+) -> Result<Option<crate::model::UpstreamEndpoint>, ProxyInitError> {
+    let raw = std::env::var(name)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var(upper).ok().filter(|v| !v.is_empty()));
+    match raw {
+        None => Ok(None),
+        Some(v) => parse_upstream(&v).map(Some),
+    }
+}
+
+/// 解析上游代理地址：`[http://]host:port`。
+///
+/// 仅支持 http scheme（`socks5://` 等显式拒绝）；host 支持域名、IPv4
+/// 与 `[IPv6]:port` 形态；端口 0 或解析失败拒绝。
+fn parse_upstream(raw: &str) -> Result<crate::model::UpstreamEndpoint, ProxyInitError> {
+    let rest = if let Some(r) = raw.strip_prefix("http://") {
+        r
+    } else if raw.contains("://") {
+        return Err(ProxyInitError::InvalidUpstreamProxy);
+    } else {
+        raw
+    };
+    // host:port 拆分（IPv6 `[addr]:port` 形态优先）。
+    let (host, port_str) = if let Some(stripped) = rest.strip_prefix('[') {
+        let Some((h, tail)) = stripped.split_once(']') else {
+            return Err(ProxyInitError::InvalidUpstreamProxy);
+        };
+        let Some(p) = tail.strip_prefix(':') else {
+            return Err(ProxyInitError::InvalidUpstreamProxy);
+        };
+        (h, p)
+    } else {
+        let Some((h, p)) = rest.rsplit_once(':') else {
+            return Err(ProxyInitError::InvalidUpstreamProxy);
+        };
+        (h, p)
+    };
+    let port: u16 = port_str
+        .parse()
+        .map_err(|_| ProxyInitError::InvalidUpstreamProxy)?;
+    if host.is_empty() || port == 0 {
+        return Err(ProxyInitError::InvalidUpstreamProxy);
+    }
+    Ok(crate::model::UpstreamEndpoint {
+        host: host.to_string(),
+        port,
+    })
 }
 
 /// 推理路由条目校验（host/url 非空——空条目无法命中任何请求，
@@ -404,11 +508,7 @@ fn validate_ruleset(rs: &crate::model::RuleSet) -> Result<(), ConfigError> {
     }
     // host 按类型校验（字段存在性 + 模式合法性）。
     let host_ok = match rs.host.host_type {
-        crate::model::HostType::Ip => rs
-            .host
-            .addr
-            .as_deref()
-            .is_some_and(is_valid_ip_pattern),
+        crate::model::HostType::Ip => rs.host.addr.as_deref().is_some_and(is_valid_ip_pattern),
         crate::model::HostType::Host => rs
             .host
             .context
@@ -679,5 +779,85 @@ mod tests {
         }];
         assert_eq!(validate_ruleset(&bad_bin), Err(ConfigError::Format));
     }
-}
 
+    // 上游代理地址解析：`[http://]host:port` 全形态 + 非法拒绝。
+    //（2026-10 上游代理转发——env 值形态契约。）
+    #[test]
+    fn upstream_addr_parse() {
+        use crate::model::UpstreamEndpoint;
+        let ep = |h: &str, p: u16| UpstreamEndpoint {
+            host: h.to_string(),
+            port: p,
+        };
+
+        // 裸 host:port / http:// 前缀。
+        assert_eq!(
+            parse_upstream("90.255.90.235:7777").unwrap(),
+            ep("90.255.90.235", 7777)
+        );
+        assert_eq!(
+            parse_upstream("http://90.255.90.235:7777").unwrap(),
+            ep("90.255.90.235", 7777)
+        );
+        // 域名 host。
+        assert_eq!(
+            parse_upstream("proxy.corp.local:3128").unwrap(),
+            ep("proxy.corp.local", 3128)
+        );
+        // IPv6 [addr]:port。
+        assert_eq!(parse_upstream("[::1]:7777").unwrap(), ep("::1", 7777));
+
+        // 非法：非 http scheme / 无端口 / 端口 0 / 端口非数字 / host 空 /
+        // IPv6 括号残缺。
+        let invalid =
+            |v: &str| matches!(parse_upstream(v), Err(ProxyInitError::InvalidUpstreamProxy));
+        assert!(invalid("socks5://1.2.3.4:1080"));
+        assert!(invalid("1.2.3.4"));
+        assert!(invalid("1.2.3.4:0"));
+        assert!(invalid("1.2.3.4:port"));
+        assert!(invalid(":7777"));
+        assert!(invalid("[::1"));
+        // 尾部杂散字符（`host:port/`）拒绝——严格形态。
+        assert!(invalid("1.2.3.4:7777/"));
+    }
+
+    // 上游代理 env 读取：未设 → None；小写优先于大写；空值视为未设。
+    //（env 全局态——串行锁防并行测试交叉。）
+    #[test]
+    fn upstream_env_read_precedence() {
+        let _serial = crate::logging::testing::serial_guard();
+        // 唯一测试专用变量名（避免与其他测试的 http_proxy 语义耦合）。
+        const LO: &str = "up_test_lo";
+        const UP: &str = "UP_TEST_LO";
+
+        // 均未设 → None。
+        std::env::remove_var(LO);
+        std::env::remove_var(UP);
+        assert!(read_upstream_env(LO, UP).unwrap().is_none());
+
+        // 仅大写 → 大写生效。
+        std::env::set_var(UP, "10.1.1.1:1111");
+        let got = read_upstream_env(LO, UP).unwrap().unwrap();
+        assert_eq!((got.host.as_str(), got.port), ("10.1.1.1", 1111));
+
+        // 小写优先。
+        std::env::set_var(LO, "10.2.2.2:2222");
+        let got = read_upstream_env(LO, UP).unwrap().unwrap();
+        assert_eq!((got.host.as_str(), got.port), ("10.2.2.2", 2222));
+
+        // 空值视为未设（大写兜底生效）。
+        std::env::set_var(LO, "");
+        let got = read_upstream_env(LO, UP).unwrap().unwrap();
+        assert_eq!((got.host.as_str(), got.port), ("10.1.1.1", 1111));
+
+        // 非法值 → InvalidUpstreamProxy（fail-closed）。
+        std::env::set_var(LO, "socks5://x:1");
+        assert!(matches!(
+            read_upstream_env(LO, UP),
+            Err(ProxyInitError::InvalidUpstreamProxy)
+        ));
+
+        std::env::remove_var(LO);
+        std::env::remove_var(UP);
+    }
+}

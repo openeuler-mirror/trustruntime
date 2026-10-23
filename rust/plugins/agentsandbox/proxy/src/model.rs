@@ -555,6 +555,20 @@ pub struct ContainerEndpoint {
     pub port: u16,
 }
 
+/// 上游转发代理端点（`{host, port}`——出站目标连接经上游 HTTP 代理
+/// CONNECT 隧道转发；host 可为 IP 字符串或域名）。
+///
+/// 来源为进程环境变量 `http_proxy`（明文路径）/ `https_proxy`（TLS
+/// 路径），`facade::proxy_init` 期解析注入（未设 = 直连——不改变
+/// 现状行为）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamEndpoint {
+    /// 上游代理主机（IP 字符串或域名）。
+    pub host: String,
+    /// 上游代理端口（1-65535）。
+    pub port: u16,
+}
+
 /// 连接协议类型（[`crate::registry::Resolver`] 入参；当前监听统一
 /// TCP——后续协议扩展经新增变体）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
