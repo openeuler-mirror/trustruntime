@@ -38,3 +38,6 @@ bytes = { workspace = true }
 tempfile = { workspace = true }
 # 自引用：仅测试构建启用 test-util（fake registry / 日志捕获缝）。
 agentsandbox-proxy = { path = ".", features = ["test-util"] }
+# 交付链 round-trip 测试（2026-10）：controller 侧 config crate 序列化
+# 形态 → proxy 模型反序列化（跨 crate 契约锁定）。
+agentsandbox-config = { workspace = true }

@@ -103,6 +103,7 @@ dependencies = [
 name = "agentsandbox-proxy"
 version = "0.1.0"
 dependencies = [
+ "agentsandbox-config",
  "agentsandbox-inference",
  "agentsandbox-proxy",
  "bytes",
