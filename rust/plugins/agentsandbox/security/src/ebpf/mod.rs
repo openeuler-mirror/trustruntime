@@ -659,6 +659,7 @@ impl EbpfLoader {
                     _ => &[
                         ("handle_file_open", "file_open"),
                         ("handle_bprm_exec", "bprm_check_security"),
+                        ("handle_unix_stream_connect", "unix_stream_connect"),
                     ],
                 };
                 for (prog_name, hook_name) in hooks {

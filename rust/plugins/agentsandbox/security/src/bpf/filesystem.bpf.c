@@ -1,5 +1,6 @@
 #include <vmlinux.h>
 #include "common.bpf.h"
+#include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 #include <linux/errno.h>
 
@@ -219,6 +220,73 @@ int BPF_PROG(handle_bprm_exec, struct linux_binprm *bprm) {
         if (!allowed) {
             return emit_fs_event(cgroup_id, tgid, pv->enforcement_mode);
         }
+    }
+    return 0;
+}
+
+/* LSM hook: blocks connect(2) to the HiController socket path registered in
+ * sock_block_map for the container's cgroup.
+ *
+ * file_open does NOT fire for AF_UNIX connect(2): the kernel resolves the
+ * pathname socket via kern_path (no file open) and then triggers
+ * security_unix_stream_connect instead. `other` is the listening socket's
+ * struct sock; since struct unix_sock.sk is its first member, `other` doubles
+ * as the struct unix_sock pointer, and the bound pathname lives in
+ * addr->name->sun_path. On a match, the connect is denied (emit_fs_event
+ * returns -EACCES in block mode; logged-only in alert mode), closing the
+ * post-hook window where the container could otherwise reconnect and tamper
+ * with its policy via register/unregister.
+ */
+SEC("lsm/unix_stream_connect")
+int BPF_PROG(handle_unix_stream_connect, struct sock *sock, struct sock *other, struct sock *newsk) {
+    __u64 cgroup_id = bpf_get_current_cgroup_id();
+
+    struct sock_block_entry *blocked = bpf_map_lookup_elem(&sock_block_map, &cgroup_id);
+    if (!blocked) {
+        return 0;
+    }
+
+    if (!other) {
+        return 0;
+    }
+
+    /* `other` is BTF-typed struct sock, but the real object is a struct unix_sock
+     * (sk is its first member, so container_of is a no-op cast). addr lies beyond
+     * struct sock's BTF size, so a direct dereference is rejected by the verifier
+     * ("access beyond struct sock"). Read it via CO-RE: BPF_CORE_READ resolves the
+     * field offset at load time against the runtime BTF and reads the pointer with
+     * bpf_probe_read_kernel (untrusted source, fault-safe at runtime), avoiding the
+     * BTF bound check on the direct load. */
+    struct unix_address *addr = BPF_CORE_READ((struct unix_sock *)other, addr);
+    if (!addr) {
+        return 0;
+    }
+
+    /* sun_path is a fixed 108-byte array inside sockaddr_un, but the kernel only
+     * stores the bound pathname + NUL there; the bytes after the NUL are
+     * uninitialized. fs_path_exact_match compares full 8-byte words, so reading
+     * the raw 108 bytes would leave the trailing garbage and never match the
+     * zero-padded blocked->path. Use bpf_probe_read_kernel_str to copy only up
+     * to (and including) the NUL, leaving the memset-zeroed tail intact. */
+    int32_t buf_idx = UNIX_SOCK_BUF;
+    Bufs *sock_buf = bpf_map_lookup_elem(&g_bufs, &buf_idx);
+    if (!sock_buf) {
+        return 0;
+    }
+    char *path = sock_buf->buf;
+    __builtin_memset(path, 0, MAX_PATH_PATTERN_LEN);
+    if (bpf_probe_read_kernel_str(path, 108,
+                                  (void *)((unsigned long)addr
+                                           + offsetof(struct unix_address, name)
+                                           + offsetof(struct sockaddr_un, sun_path))) < 0) {
+        return 0;
+    }
+
+    if (fs_path_exact_match(path, blocked->path)) {
+        __u32 pid = bpf_get_current_pid_tgid() >> 32;
+        struct policy_value *pv = bpf_map_lookup_elem(&policy_map, &cgroup_id);
+        __u8 mode = pv ? pv->enforcement_mode : 0;
+        return emit_fs_event(cgroup_id, pid, mode);
     }
     return 0;
 }

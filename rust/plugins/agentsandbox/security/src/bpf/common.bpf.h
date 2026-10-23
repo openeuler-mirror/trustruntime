@@ -122,6 +122,7 @@ typedef struct MapBuffers {
 
 enum BufIdxTypeForHook {
     CAP_SOURCE_BUF,
+    UNIX_SOCK_BUF,
     HOOK_BUF_MAX
 };
 
