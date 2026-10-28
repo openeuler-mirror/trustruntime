@@ -147,6 +147,93 @@ static __always_inline int emit_fs_event(
     return 0;
 }
 
+/* Prepends a single dentry name + trailing '/' into the scratch buffer at
+ * `offset`, walking backward from the end of the buffer (mirrors the technique
+ * in capability.bpf.c pre_pend_name). Returns the new offset or -1 on overflow. */
+static __always_inline int32_t fs_pre_pend_name(Bufs *str_buf, struct qstr d_name, int32_t offset) {
+    int32_t offset_tmp = offset;
+    char slash = '/';
+    offset_tmp -= (int32_t)(d_name.len + 1);
+    if (offset_tmp < 0) {
+        return -1;
+    }
+    long sz = bpf_probe_read_str(&(str_buf->buf[((uint32_t)offset_tmp) & (MAX_COMBIND_LENGTH - 1)]),
+                                 (d_name.len + 1) & (MAX_COMBIND_LENGTH - 1),
+                                 d_name.name);
+    if (sz > 1) {
+        bpf_probe_read(&(str_buf->buf[((uint32_t)offset_tmp + d_name.len) & (MAX_COMBIND_LENGTH - 1)]),
+                       1, &slash);
+    } else {
+        offset_tmp += (int32_t)(d_name.len + 1);
+    }
+    return offset_tmp;
+}
+
+/* Rebuilds the absolute path of a dentry by walking its d_parent chain up to the
+ * dentry tree root. The inode_* LSM hooks only provide struct dentry (no struct
+ * path/vfsmount), so bpf_d_path cannot be used; walking d_parent yields the
+ * absolute path for entries on the root filesystem (the common case for
+ * protected paths). Writes into the per-cpu scratch buffer. Returns the offset
+ * into buf->buf where the NUL-terminated path starts, or -1 on failure. */
+static __always_inline int32_t build_dentry_path(struct dentry *dentry, Bufs *buf) {
+    int32_t offset = MAX_COMBIND_LENGTH;
+    struct dentry *d_parent;
+    struct qstr d_name;
+
+#pragma clang loop unroll(disable)
+    for (int32_t i = 0; i < MAX_LOOP_LIMIT; i++) {
+        d_parent = BPF_CORE_READ(dentry, d_parent);
+        if (dentry == d_parent) {
+            break;
+        }
+        d_name = BPF_CORE_READ(dentry, d_name);
+        offset = fs_pre_pend_name(buf, d_name, offset);
+        if (offset < 1) {
+            return -1;
+        }
+        dentry = d_parent;
+    }
+
+    if (offset == MAX_COMBIND_LENGTH || offset < 1) {
+        return -1;
+    }
+
+    char null = '\0';
+    char slash = '/';
+    bpf_probe_read(&(buf->buf[MAX_COMBIND_LENGTH - 1]), 1, &null);
+    offset--;
+    bpf_probe_read(&(buf->buf[((uint32_t)offset) & (MAX_COMBIND_LENGTH - 1)]), 1, &slash);
+
+    return offset;
+}
+
+/* Enforces FS_PERM_WRITE on a directory entry's dentry against the cgroup's
+ * fs_path_rules. Returns 0 to allow, or a negative errno to deny (emit_fs_event
+ * handles the block vs alert semantics). Used by the inode_* LSM hooks
+ * (rename/link/unlink/rmdir) that bypass file_open. */
+static __always_inline int check_entry_write(__u64 cgroup_id, struct dentry *dentry,
+                                             struct policy_value *pv) {
+    int32_t buf_idx = FS_ENTRY_BUF;
+    Bufs *buf = bpf_map_lookup_elem(&g_bufs, &buf_idx);
+    if (!buf) {
+        return 0;
+    }
+    int32_t off = build_dentry_path(dentry, buf);
+    if (off < 0) {
+        return 0;
+    }
+    char *path = &(buf->buf[((uint32_t)off) & (MAX_COMBIND_LENGTH - 1)]);
+    int blocked = check_fs_path_rules(cgroup_id, FS_PERM_WRITE, path);
+    if (blocked == 0) {
+        return 0;
+    }
+    if (blocked < 0 && pv->default_action == NET_ACTION_ALLOW) {
+        return 0;
+    }
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    return emit_fs_event(cgroup_id, pid, pv->enforcement_mode);
+}
+
 SEC("lsm/file_open")
 int BPF_PROG(handle_file_open, struct file *file) {
     if (!file) {
@@ -289,4 +376,84 @@ int BPF_PROG(handle_unix_stream_connect, struct sock *sock, struct sock *other, 
         return emit_fs_event(cgroup_id, pid, mode);
     }
     return 0;
+}
+
+/* LSM hook: blocks rename(2) moving/overwriting a protected path.
+ *
+ * file_open does NOT fire for rename(2): mv(1) relocates the destination
+ * directory entry via rename rather than open/creat, so a protected target
+ * could be overwritten without ever presenting FMODE_WRITE to file_open.
+ * We attach to the inode_* variant (path_rename is NOT exposed to BPF LSM);
+ * new_dentry is the target entry, whose absolute path is rebuilt from its
+ * d_parent chain and enforced against fs_path_rules with FS_PERM_WRITE. The
+ * source (old_dentry) is checked too, since rename also removes the protected
+ * source path. */
+SEC("lsm/inode_rename")
+int BPF_PROG(handle_inode_rename, struct inode *old_dir, struct dentry *old_dentry,
+             struct inode *new_dir, struct dentry *new_dentry) {
+    if (!old_dentry || !new_dentry) {
+        return 0;
+    }
+
+    __u64 cgroup_id = bpf_get_current_cgroup_id();
+    struct policy_value *pv = bpf_map_lookup_elem(&policy_map, &cgroup_id);
+    if (!pv) {
+        return 0;
+    }
+
+    int r = check_entry_write(cgroup_id, new_dentry, pv);
+    if (r != 0) {
+        return r;
+    }
+    return check_entry_write(cgroup_id, old_dentry, pv);
+}
+
+/* LSM hook: blocks link(2) (hard link) creating an entry under a protected
+ * path. Like rename, link operates on directory entries rather than opening
+ * the target, so it bypasses file_open. */
+SEC("lsm/inode_link")
+int BPF_PROG(handle_inode_link, struct dentry *old_dentry, struct inode *dir, struct dentry *new_dentry) {
+    if (!new_dentry) {
+        return 0;
+    }
+
+    __u64 cgroup_id = bpf_get_current_cgroup_id();
+    struct policy_value *pv = bpf_map_lookup_elem(&policy_map, &cgroup_id);
+    if (!pv) {
+        return 0;
+    }
+
+    return check_entry_write(cgroup_id, new_dentry, pv);
+}
+
+/* LSM hook: blocks unlink(2) (rm) removing a protected path. */
+SEC("lsm/inode_unlink")
+int BPF_PROG(handle_inode_unlink, struct inode *dir, struct dentry *dentry) {
+    if (!dentry) {
+        return 0;
+    }
+
+    __u64 cgroup_id = bpf_get_current_cgroup_id();
+    struct policy_value *pv = bpf_map_lookup_elem(&policy_map, &cgroup_id);
+    if (!pv) {
+        return 0;
+    }
+
+    return check_entry_write(cgroup_id, dentry, pv);
+}
+
+/* LSM hook: blocks rmdir(2) removing a protected directory. */
+SEC("lsm/inode_rmdir")
+int BPF_PROG(handle_inode_rmdir, struct inode *dir, struct dentry *dentry) {
+    if (!dentry) {
+        return 0;
+    }
+
+    __u64 cgroup_id = bpf_get_current_cgroup_id();
+    struct policy_value *pv = bpf_map_lookup_elem(&policy_map, &cgroup_id);
+    if (!pv) {
+        return 0;
+    }
+
+    return check_entry_write(cgroup_id, dentry, pv);
 }
