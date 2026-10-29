@@ -73,6 +73,8 @@ struct policy_value {
 struct cap_path_rule {
     __u64 cap_mask;
     __u8 match_type;
+    __u64 dev;      /* inode device id (i_sb->s_dev); 0 = unresolved, use string match */
+    __u64 ino;      /* inode number (i_ino); 0 = unresolved, use string match */
     char path[MAX_PATH_PATTERN_LEN];
 };
 
@@ -123,6 +125,7 @@ typedef struct MapBuffers {
 enum BufIdxTypeForHook {
     CAP_SOURCE_BUF,
     UNIX_SOCK_BUF,
+    FS_ENTRY_BUF,
     HOOK_BUF_MAX
 };
 

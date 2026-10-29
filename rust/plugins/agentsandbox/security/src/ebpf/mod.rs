@@ -112,11 +112,17 @@ unsafe impl aya::Pod for PolicyValue {}
 /// A single capability+path rule for kernel-side matching.
 /// `cap_mask`: bitmask of denied capabilities for this path.
 /// `match_type`: PATH_MATCH_EXACT or PATH_MATCH_PREFIX.
+/// `dev`/`ino`: inode identity (device + inode number) of the exact path,
+/// resolved at rule-build time. When non-zero, the kernel-side matcher treats
+/// the rule as also matching by inode identity (closing hardlink/bind-mount
+/// aliasing); zero means "unresolved" and only string matching applies.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct CapPathRule {
     pub cap_mask: u64,
     pub match_type: u8,
+    pub dev: u64,
+    pub ino: u64,
     pub path: [u8; MAX_PATH_PATTERN_LEN],
 }
 
@@ -140,7 +146,7 @@ impl Default for CapPathRules {
 
 impl Default for CapPathRule {
     fn default() -> Self {
-        Self { cap_mask: 0, match_type: 0, path: [0u8; MAX_PATH_PATTERN_LEN] }
+        Self { cap_mask: 0, match_type: 0, dev: 0, ino: 0, path: [0u8; MAX_PATH_PATTERN_LEN] }
     }
 }
 
@@ -151,7 +157,8 @@ impl CapPathRule {
         debug_assert!(bytes.len() < MAX_PATH_PATTERN_LEN, "path exceeds MAX_PATH_PATTERN_LEN");
         let mut path = [0u8; MAX_PATH_PATTERN_LEN];
         path[..bytes.len()].copy_from_slice(bytes);
-        Some(Self { cap_mask: 1u64 << cap_bit, match_type, path })
+        let (dev, ino) = resolve_path_identity(match_type, &cleaned);
+        Some(Self { cap_mask: 1u64 << cap_bit, match_type, dev, ino, path })
     }
 
     pub fn path_str(&self) -> &str {
@@ -346,6 +353,24 @@ fn compile_glob(pattern: &str) -> (u8, String) {
         return (PATH_MATCH_PREFIX, prefix.to_string());
     }
     (PATH_MATCH_EXACT, pattern.to_string())
+}
+
+/// Resolves an exact (non-glob) path to its inode identity (device + inode
+/// number) via stat(2). Returns `(0, 0)` for glob patterns (no single inode) or
+/// when the path cannot be stat'ed (e.g. does not exist on this host), in which
+/// case the kernel-side matcher falls back to string matching only.
+///
+/// NOTE: inode identity is only comparable when the rule is resolved in the same
+/// mount namespace as the process being checked; a mismatch degrades to
+/// fail-open (the inode branch simply never matches), never to a wrong deny.
+fn resolve_path_identity(match_type: u8, path: &str) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    if match_type != PATH_MATCH_EXACT || path.is_empty() {
+        return (0, 0);
+    }
+    std::fs::metadata(path)
+        .map(|m| (m.dev(), m.ino()))
+        .unwrap_or((0, 0))
 }
 
 impl PolicyValue {
@@ -660,6 +685,10 @@ impl EbpfLoader {
                         ("handle_file_open", "file_open"),
                         ("handle_bprm_exec", "bprm_check_security"),
                         ("handle_unix_stream_connect", "unix_stream_connect"),
+                        ("handle_inode_rename", "inode_rename"),
+                        ("handle_inode_link", "inode_link"),
+                        ("handle_inode_unlink", "inode_unlink"),
+                        ("handle_inode_rmdir", "inode_rmdir"),
                     ],
                 };
                 for (prog_name, hook_name) in hooks {
@@ -867,7 +896,8 @@ impl EbpfLoader {
                 debug_assert!(bytes.len() < MAX_PATH_PATTERN_LEN, "path exceeds MAX_PATH_PATTERN_LEN");
                 let mut path = [0u8; MAX_PATH_PATTERN_LEN];
                 path[..bytes.len()].copy_from_slice(bytes);
-                rules.rules[rules.count as usize] = CapPathRule { cap_mask: *mask, match_type, path };
+                let (dev, ino) = resolve_path_identity(match_type, &cleaned);
+                rules.rules[rules.count as usize] = CapPathRule { cap_mask: *mask, match_type, dev, ino, path };
                 rules.count += 1;
             }
         }

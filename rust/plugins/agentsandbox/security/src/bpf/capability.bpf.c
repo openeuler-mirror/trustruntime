@@ -98,6 +98,36 @@ static char *get_source() {
     return source;
 }
 
+/* Kernel's new_encode_dev (include/linux/kdev_t.h + fs/stat.c): user-space
+ * stat(2) reports st_dev = new_encode_dev(sb->s_dev), while i_sb->s_dev is the
+ * raw dev_t. Encode here so the inode branch compares against the same value the
+ * loader stored via stat(2), instead of silently failing on large device
+ * numbers. MINORBITS is a stable ABI constant (20). */
+#define DEV_MINORBITS 20
+#define DEV_MINORMASK ((1U << DEV_MINORBITS) - 1)
+
+static __always_inline __u32 encode_dev(__u32 dev) {
+    __u32 major = dev >> DEV_MINORBITS;
+    __u32 minor = dev & DEV_MINORMASK;
+    return (minor & 0xff) | (major << 8) | ((minor & ~0xff) << 12);
+}
+
+/* Resolves the current executable's inode identity (device + inode number) from
+ * mm->exe_file->f_inode. Inode identity is stable across hard links, bind mounts
+ * and renames, so it closes the aliasing bypass that a path-string match alone
+ * leaves open. Returns 0 on success, -1 if exe_file/f_inode is unavailable
+ * (e.g. kernel thread). */
+static __always_inline int get_exe_identity(__u64 *dev, __u64 *ino) {
+    struct task_struct *task = (struct task_struct *)(uintptr_t)bpf_get_current_task();
+    struct inode *inode = BPF_CORE_READ(task, mm, exe_file, f_inode);
+    if (!inode) {
+        return -1;
+    }
+    *ino = BPF_CORE_READ(inode, i_ino);
+    *dev = encode_dev((__u32)BPF_CORE_READ(inode, i_sb, s_dev));
+    return 0;
+}
+
 static __always_inline __u64 load_u64(const char *p) {
     __u64 v;
     __builtin_memcpy(&v, p, sizeof(v));
@@ -144,17 +174,23 @@ static __always_inline int path_exact_match(const char *path, const char *target
     return 0;
 }
 
+/* Matched-via values returned by check_path_rules: distinguishes which branch
+ * produced a deny so the caller can tag the security event accordingly. */
+#define CAP_MATCH_NONE   0
+#define CAP_MATCH_PATH   1
+#define CAP_MATCH_INODE  2
+
 static __always_inline int check_path_rules(__u64 cgroup_id, int cap) {
     struct cap_path_rules *rules = bpf_map_lookup_elem(&cap_path_rules_map, &cgroup_id);
     if (!rules) {
-        return 0;
+        return CAP_MATCH_NONE;
     }
 
     __u32 tgid = bpf_get_current_pid_tgid() >> 32;
     const char *exe_path = get_source();
-    if (!exe_path) {
-        return 0;
-    }
+
+    __u64 exe_dev = 0, exe_ino = 0;
+    int have_inode = get_exe_identity(&exe_dev, &exe_ino) == 0;
 
     __u64 cap_bit = 1ULL << cap;
 
@@ -165,24 +201,39 @@ static __always_inline int check_path_rules(__u64 cgroup_id, int cap) {
         struct cap_path_rule *rule = &rules->rules[i];
 
         int path_matched = 0;
+        int inode_matched = 0;
         if (rule->match_type == PATH_MATCH_PREFIX) {
-            path_matched = path_prefix_match(exe_path, rule->path);
+            if (exe_path && path_prefix_match(exe_path, rule->path)) {
+                path_matched = 1;
+            }
         } else {
-            path_matched = path_exact_match(exe_path, rule->path);
+            /* Exact rule: union of path identity and (when resolvable) inode
+             * identity. The string branch covers "path replaced by a new inode";
+             * the inode branch covers "same file reached via hardlink/bind
+             * mount/rename" that the string branch would miss. */
+            if (exe_path && path_exact_match(exe_path, rule->path)) {
+                path_matched = 1;
+            }
+            if (have_inode && rule->ino != 0 &&
+                exe_dev == rule->dev && exe_ino == rule->ino) {
+                inode_matched = 1;
+            }
         }
-        if (!path_matched) {
+        if (!path_matched && !inode_matched) {
             continue;
         }
 
         /* scoped deny: 路径匹配 + cap 在 deny 列表 → 拦截 */
         if (rule->cap_mask & cap_bit) {
-            return 1;
+            /* Tag only pure-inode matches (alias bypass) as INODE; a normal
+             * run of the binary at its canonical path matches by string too. */
+            return (inode_matched && !path_matched) ? CAP_MATCH_INODE : CAP_MATCH_PATH;
         }
     }
-    return 0;
+    return CAP_MATCH_NONE;
 }
 
-static __always_inline int emit_event(__u64 cgroup_id, __u32 pid, __u8 enforcement_mode) {
+static __always_inline int emit_event(__u64 cgroup_id, __u32 pid, __u8 enforcement_mode, __u8 inode_match) {
     char comm[16];
     bpf_get_current_comm(&comm, sizeof(comm));
 
@@ -200,6 +251,12 @@ static __always_inline int emit_event(__u64 cgroup_id, __u32 pid, __u8 enforceme
     event->pid = pid;
     __builtin_memcpy(event->event_type, "privilege_escalation", 20);
     __builtin_memcpy(event->process_name, comm, 16);
+
+    /* Tag inode-branch matches so operators can confirm the inode identity
+     * matching is actually firing (vs purely path-string matches). */
+    if (inode_match) {
+        __builtin_memcpy(event->operation_detail, "cap_path_inode_match", sizeof("cap_path_inode_match"));
+    }
 
     if (enforcement_mode == 0) {
         __builtin_memcpy(event->action, "block", 5);
@@ -229,19 +286,22 @@ int BPF_PROG(handle_capable, const struct cred *cred, struct user_namespace *ns,
 
     __u64 cap_bit = 1ULL << cap;
     int matched = (pv->cap_mask & cap_bit) != 0;
+    int match_kind = CAP_MATCH_NONE;
 
     if (!matched && pv->has_path_rules) {
-        matched = check_path_rules(cgroup_id, cap);
+        match_kind = check_path_rules(cgroup_id, cap);
+        matched = match_kind != CAP_MATCH_NONE;
     }
 
     if (!matched) {
         if (pv->default_action == NET_ACTION_BLOCK) {
             __u32 pid = bpf_get_current_pid_tgid() >> 32;
-            return emit_event(cgroup_id, pid, pv->enforcement_mode);
+            return emit_event(cgroup_id, pid, pv->enforcement_mode, 0);
         }
         return 0;
     }
 
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    return emit_event(cgroup_id, pid, pv->enforcement_mode);
+    return emit_event(cgroup_id, pid, pv->enforcement_mode,
+                      match_kind == CAP_MATCH_INODE);
 }
