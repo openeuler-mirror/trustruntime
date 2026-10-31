@@ -263,11 +263,15 @@ static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 ///   转发（目标 DNS 由上游解析），未设直连（现状行为不变）；两变量
 ///   独立生效。非法值返回 [`ProxyInitError::InvalidUpstreamProxy`]
 ///   拒启（fail-closed——防「以为走代理实际直连」的静默降级）。
-/// - **显式 CONNECT**（2026-10）：客户端可以 `http_proxy`/`https_proxy`
-///   指向本 proxy（curl 等标准工具的显式代理形态）——`CONNECT
-///   host:port` 请求经策略求值（推理路由宿主命中则交库裁决隧道放行）
-///   后建立盲隧道（proxy 不做 MITM——隧道内流量端到端加密不可见，
-///   完整可见性由透明 eBPF 模式提供）。
+/// - **显式 CONNECT**（2026-10，CONNECT-MITM）：客户端可以
+///   `http_proxy`/`https_proxy` 指向本 proxy（curl 等标准工具的显式
+///   代理形态）——`CONNECT host:port` 经域名级求值（推理宿主命中则库
+///   裁决隧道门）→ 容器 CA 前置（缺失 503 fail-closed）→ 200 →
+///   **隧道内 MITM**：proxy 以容器 CA 与客户端完成 TLS（客户端须信任
+///   该 CA——生产容器已注入，手工测试需 `--cacert`），内部请求走完整
+///   标准管道（过滤引擎域名+method+path 全维求值 / 推理路由 host+url
+///   完整匹配）——**显式模式获得与透明 eBPF 模式同等的过滤能力**。
+///   非 TLS 隧道内容 → 盲隧道回退（不过滤）。
 ///
 /// 前置校验：端口非 0，路由条目 host/url 非空；推理库初始化失败返回
 /// `ProxyInitError::InferenceInit`（guard 未消耗——修正后可重调）；重复

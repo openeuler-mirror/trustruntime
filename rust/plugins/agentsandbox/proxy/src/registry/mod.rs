@@ -107,11 +107,17 @@ impl Registry {
         }
         normalize_rule_order(&mut fc);
         // 配置热更新落地确认（info——release 可见；HC 推送结果可观测）。
+        // 内容全量 JSON（2026-10 观测补齐）：归一化**之后**打印——展示
+        // evaluate 实际遍历顺序（prio 降序 / 规则集内 deny>alert>allow），
+        // 与求值行为可核对；binaryrules 进程路径原样输出（策略语义，
+        // 先例 identity resolve）。序列化失败回退占位（防御性——不影响
+        // 配置落地）。
         crate::log_info!(
             "registry",
-            "container config updated: container={} rulesets={}",
+            "container config updated: container={} rulesets={} config={}",
             container_id,
-            fc.rule_list.len()
+            fc.rule_list.len(),
+            serde_json::to_string(&fc).unwrap_or_else(|_| "<serialize-failed>".to_string())
         );
         let mut configs = crate::lock_util::recovered(self.configs.write(), "registry");
         configs.insert(container_id.to_string(), fc);
@@ -122,10 +128,18 @@ impl Registry {
     /// 清除后该容器流量 fail-closed（config_not_found）。
     pub fn remove_container_policy(&self, container_id: &str) -> Result<(), ConfigError> {
         let mut configs = crate::lock_util::recovered(self.configs.write(), "registry");
-        configs
-            .remove(container_id)
-            .map(|_| ())
-            .ok_or(ConfigError::NotFound)
+        match configs.remove(container_id) {
+            Some(_) => {
+                // 配置移除落地确认（info——2026-10 补齐静默缺口；与 set
+                // 路径对称，流量 fail-closed 转变可观测）。
+                crate::log_info!(
+                    "registry",
+                    "container config removed: container={container_id}"
+                );
+                Ok(())
+            }
+            None => Err(ConfigError::NotFound),
+        }
     }
 
     /// 取容器过滤配置快照（服务管道按端点绑定的 container_id 查询）。
@@ -253,6 +267,37 @@ mod tests {
             reg.remove_container_policy("c1"),
             Err(ConfigError::NotFound)
         );
+    }
+
+    // 配置内容落地日志（2026-10 观测补齐）：set 后 info 日志含归一化
+    // 完整 JSON（default_policy/host 模式/action）；remove 后含移除确认。
+    //（串行锁：日志捕获断言——与全局回调槽相关测试互斥。）
+    #[test]
+    fn config_content_logged_on_set_and_remove() {
+        let _serial = crate::logging::testing::serial_guard();
+        let capture = crate::logging::testing::install_capture();
+        let reg = Registry::new();
+
+        reg.set_container_config("c-log", fc("*.trusted.com"))
+            .unwrap();
+        let events = capture.events();
+        let updated = events.iter().any(|e| {
+            e.subsystem == "registry"
+                && e.message.contains("container config updated")
+                && e.message.contains("container=c-log")
+                && e.message.contains("\"default_policy\":\"deny\"")
+                && e.message.contains("*.trusted.com")
+                && e.message.contains("\"action\":\"allow\"")
+        });
+        assert!(updated, "set 日志应含归一化完整 JSON 内容");
+
+        reg.remove_container_policy("c-log").unwrap();
+        let removed = capture.events().iter().any(|e| {
+            e.subsystem == "registry"
+                && e.message
+                    .contains("container config removed: container=c-log")
+        });
+        assert!(removed, "remove 日志应含移除确认");
     }
 
     // 空容器 ID 拒绝。

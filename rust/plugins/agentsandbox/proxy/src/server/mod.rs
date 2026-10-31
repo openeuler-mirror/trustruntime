@@ -44,15 +44,19 @@
 //!
 //! **推理路由匹配双形态**（2026-10）：普通请求 host+url 精确匹配（原
 //! AR-005）；**CONNECT 按宿主匹配**（authority-form 无路径语义，url
-//! 忽略）——命中后裁决对象为隧道放行（库只见 CONNECT 头 + 空 body，
-//! Block:403 / Forward·Modified: 盲隧道，修改列表防御性忽略）。
+//! 忽略）——命中后 CONNECT 层由库裁决隧道放行（Block:403 / 其余放行）。
 //!
-//! **显式 CONNECT 语义**（2026-10）：客户端可以 `http_proxy`/`https_proxy`
-//! 指向本 proxy（curl 等标准工具显式代理形态）。CONNECT 为**盲隧道**——
-//! proxy 不做 MITM/不做 TLS，过滤引擎只见 CONNECT 域名（按 domain +
-//! CONNECT 方法求值），隧道内流量端到端加密不可见（完整可见性由透明
-//! eBPF 模式提供）。URI 归一化：authority-form 空 path → "/"（求值/
-//! 审计/匹配的 path 语义与 origin-form 一致）。
+//! **显式 CONNECT 语义**（2026-10，CONNECT-MITM）：客户端可以
+//! `http_proxy`/`https_proxy` 指向本 proxy（curl 等标准工具显式代理
+//! 形态）。CONNECT 经域名级求值（推理宿主命中则库裁决隧道门）→ CA
+//! 前置（缺失 403 fail-closed）→ 200 → **隧道内 MITM**：proxy 以容器
+//! CA 与客户端完成 TLS（客户端须信任该 CA——生产容器已注入，手工测试
+//! 需 `--cacert`），内部请求走完整标准管道（过滤引擎域名+method+path
+//! 全维求值 / 推理路由 host+url 完整匹配）——**显式模式获得与透明
+//! eBPF 模式同等的过滤能力**；出站按内部请求懒建（upstream_https/
+//! 直连）。非 TLS 隧道内容（首字节非 0x16）→ 盲隧道回退（不过滤）。
+//! URI 归一化：authority-form 空 path → "/"（求值/审计/匹配的 path
+//! 语义与 origin-form 一致）。
 //!
 //! 身份解析失败（未注册回调/None/container_id 空）：container_id 占位
 //! "-"——下游查表 miss fail-closed（配置 503 / TLS CA 拒握手）；规则含
@@ -342,12 +346,40 @@ async fn serve_tls(
     binary_path: Option<String>,
     ctx: Arc<ServeContext>,
 ) {
-    let timeout = ctx.connector.timeout();
-    // 前置：该容器 CA 未设置 → TLS 流量 fail-closed（ca_error）。
-    let Some(cert_service) = ctx.cert_services.service_for(&container_id) else {
+    // 前置：该容器 CA 未设置 → TLS 流量 fail-closed（ca_error——TLS 未
+    // 建立，无 HTTP 响应可发，仅日志关连接）。
+    if ctx.cert_services.service_for(&container_id).is_none() {
         crate::log_error!(
             "server",
             "connection rejected: ca_error (container={container_id})"
+        );
+        return;
+    }
+    mitm_serve_io(tcp, peer, container_id, binary_path, ctx).await;
+}
+
+/// MITM TLS 服务核心（泛型 IO——透明路径 TcpStream 与显式 CONNECT 隧道
+/// Upgraded 流共用，2026-10 CONNECT-MITM）。
+///
+/// 流程：CA 查表（防御性复检——CONNECT 路径已在 200 响应前前置检查）
+/// → `SniResolvingCert` 动态证书 acceptor → 握手（deadline 约束）→
+/// SNI/ALPN 捕获 → 连接级上下文（plaintext=false）→ [`serve_hyper`]
+/// （内部请求走完整标准管道：过滤引擎 / 推理路由全维求值）。
+async fn mitm_serve_io<I>(
+    io: I,
+    peer: SocketAddr,
+    container_id: String,
+    binary_path: Option<String>,
+    ctx: Arc<ServeContext>,
+) where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let timeout = ctx.connector.timeout();
+    // CA 查表（防御性——透明入口已查，CONNECT 入口已前置）。
+    let Some(cert_service) = ctx.cert_services.service_for(&container_id) else {
+        crate::log_error!(
+            "server",
+            "mitm io rejected: ca_error (container={container_id})"
         );
         return;
     };
@@ -355,11 +387,11 @@ async fn serve_tls(
     let resolver = Arc::new(SniResolvingCert::new(cert_service));
     let tls_config = mitm::server_config(resolver.clone());
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
-    let tls = match tokio::time::timeout(timeout, acceptor.accept(tcp)).await {
+    let tls = match tokio::time::timeout(timeout, acceptor.accept(io)).await {
         Ok(Ok(tls)) => tls,
         Ok(Err(_)) => {
             // 握手失败：无 SNI（config_not_found 语义）/ 签发失败（cert_error）
-            // / 客户端中止——无法返回 HTTP（TLS 未建立），仅日志。
+            // / 客户端中止（如不信任 CA）——无法返回 HTTP（TLS 未建立），仅日志。
             crate::log_debug!(
                 "server",
                 "mitm handshake rejected (no sni / cert_error / aborted)"
@@ -872,12 +904,14 @@ async fn handle_inference(
 
 /// 推理路由 CONNECT 处理（2026-10 显式代理形态，宿主命中分流至此）。
 ///
-/// 语义：裁决对象是**隧道是否放行**——库只见 CONNECT 头部（Host/
-/// User-Agent 等）+ 空 body（CONNECT 无 body；隧道内为客户端端到端
-/// TLS，不可见）。决策映射（2026-10 契约）：
-/// - Block → 403 + 审计 deny（reason=inference_route）；
-/// - Forward/Modified → 修改列表防御性忽略 → 盲隧道 + 审计 allow
-///   （reason=inference_route，status=200）。
+/// 语义：**双层裁决**（2026-10 CONNECT-MITM 起）——
+/// - CONNECT 层（隧道门）：库只见 CONNECT 头部 + 空 body（CONNECT 无
+///   body）——Block → 403 拒绝隧道；Forward/Modified → 放行（修改列表
+///   对 CONNECT 无意义，防御性忽略）；
+/// - **MITM 层**（200 后）：隧道内 TLS 由本 proxy 终止（容器 CA 签发
+///   证书），内部请求走完整标准管道——推理路由恢复 **host+url 完整
+///   路径匹配**（AR-005 语义在显式模式下完整还原），库可见完整
+///   path/body 并可改写。
 async fn handle_inference_connect(
     req: Request<Incoming>,
     ctx: Arc<ServeContext>,
@@ -989,19 +1023,23 @@ async fn handle_connect(
     .await
 }
 
-/// CONNECT 盲隧道建立（过滤引擎与推理路由两路径共用核心）。
+/// CONNECT 隧道建立（过滤引擎与推理路由两路径共用核心，2026-10
+/// CONNECT-MITM）。
 ///
 /// 流程：
-/// 1. 出站**原始流**（proxy 不做 MITM/不做 TLS——客户端经隧道端到端
-///    TLS；上游配置 → CONNECT 隧道，未配置 → 直连目标）；
-/// 2. 审计 allow（status=200，先于响应回传——fail-closed 排序，同
-///    upgrade 先例）；
-/// 3. 隧道：发起方升级流 ↔ 出站原始流（[`spawn_upgrade_tunnel`]——
-///    连接级空闲超时 + 半关闭传播；无残留字节）；
-/// 4. 回传 `200 Connection Established`（hyper 对 CONNECT 的 2xx 响应
-///    自动转交原始 IO——复用 serve_connection_with_upgrades 装配）。
-///
-/// 出站失败 → 502 + K9 归类审计（同 upgrade 先例）。
+/// 1. **CA 前置检查（先于 200）**：容器 CA 缺失 → 403 + 审计
+///    deny(ca_error)——fail-closed 对齐透明 TLS 语义（MITM 需以容器 CA
+///    为客户端签发目标域名证书；生产容器已注入，手工客户端需信任）；
+/// 2. 审计 allow（status=200，先于响应回传——fail-closed 排序）；
+/// 3. 回传 `200 Connection Established`（hyper 对 CONNECT 的 2xx 响应
+///    自动转交原始 IO）；spawn [`spawn_connect_tunnel`]：首字节分流——
+///    - `0x16`（TLS ClientHello）→ [`mitm_serve_io`]：MITM 终止后内部
+///      请求走**完整标准管道**（过滤引擎域名+method+path 全维求值 /
+///      推理路由 host+url 完整匹配——显式模式获得与透明模式同等过滤
+///      能力；出站按内部请求懒建：upstream_https / 直连）；
+///    - 非 TLS → 盲隧道回退（[`connect_raw_outbound`] + relay——非 TLS
+///      隧道内容不过滤；出站懒建于 200 之后，失败仅关连接 + warn——
+///      200 后无法回 502，已知边界）。
 #[allow(clippy::too_many_arguments)] // 隧道管道上下文（同 handle_upgrade）。
 async fn establish_connect_tunnel(
     client_upgrade: hyper::upgrade::OnUpgrade,
@@ -1025,25 +1063,16 @@ async fn establish_connect_tunnel(
         uri: &uri,
         target_ips: &target_ip_str,
     };
-    let fwd_port = ctx.resolved_target_port(&conn, host_port);
-    let fwd_host = ctx.target_host(&domain).into_owned();
 
-    // 1. 出站原始流（K9 三类错误 → 502 + 审计 deny）。
-    let target = match connect_raw_outbound(&ctx, &conn, &domain, host_port, timeout).await {
-        Ok(t) => t,
-        Err(e) => {
-            crate::log_warn!(
-                "server",
-                "connect target connect failed: host={} port={} reason={:?} container={}",
-                fwd_host,
-                fwd_port,
-                e.reason(),
-                container_id
-            );
-            let entry = deny_entry(&ctx, &conn, &meta, e.reason(), rule_id);
-            return Ok(audit_deny(&entry, e.reason()));
-        }
-    };
+    // 1. CA 前置（先于 200——缺失可回 403 + 审计）。
+    if ctx.cert_services.service_for(&container_id).is_none() {
+        crate::log_error!(
+            "server",
+            "connect rejected: ca_error (container={container_id})"
+        );
+        let entry = deny_entry(&ctx, &conn, &meta, Reason::CaError, rule_id);
+        return Ok(audit_deny(&entry, Reason::CaError));
+    }
 
     // 2. 审计 allow（status=200；先于 200 回传——fail-closed 排序）。
     if let Some(blocked) = audit_allow(&allow_entry(
@@ -1052,11 +1081,130 @@ async fn establish_connect_tunnel(
         return Ok(blocked);
     }
 
-    // 3. 隧道（无残留字节——200 响应后客户端才开始发送隧道数据）。
-    spawn_upgrade_tunnel(client_upgrade, target, Vec::new(), timeout);
+    // 3. 200 回传 + 隧道任务（首字节分流——MITM / 盲回退）。
+    spawn_connect_tunnel(client_upgrade, ctx, conn, domain, host_port, timeout);
 
-    // 4. 200 回传。
     Ok(connect_established_response())
+}
+
+/// CONNECT 隧道任务（200 后运行）：读首字节分流——TLS → [`mitm_serve_io`]
+/// （内部请求走完整标准管道）；非 TLS → 盲隧道回退（原始流出站 + relay）。
+fn spawn_connect_tunnel(
+    client_upgrade: hyper::upgrade::OnUpgrade,
+    ctx: Arc<ServeContext>,
+    conn: Arc<ConnContext>,
+    domain: String,
+    host_port: Option<u16>,
+    timeout: Duration,
+) {
+    use tokio::io::AsyncReadExt as _;
+    tokio::spawn(async move {
+        let Ok(upgraded) = client_upgrade.await else {
+            return;
+        };
+        let io = TokioIo::new(upgraded);
+        // 首字节读取（deadline 约束——慢客户端不无限占用任务）。
+        let mut first = [0u8; 1];
+        let mut io = io;
+        match tokio::time::timeout(timeout, io.read(&mut first)).await {
+            Ok(Ok(1)) => {}
+            _ => return, // EOF / 错误 / 超时——无隧道数据，关闭。
+        }
+        let prefixed = PrefixedIo::new(first[0], io);
+        if first[0] == 0x16 {
+            // TLS ClientHello → MITM（内部请求走完整标准管道）。
+            crate::log_debug!("server", "connect tunnel mitm: host={domain}");
+            mitm_serve_io(
+                prefixed,
+                conn.peer,
+                conn.container_id.clone(),
+                conn.binary_path.clone(),
+                ctx,
+            )
+            .await;
+        } else {
+            // 非 TLS → 盲隧道回退（不过滤；出站懒建——失败仅关连接 + warn）。
+            crate::log_info!(
+                "server",
+                "connect tunnel blind fallback (non-tls): host={domain}"
+            );
+            match connect_raw_outbound(&ctx, &conn, &domain, host_port, timeout).await {
+                Ok(target) => {
+                    relay_with_idle_timeout(prefixed, target, timeout).await;
+                }
+                Err(e) => {
+                    let port = ctx.resolved_target_port(&conn, host_port);
+                    crate::log_warn!(
+                        "server",
+                        "connect fallback outbound failed: host={} port={} reason={:?}",
+                        domain,
+                        port,
+                        e.reason()
+                    );
+                }
+            }
+        }
+    });
+}
+
+/// 首字节回放 IO（CONNECT 隧道分流包装，2026-10）。
+///
+/// [`hyper::upgrade::Upgraded`] 无 peek API——分流须读出首字节判定
+/// TLS/非 TLS；读出的字节经本包装**回放**给下游消费者（TLS acceptor /
+/// relay），保证字节流零丢失。
+struct PrefixedIo<I> {
+    /// 待回放的首字节（消费一次后 None）。
+    prefix: Option<u8>,
+    inner: I,
+}
+
+impl<I> PrefixedIo<I> {
+    fn new(first: u8, inner: I) -> Self {
+        Self {
+            prefix: Some(first),
+            inner,
+        }
+    }
+}
+
+impl<I: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for PrefixedIo<I> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        // 回放首字节（缓冲数据——恒 Ready，不 Pending）。
+        if let Some(b) = this.prefix.take() {
+            buf.put_slice(&[b]);
+            return std::task::Poll::Ready(Ok(()));
+        }
+        std::pin::Pin::new(&mut this.inner).poll_read(cx, buf)
+    }
+}
+
+impl<I: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for PrefixedIo<I> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::result::Result<usize, std::io::Error>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
 }
 
 /// CONNECT 出站原始流（盲隧道形态——无 TLS / 无 MITM）。
@@ -2360,6 +2508,28 @@ mod tests {
                 && e.message.contains("plain target connected")
         });
         assert!(logged, "plain connect success must be observed (debug)");
+    }
+
+    // PrefixedIo（2026-10 CONNECT-MITM 分流包装）：首字节回放 + 内层读
+    // 透传 + 写路径透传——分流读出的字节零丢失。
+    #[tokio::test]
+    async fn prefixed_io_replays_first_byte() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let (mut peer, inner) = tokio::io::duplex(64);
+        peer.write_all(b"ello").await.unwrap();
+        let mut io = PrefixedIo::new(b'H', inner);
+
+        // 读：先回放 'H'，再透传内层 "ello"。
+        let mut buf = [0u8; 5];
+        io.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"Hello", "首字节回放 + 内层数据连续无丢失");
+
+        // 写：透传到对端。
+        io.write_all(b"resp").await.unwrap();
+        let mut rb = [0u8; 4];
+        peer.read_exact(&mut rb).await.unwrap();
+        assert_eq!(&rb, b"resp");
     }
 
     // 审计条目类型组装：alert 标记 → type=Alert(1)；常规 allow/deny →
