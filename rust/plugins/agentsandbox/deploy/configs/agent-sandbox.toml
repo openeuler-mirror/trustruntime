@@ -1,0 +1,139 @@
+# AgentSandbox 运行时策略配置
+#
+# 定位：此文件放置于 HiController 的 AGENTSANDBOX_CONFIG_DIR 目录下，
+#       由 controller 解析后按 cgroup_id 下发生效（eBPF 安全策略 + 代理过滤规则）。
+# 结构：严格对齐 agentsandbox-config crate 的 serde 结构（types.rs）。
+#       顶层三段 [proxy] / [model_route] / [security] 均为可选，可只写需要的段。
+
+version = 1
+
+# ============================================================
+# [proxy] 代理过滤配置（对应 FilterConfig）
+# ============================================================
+[proxy]
+# 默认策略：allow | deny
+default_policy = "deny"
+
+# 是否写审计日志（audit.log）；缺省 true
+audit_enabled = true
+
+# 配置变更策略：drain | reset
+#   drain：旧连接沿用旧配置，待排空后切到新配置
+#   reset：立即断开旧连接并应用新配置
+policy_change_strategy = "drain"
+
+# 白名单：命中即放行（domain 必填非空；method/uri/binary 缺省 "*"）
+[[proxy.whitelist]]
+domain = "*.openai.com"
+method = "POST"
+uri = "/v1/*"
+binary = "*"
+
+[[proxy.whitelist]]
+domain = "api.anthropic.com"
+method = "POST"
+uri = "*"
+binary = "*"
+
+# 黑名单：优先级高于白名单与默认策略
+[[proxy.blacklist]]
+domain = "*.malicious.example"
+method = "*"
+uri = "*"
+binary = "*"
+
+# ============================================================
+# [model_route] 模型推理路由（对应 ModelRoute）
+# ============================================================
+[model_route]
+# 容器内本地推理服务的端口；0 表示不启用路由
+container_port = 9090
+
+# ============================================================
+# [security] 安全策略（对应 SecurityPolicy）
+# ============================================================
+[security]
+# 强制模式：block（命中即阻断）| alert（命中仅记录不阻断）
+enforcement_mode = "block"
+
+# 默认动作：allow | block（未命中任何规则/能力白名单时的兜底动作）
+default_action = "allow"
+
+# ---- 权限提升规则（对应 CapabilityRule）----
+# capabilities 命中且（若带 path_pattern）进程路径匹配时，按 enforcement_mode 处理
+
+[[security.privilege_escalation_rules]]
+capabilities = ["cap_sys_admin", "cap_net_admin"]
+# 不带 path_pattern：对所有进程生效
+
+[[security.privilege_escalation_rules]]
+capabilities = ["cap_chown"]
+path_pattern = "/usr/bin/chown"
+
+[[security.privilege_escalation_rules]]
+capabilities = ["cap_net_raw"]
+path_pattern = "/usr/bin/curl"      # 仅当进程路径匹配该 glob 时生效
+
+# ---- 文件系统访问规则（对应 FilesystemRule）----
+# path_prefix 命中时，仅允许 attrs（r/w/x 组合）内的权限；attrs 为空则全部阻断
+
+[[security.filesystem_access_rules]]
+path_prefix = "/etc/shadow"
+attrs = "rw"
+
+[[security.filesystem_access_rules]]
+path_prefix = "/proc/*"
+attrs = "r"
+
+[[security.filesystem_access_rules]]
+path_prefix = "/root/test.txt"
+attrs = "r"
+
+# ---- 网络连接规则（对应 NetworkRule）----
+# operation 仅支持 "connect"；首条命中即决定动作
+# action: allow | block | redirect_to_proxy（redirect_to_proxy 仅支持 tcp）
+# target 支持 IPv4/IPv6 精确地址与 CIDR（如 10.0.0.0/8、2001:db8::/32）/ "*"
+#        （"*" 匹配全部 IPv4 与 IPv6）；port/protocol 支持 "*"
+# protocol = "udp" 的规则同时覆盖 connect 与 sendto/sendmsg（socket_sendmsg 钩子）
+
+# 测试命令：curl -4 --connect-timeout 3 http://1.1.1.1:443/
+[[security.network_rules]]
+operation = "connect"
+target = "1.1.1.1"
+port = "*"
+protocol = "tcp"
+action = "redirect_to_proxy"
+
+# 测试命令：curl -4 --connect-timeout 3 http://2.2.2.2:443/
+[[security.network_rules]]
+operation = "connect"
+target = "2.2.2.2"
+port = "*"
+protocol = "tcp"
+action = "block"
+
+# 测试命令：curl -6 --connect-timeout 3 http://[2001:db8::1]:443/
+[[security.network_rules]]
+operation = "connect"
+target = "2001:db8::1"
+port = "*"
+protocol = "tcp"
+action = "block"
+
+# 测试命令：python3 -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.sendto(b'x',('8.8.8.8',53))"
+[[security.network_rules]]
+operation = "connect"
+target = "8.8.8.8"
+port = "53"
+protocol = "udp"
+action = "block"
+
+# 测试命令：python3 -c "import socket; s=socket.socket(socket.AF_INET6, socket.SOCK_DGRAM); s.sendto(b'x',('2001:db8::1',53))"
+[[security.network_rules]]
+operation = "connect"
+target = "2001:db8::1/32"
+port = "*"
+protocol = "udp"
+action = "block"
+
+
