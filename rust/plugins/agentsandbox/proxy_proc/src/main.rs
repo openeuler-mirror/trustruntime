@@ -11,9 +11,10 @@
 //!   CONNECT 隧道转发，未设直连；非法值启动失败（fail-closed）。
 //!
 //! 双向代理形态（2026-10）：
-//! - **入站**：透明 eBPF 拦截（MITM 全解密过滤）+ 显式 CONNECT（客户端
-//!   可将 `http_proxy`/`https_proxy` 指向本进程——盲隧道，按 CONNECT
-//!   域名求值/推理宿主裁决）；
+//! - **入站**：透明 eBPF 拦截（MITM 全解密过滤）+ 显式 CONNECT
+//!   （客户端可将 `http_proxy`/`https_proxy` 指向本进程——CONNECT 经
+//!   域名级求值后**隧道内 MITM**：内部请求走完整标准管道，与透明模式
+//!   同等过滤能力；客户端须信任容器 CA）；
 //! - **出站**：`http_proxy`/`https_proxy` 设置时经上游转发，未设直连。
 
 use agentsandbox_proxy::facade::{proxy_init, register_binary_resolver, register_log_sink};

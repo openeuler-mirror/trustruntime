@@ -165,7 +165,11 @@ pub struct FilterConfig {
     /// 无规则命中时默认策略。
     pub default_policy: Policy,
     /// 规则集列表（按 host.prio 降序求值）。
-    #[serde(default)]
+    ///
+    /// 反序列化兼容键名 `ruleset`（2026-10 交付链修复：controller 侧
+    /// config crate 的 TOML 字段名经 JSON 下发——此前该键被静默忽略，
+    /// proxy 收到空规则列表）。
+    #[serde(default, alias = "ruleset")]
     pub rule_list: Vec<RuleSet>,
 }
 
@@ -342,6 +346,59 @@ mod tests {
             rule_list: vec![],
         }
         .has_binary_condition());
+    }
+
+    // controller→proxy 交付链 round-trip（2026-10 链路修复锚点）：config
+    // crate FilterConfig 序列化 JSON（键名 `ruleset`——TOML 字段名经
+    // management.rs json! 宏下发）→ proxy 模型反序列化 rule_list 完整
+    // 保留。历史事故：proxy 侧仅认 `rule_list`，"ruleset" 键被静默忽略
+    // → 空规则列表 → 所有请求走 default_policy。
+    #[test]
+    fn controller_json_deserializes_into_proxy_model() {
+        let cfg_fc = agentsandbox_config::FilterConfig {
+            default_policy: "deny".to_string(),
+            audit_enabled: true,
+            policy_change_strategy: "drain".to_string(),
+            rule_list: vec![agentsandbox_config::RuleSetConfig {
+                name: "allow-trusted".to_string(),
+                host: agentsandbox_config::HostRuleConfig {
+                    host_type: "host".to_string(),
+                    addr: None,
+                    context: Some("*.trusted.com".to_string()),
+                    prio: 100,
+                },
+                targetrules: vec![agentsandbox_config::TargetRuleConfig {
+                    method: "*".to_string(),
+                    path: "/v1/*".to_string(),
+                    action: "allow".to_string(),
+                }],
+                binaryrules: vec![],
+                port: None,
+            }],
+        };
+        // controller 侧序列化形态（send_filter_config_to_proxy）。
+        let json = serde_json::to_value(&cfg_fc).unwrap();
+        assert!(
+            json.get("ruleset").is_some(),
+            "config crate 序列化键应为 ruleset（锁定交付形态）"
+        );
+        // proxy 侧反序列化（proxy_proc refresh_policy 路径）。
+        let proxy_fc: FilterConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(proxy_fc.default_policy, Policy::Deny);
+        assert_eq!(proxy_fc.rule_list.len(), 1, "ruleset 不得被静默丢弃");
+        assert_eq!(proxy_fc.rule_list[0].name, "allow-trusted");
+        assert_eq!(
+            proxy_fc.rule_list[0].host.context.as_deref(),
+            Some("*.trusted.com")
+        );
+        assert_eq!(
+            proxy_fc.rule_list[0].targetrules[0].action,
+            RuleAction::Allow
+        );
+        // proxy 侧自身序列化仍用规范键 rule_list（registry 内容日志形态）。
+        let proxy_json = serde_json::to_value(&proxy_fc).unwrap();
+        assert!(proxy_json.get("rule_list").is_some());
+        assert!(proxy_json.get("ruleset").is_none());
     }
 
     // has_ip_condition 判定面（新语义：任一规则集 host.type=ip → 触发
