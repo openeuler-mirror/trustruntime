@@ -95,11 +95,14 @@ struct fs_path_rules {
 };
 
 struct network_rule {
-    __u32 target_ip;
-    __u32 target_mask;
-    __u16 port;
-    __u8 protocol;
-    __u8 action;
+    __u8 family;           /* AF_INET(2) / AF_INET6(10) / 0 = any */
+    __u32 target_ip;       /* IPv4 target, network byte order (family==AF_INET) */
+    __u32 target_mask;     /* IPv4 mask (0 for wildcard) */
+    __u8 target_ip6[16];   /* IPv6 target, canonical network byte order */
+    __u8 target_mask6[16]; /* IPv6 mask */
+    __u16 port;            /* 0 = any port */
+    __u8 protocol;         /* NET_PROTOCOL_TCP/UDP/ANY */
+    __u8 action;           /* NET_ACTION_ALLOW/BLOCK/REDIRECT */
 };
 
 struct network_rules {
@@ -108,10 +111,12 @@ struct network_rules {
 };
 
 struct proxy_config {
-    __u32 proxy_ip;
+    __u32 proxy_ip;         /* IPv4 proxy (loopback), network byte order */
+    __u8 proxy_ip6[16];     /* IPv6 proxy (loopback), canonical network byte order */
     __u16 proxy_port;
     __u16 model_route_port;
-    __u32 container_ip;
+    __u32 container_ip;     /* IPv4 container address, network byte order */
+    __u8 container_ip6[16]; /* IPv6 container address */
 };
 
 struct sock_block_entry {

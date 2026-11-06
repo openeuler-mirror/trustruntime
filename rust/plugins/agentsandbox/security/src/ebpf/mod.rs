@@ -30,6 +30,9 @@ pub const NET_ACTION_ALLOW: u8 = 0;
 pub const NET_ACTION_BLOCK: u8 = 1;
 pub const NET_ACTION_REDIRECT: u8 = 2;
 
+/// Network rule address-family: AF_INET / AF_INET6 / 0 (any).
+pub const NET_FAMILY_ANY: u8 = 0;
+
 pub const NET_PROTOCOL_ANY: u8 = 0;
 pub const NET_PROTOCOL_TCP: u8 = libc::IPPROTO_TCP as u8;
 pub const NET_PROTOCOL_UDP: u8 = libc::IPPROTO_UDP as u8;
@@ -59,6 +62,10 @@ const ROOT_CGROUP_PATH: &str = "/sys/fs/cgroup";
 const IPV4_ADDR_LEN: usize = 4;
 /// IPv6 address size in bytes.
 const IPV6_ADDR_LEN: usize = 16;
+
+/// IPv6 loopback address (::1) in canonical network byte order, used as the
+/// default IPv6 proxy/container address for cgroup/connect6 redirect.
+const IPV6_LOOPBACK: [u8; IPV6_ADDR_LEN] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 
 /// Network flow 5-tuple key for cgroup_id lookup (IPv4/IPv6 compatible).
 ///
@@ -233,15 +240,18 @@ fn attrs_to_perm_mask(attrs: &str) -> u8 {
 }
 
 /// A single network rule for kernel-side matching.
-/// `target_ip` / `target_mask`: CIDR-style IP matching (wildcard = 0.0.0.0/0).
-/// `port`: 0 = match any port.
-/// `protocol`: NET_PROTOCOL_ANY = match any.
+/// `family`: AF_INET / AF_INET6 / 0 (any). `target_ip`/`target_mask` for IPv4,
+/// `target_ip6`/`target_mask6` (canonical network byte order) for IPv6.
+/// `port`: 0 = match any port. `protocol`: NET_PROTOCOL_ANY = match any.
 /// `action`: NET_ACTION_ALLOW / BLOCK / REDIRECT.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct NetworkRuleBpf {
+    pub family: u8,
     pub target_ip: u32,
     pub target_mask: u32,
+    pub target_ip6: [u8; 16],
+    pub target_mask6: [u8; 16],
     pub port: u16,
     pub protocol: u8,
     pub action: u8,
@@ -249,18 +259,12 @@ pub struct NetworkRuleBpf {
 
 unsafe impl aya::Pod for NetworkRuleBpf {}
 
-impl Default for NetworkRuleBpf {
-    fn default() -> Self {
-        Self { target_ip: 0, target_mask: 0, port: 0, protocol: 0, action: 0 }
-    }
-}
-
 impl NetworkRuleBpf {
     pub fn from_rule(rule: &agentsandbox_config::NetworkRule) -> Result<Self, EbpfError> {
         if rule.operation != "connect" {
             return Err(EbpfError::MapError(format!("unsupported operation: {}", rule.operation)));
         }
-        let (target_ip, target_mask) = parse_target(&rule.target)?;
+        let (family, target_ip, target_mask, target_ip6, target_mask6) = parse_target(&rule.target)?;
         let port = parse_port(&rule.port)?;
         let protocol = parse_protocol(&rule.protocol)?;
         let action = match rule.action.as_str() {
@@ -269,7 +273,16 @@ impl NetworkRuleBpf {
             "redirect_to_proxy" => NET_ACTION_REDIRECT,
             _ => NET_ACTION_BLOCK,
         };
-        Ok(Self { target_ip, target_mask, port, protocol, action })
+        Ok(Self {
+            family,
+            target_ip,
+            target_mask,
+            target_ip6,
+            target_mask6,
+            port,
+            protocol,
+            action,
+        })
     }
 }
 
@@ -289,13 +302,59 @@ impl Default for NetworkRulesBpf {
     }
 }
 
-fn parse_target(target: &str) -> Result<(u32, u32), EbpfError> {
+/// Parsed network target: (family, ipv4, mask4, ipv6, mask6).
+type ParsedTarget = (u8, u32, u32, [u8; 16], [u8; 16]);
+
+fn parse_target(target: &str) -> Result<ParsedTarget, EbpfError> {
     if target == "*" || target.is_empty() {
-        return Ok((0, 0));
+        return Ok((NET_FAMILY_ANY, 0, 0, [0u8; 16], [0u8; 16]));
     }
+
+    // IPv6: presence of ':' disambiguates from IPv4.
+    if target.contains(':') {
+        let (addr_part, bits) = match target.split_once('/') {
+            Some((a, b)) => (a, Some(b)),
+            None => (target, None),
+        };
+        let addr: std::net::Ipv6Addr = addr_part
+            .parse()
+            .map_err(|_| EbpfError::MapError(format!("invalid ipv6: {}", addr_part)))?;
+        let mut octets = addr.octets();
+        let prefix: u32 = match bits {
+            Some(b) => b
+                .parse()
+                .map_err(|_| EbpfError::MapError(format!("invalid ipv6 cidr mask: {}", b)))?,
+            None => 128,
+        };
+        if prefix > 128 {
+            return Err(EbpfError::MapError(format!("ipv6 cidr mask out of range: {}", prefix)));
+        }
+        let mut mask6 = [0u8; 16];
+        for (i, byte) in mask6.iter_mut().enumerate() {
+            let byte_bits = prefix.saturating_sub(i as u32 * 8).min(8);
+            if byte_bits == 8 {
+                *byte = 0xff;
+            } else if byte_bits > 0 {
+                *byte = 0xffu8 << (8 - byte_bits);
+            }
+        }
+        for i in 0..16 {
+            octets[i] &= mask6[i];
+        }
+        return Ok((libc::AF_INET6 as u8, 0, 0, octets, mask6));
+    }
+
+    // IPv4
+    let (target_ip, target_mask) = parse_ip4_target(target)?;
+    Ok((libc::AF_INET as u8, target_ip, target_mask, [0u8; 16], [0u8; 16]))
+}
+
+fn parse_ip4_target(target: &str) -> Result<(u32, u32), EbpfError> {
     if let Some((ip_part, mask_part)) = target.split_once('/') {
         let ip = parse_ip(ip_part)?;
-        let bits: u32 = mask_part.parse().map_err(|_| EbpfError::MapError(format!("invalid cidr mask: {}", mask_part)))?;
+        let bits: u32 = mask_part
+            .parse()
+            .map_err(|_| EbpfError::MapError(format!("invalid cidr mask: {}", mask_part)))?;
         if bits > 32 {
             return Err(EbpfError::MapError(format!("invalid cidr mask bits: {}", bits)));
         }
@@ -496,13 +555,16 @@ impl Default for SockBlockEntry {
 
 /// Global proxy configuration written to BPF array map at startup.
 /// All IPs are in network byte order (big-endian), same as ctx->user_ip4.
-#[derive(Debug, Clone, Copy)]
+/// IPv6 addresses are canonical 16 network-order bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct ProxyConfig {
     pub proxy_ip: u32,
+    pub proxy_ip6: [u8; 16],
     pub proxy_port: u16,
     pub model_route_port: u16,
     pub container_ip: u32,
+    pub container_ip6: [u8; 16],
 }
 
 /// Full policy snapshot for a cgroup, used for rollback.
@@ -641,7 +703,7 @@ impl EbpfLoader {
             b.programs().all(|(n, _)| !new_names.contains(&n))
         });
 
-        let needs_lsm = new_names.iter().any(|n| *n == "capability" || *n == "filesystem");
+        let needs_lsm = new_names.iter().any(|n| *n == "capability" || *n == "filesystem" || *n == "network");
         let btf = if needs_lsm {
             Some(Btf::from_sys_fs().map_err(|e| EbpfError::LoadError(e.to_string()))?)
         } else {
@@ -702,15 +764,31 @@ impl EbpfLoader {
                 }
             }
             "network" => {
-                let cgroup = File::open(ROOT_CGROUP_PATH)
-                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
-                let prog: &mut CgroupSockAddr = bpf.program_mut("handle_connect4")
-                    .ok_or_else(|| EbpfError::LoadError("handle_connect4 not found".to_string()))?
-                    .try_into()
-                    .map_err(|e: ProgramError| EbpfError::LoadError(e.to_string()))?;
-                prog.load().map_err(|e| EbpfError::LoadError(e.to_string()))?;
-                prog.attach(cgroup, CgroupAttachMode::Single)
-                    .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                for prog_name in ["handle_connect4", "handle_connect6"] {
+                    let cgroup = File::open(ROOT_CGROUP_PATH)
+                        .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                    let prog: &mut CgroupSockAddr = bpf.program_mut(prog_name)
+                        .ok_or_else(|| EbpfError::LoadError(format!("{} not found", prog_name)))?
+                        .try_into()
+                        .map_err(|e: ProgramError| EbpfError::LoadError(e.to_string()))?;
+                    prog.load().map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                    prog.attach(cgroup, CgroupAttachMode::Single)
+                        .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                }
+
+                let btf = btf.ok_or_else(|| EbpfError::LoadError("kernel BTF unavailable".to_string()))?;
+                for (prog_name, hook_name) in [
+                    ("handle_socket_connect", "socket_connect"),
+                    ("handle_socket_sendmsg", "socket_sendmsg"),
+                ] {
+                    let prog: &mut Lsm = bpf.program_mut(prog_name)
+                        .ok_or_else(|| EbpfError::LoadError(format!("{} not found", prog_name)))?
+                        .try_into()
+                        .map_err(|e: ProgramError| EbpfError::LoadError(e.to_string()))?;
+                    prog.load(hook_name, btf)
+                        .map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                    prog.attach().map_err(|e| EbpfError::LoadError(e.to_string()))?;
+                }
             }
             "sockops" => {
                 let cgroup = File::open(ROOT_CGROUP_PATH)
@@ -758,7 +836,14 @@ impl EbpfLoader {
     pub fn set_proxy(&self, ip: u32, proxy_port: u16, model_route_port: u16, container_ip: u32) -> Result<(), EbpfError> {
         if !self.is_loaded() { return Err(EbpfError::NotLoadedError); }
 
-        let cfg = ProxyConfig { proxy_ip: ip, proxy_port, model_route_port, container_ip };
+        let cfg = ProxyConfig {
+            proxy_ip: ip,
+            proxy_ip6: IPV6_LOOPBACK,
+            proxy_port,
+            model_route_port,
+            container_ip,
+            container_ip6: IPV6_LOOPBACK,
+        };
 
         let mut bpf_guard = self.bpf.lock()
             .map_err(|e| EbpfError::MapError(e.to_string()))?;
@@ -778,10 +863,9 @@ impl EbpfLoader {
         Ok(())
     }
 
-    /// Returns the currently configured proxy (ip, proxy_port, model_route_port, container_ip), or None.
-    pub fn get_proxy(&self) -> Option<(u32, u16, u16, u32)> {
-        self.proxy_config.lock().ok()?.as_ref()
-            .map(|c| (c.proxy_ip, c.proxy_port, c.model_route_port, c.container_ip))
+    /// Returns the currently configured proxy config, or None.
+    pub fn get_proxy(&self) -> Option<ProxyConfig> {
+        self.proxy_config.lock().ok()?.as_ref().copied()
     }
 
     /// Updates both policy_map and cap_path_rules_map from a SecurityPolicy.
@@ -1547,27 +1631,53 @@ mod tests {
 
     #[test]
     fn test_parse_target_wildcard() {
-        let (ip, mask) = parse_target("*").unwrap();
+        let (family, ip, mask, ip6, mask6) = parse_target("*").unwrap();
+        assert_eq!(family, NET_FAMILY_ANY);
         assert_eq!(ip, 0);
         assert_eq!(mask, 0);
+        assert_eq!(ip6, [0u8; 16]);
+        assert_eq!(mask6, [0u8; 16]);
     }
 
     #[test]
     fn test_parse_target_exact() {
-        let (ip, mask) = parse_target("8.8.8.8").unwrap();
+        let (family, ip, mask, _ip6, _mask6) = parse_target("8.8.8.8").unwrap();
+        assert_eq!(family, libc::AF_INET as u8);
         assert_eq!(ip, 0x08080808);
         assert_eq!(mask, 0xFFFFFFFF);
     }
 
     #[test]
     fn test_parse_target_cidr() {
-        let (ip, mask) = parse_target("10.0.0.0/8").unwrap();
+        let (family, ip, mask, _ip6, _mask6) = parse_target("10.0.0.0/8").unwrap();
+        assert_eq!(family, libc::AF_INET as u8);
         assert_eq!(ip, 0x0A000000);
         assert_eq!(mask, 0xFF000000);
 
-        let (ip, mask) = parse_target("192.168.1.0/24").unwrap();
+        let (_family, ip, mask, _ip6, _mask6) = parse_target("192.168.1.0/24").unwrap();
         assert_eq!(ip, 0xC0A80100);
         assert_eq!(mask, 0xFFFFFF00);
+    }
+
+    #[test]
+    fn test_parse_target_ipv6() {
+        let (family, ip, mask, ip6, mask6) = parse_target("2001:db8::/32").unwrap();
+        assert_eq!(family, libc::AF_INET6 as u8);
+        assert_eq!(ip, 0);
+        assert_eq!(mask, 0);
+        assert_eq!(&ip6[..4], &[0x20, 0x01, 0x0d, 0xb8]);
+        assert_eq!(&mask6[..4], &[0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(&mask6[4..], &[0u8; 12]);
+    }
+
+    #[test]
+    fn test_parse_target_ipv6_exact() {
+        let (family, _ip, _mask, ip6, mask6) = parse_target("::1").unwrap();
+        assert_eq!(family, libc::AF_INET6 as u8);
+        let mut expect = [0u8; 16];
+        expect[15] = 1;
+        assert_eq!(ip6, expect);
+        assert_eq!(mask6, [0xffu8; 16]);
     }
 
     #[test]
@@ -1698,7 +1808,14 @@ mod tests {
         loader.load_programs(None).unwrap();
         let ip = parse_ip("127.0.0.1").unwrap();
         loader.set_proxy(ip, PROXY_PORT_TEST, MODEL_ROUTE_PORT_TEST, ip).unwrap();
-        assert_eq!(loader.get_proxy(), Some((ip, PROXY_PORT_TEST, MODEL_ROUTE_PORT_TEST, ip)));
+        assert_eq!(loader.get_proxy(), Some(ProxyConfig {
+            proxy_ip: ip,
+            proxy_ip6: IPV6_LOOPBACK,
+            proxy_port: PROXY_PORT_TEST,
+            model_route_port: MODEL_ROUTE_PORT_TEST,
+            container_ip: ip,
+            container_ip6: IPV6_LOOPBACK,
+        }));
     }
 
     #[test]
@@ -1714,7 +1831,14 @@ mod tests {
         loader.load_programs(None).unwrap();
         let ip = parse_ip("127.0.0.1").unwrap();
         loader.set_proxy(ip, PROXY_PORT_ALT_TEST, MODEL_ROUTE_PORT_TEST, ip).unwrap();
-        assert_eq!(loader.get_proxy(), Some((ip, PROXY_PORT_ALT_TEST, MODEL_ROUTE_PORT_TEST, ip)));
+        assert_eq!(loader.get_proxy(), Some(ProxyConfig {
+            proxy_ip: ip,
+            proxy_ip6: IPV6_LOOPBACK,
+            proxy_port: PROXY_PORT_ALT_TEST,
+            model_route_port: MODEL_ROUTE_PORT_TEST,
+            container_ip: ip,
+            container_ip6: IPV6_LOOPBACK,
+        }));
 
         loader.unload_programs().unwrap();
         assert_eq!(loader.get_proxy(), None);
@@ -1725,5 +1849,65 @@ mod tests {
         let loader = EbpfLoader::new();
         let key = FlowKey::from_ipv4([127, 0, 0, 1], 12345, [10, 0, 0, 1], 80, NET_PROTOCOL_TCP);
         assert_eq!(loader.lookup_cgroup_by_flow(&key), None);
+    }
+
+    /// Resolves the current process's cgroup v2 id (the kernfs inode of its cgroup
+    /// directory) the same way bpf_get_current_cgroup_id() does, so a policy keyed
+    /// by this id is matched by syscalls issued from this process.
+    fn read_self_cgroup_id() -> Option<u64> {
+        use std::os::unix::fs::MetadataExt;
+        let content = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+        let line = content.lines().next()?;
+        let parts: Vec<&str> = line.split(':').collect();
+        let (hier, subsys, path) = match parts.as_slice() {
+            [hier, subsys, path] => (hier, subsys, path),
+            _ => return None,
+        };
+        let full = if *hier == "0" && *subsys == "" {
+            format!("/sys/fs/cgroup{}", path)
+        } else {
+            format!("/sys/fs/cgroup/{}{}", subsys, path)
+        };
+        std::fs::metadata(&full).ok().map(|m| m.ino())
+    }
+
+    /// End-to-end: loads the network programs, inserts a UDP block rule for this
+    /// process's own cgroup, then fires a real sendto(2) — which travels through
+    /// the lsm/socket_sendmsg hook — and asserts a `network`/`block` event is
+    /// drained from the ring buffer. Run single-threaded to avoid test-loaders
+    /// detaching the shared LSM hook mid-flight:
+    ///   cargo test -p agentsandbox-security -- --test-threads=1 e2e_udp_sendmsg
+    #[test]
+    fn e2e_udp_sendmsg_block_emits_event() {
+        let cgroup_id = read_self_cgroup_id().expect("failed to read self cgroup id");
+        let loader = EbpfLoader::new();
+        loader.load_programs(Some(&["network"])).unwrap();
+
+        let policy = SecurityPolicy {
+            enforcement_mode: "block".to_string(),
+            default_action: "allow".to_string(),
+            privilege_escalation_rules: vec![],
+            filesystem_access_rules: vec![],
+            network_rules: vec![NetworkRule {
+                operation: "connect".to_string(),
+                target: "8.8.8.8".to_string(),
+                port: "53".to_string(),
+                protocol: "udp".to_string(),
+                action: "block".to_string(),
+            }],
+        };
+        loader.update_from_security_policy(cgroup_id, &policy, 0).unwrap();
+
+        let sock = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let _ = sock.send_to(b"probe", "8.8.8.8:53");
+
+        let events = loader.poll_events().unwrap();
+        assert!(
+            events.iter().any(|e| e.event_type == "network" && e.action == "block"),
+            "expected a network/block event, got {:?}",
+            events
+        );
+
+        loader.unload_programs().unwrap();
     }
 }
