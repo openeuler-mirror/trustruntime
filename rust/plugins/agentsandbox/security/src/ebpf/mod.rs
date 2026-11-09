@@ -361,7 +361,10 @@ fn parse_ip4_target(target: &str) -> Result<(u32, u32), EbpfError> {
         if bits == 0 {
             return Ok((0, 0));
         }
-        let mask = if bits >= 32 { 0xFFFFFFFF } else { ((1u32 << bits) - 1) << (32 - bits) };
+        let mask_be = if bits >= 32 { 0xFFFFFFFF } else { ((1u32 << bits) - 1) << (32 - bits) };
+        // Same byte order as parse_ip (little-endian packed), so the mask selects
+        // the same octets (e.g. /8 first octet -> low byte 0x000000FF).
+        let mask = mask_be.swap_bytes();
         return Ok((ip & mask, mask));
     }
     let ip = parse_ip(target)?;
@@ -381,7 +384,9 @@ fn parse_ip(s: &str) -> Result<u32, EbpfError> {
         }
         ip = (ip << 8) | octet;
     }
-    Ok(ip)
+    // ctx->user_ip4 holds the 4 octets in network order interpreted as a
+    // little-endian u32 (e.g. "127.0.0.1" -> 0x0100007f), so byte-swap to match.
+    Ok(ip.swap_bytes())
 }
 
 fn parse_port(port: &str) -> Result<u16, EbpfError> {
@@ -1626,7 +1631,7 @@ mod tests {
     fn test_parse_ip() {
         assert_eq!(parse_ip("8.8.8.8").unwrap(), 0x08080808);
         assert_eq!(parse_ip("0.0.0.0").unwrap(), 0);
-        assert_eq!(parse_ip("1.2.3.4").unwrap(), 0x01020304);
+        assert_eq!(parse_ip("1.2.3.4").unwrap(), 0x04030201);
     }
 
     #[test]
@@ -1651,12 +1656,12 @@ mod tests {
     fn test_parse_target_cidr() {
         let (family, ip, mask, _ip6, _mask6) = parse_target("10.0.0.0/8").unwrap();
         assert_eq!(family, libc::AF_INET as u8);
-        assert_eq!(ip, 0x0A000000);
-        assert_eq!(mask, 0xFF000000);
+        assert_eq!(ip, 0x0000000A);
+        assert_eq!(mask, 0x000000FF);
 
         let (_family, ip, mask, _ip6, _mask6) = parse_target("192.168.1.0/24").unwrap();
-        assert_eq!(ip, 0xC0A80100);
-        assert_eq!(mask, 0xFFFFFF00);
+        assert_eq!(ip, 0x0001A8C0);
+        assert_eq!(mask, 0x00FFFFFF);
     }
 
     #[test]
@@ -1874,7 +1879,9 @@ mod tests {
     /// End-to-end: loads the network programs, inserts a UDP block rule for this
     /// process's own cgroup, then fires a real sendto(2) — which travels through
     /// the lsm/socket_sendmsg hook — and asserts a `network`/`block` event is
-    /// drained from the ring buffer. Run single-threaded to avoid test-loaders
+    /// drained from the ring buffer. The target is deliberately a non-palindromic
+    /// IP (10.1.2.3) so the rule's byte order is exercised; palindromic IPs like
+    /// 8.8.8.8 mask an endianness bug. Run single-threaded to avoid test-loaders
     /// detaching the shared LSM hook mid-flight:
     ///   cargo test -p agentsandbox-security -- --test-threads=1 e2e_udp_sendmsg
     #[test]
@@ -1890,7 +1897,7 @@ mod tests {
             filesystem_access_rules: vec![],
             network_rules: vec![NetworkRule {
                 operation: "connect".to_string(),
-                target: "8.8.8.8".to_string(),
+                target: "10.1.2.3".to_string(),
                 port: "53".to_string(),
                 protocol: "udp".to_string(),
                 action: "block".to_string(),
@@ -1899,7 +1906,66 @@ mod tests {
         loader.update_from_security_policy(cgroup_id, &policy, 0).unwrap();
 
         let sock = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
-        let _ = sock.send_to(b"probe", "8.8.8.8:53");
+        let _ = sock.send_to(b"probe", "10.1.2.3:53");
+
+        let events = loader.poll_events().unwrap();
+        assert!(
+            events.iter().any(|e| e.event_type == "network" && e.action == "block"),
+            "expected a network/block event, got {:?}",
+            events
+        );
+
+        loader.unload_programs().unwrap();
+    }
+
+    /// End-to-end proof that a UDP block rule *really drops the datagram*: binds a
+    /// loopback UDP server, inserts a block rule for its address, then has a
+    /// client send a datagram. Asserts all three observable effects at once:
+    ///   1. client send_to fails (blocked at lsm/socket_sendmsg with -EPERM);
+    ///   2. server receives nothing (the datagram never leaves the client);
+    ///   3. a network/block event was emitted.
+    #[test]
+    fn e2e_udp_block_drops_datagram() {
+        let cgroup_id = read_self_cgroup_id().expect("failed to read self cgroup id");
+        let loader = EbpfLoader::new();
+        loader.load_programs(Some(&["network"])).unwrap();
+
+        let server = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .unwrap();
+        let port = server.local_addr().unwrap().port();
+
+        let policy = SecurityPolicy {
+            enforcement_mode: "block".to_string(),
+            default_action: "allow".to_string(),
+            privilege_escalation_rules: vec![],
+            filesystem_access_rules: vec![],
+            network_rules: vec![NetworkRule {
+                operation: "connect".to_string(),
+                target: "127.0.0.1".to_string(),
+                port: port.to_string(),
+                protocol: "udp".to_string(),
+                action: "block".to_string(),
+            }],
+        };
+        loader.update_from_security_policy(cgroup_id, &policy, 0).unwrap();
+
+        let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let send_result = client.send_to(b"hello", format!("127.0.0.1:{}", port));
+        assert!(
+            send_result.is_err(),
+            "expected sendto to be blocked, but it succeeded: {:?}",
+            send_result
+        );
+
+        let mut buf = [0u8; 64];
+        let recv_result = server.recv_from(&mut buf);
+        assert!(
+            recv_result.is_err(),
+            "expected the datagram to be dropped, but the server received {:?}",
+            recv_result
+        );
 
         let events = loader.poll_events().unwrap();
         assert!(
